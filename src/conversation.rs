@@ -66,7 +66,13 @@ pub async fn start_conversation(client: &ChatGPT, prompt_path: String) -> Result
                         return Ok(());
                     }
                     Command::Clear => {
-                        conversation.history.clear();
+                        // conversation.history.clear();
+                        conversation.history = vec![
+                            ChatMessage {
+                                role: Role::System,
+                                content: system_prompt.clone(),
+                            },
+                        ];
                         clear_console();
                         continue;
                     }
