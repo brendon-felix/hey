@@ -88,6 +88,7 @@ pub async fn conversation(client: &ChatGPT, prompt_path: String) -> Result<()> {
                 }
             }
             Input::Invalid => {
+                println!("Please enter a valid message.");
                 continue;
             }
         };
@@ -108,24 +109,18 @@ fn get_input() -> Input {
     stdout().lock().flush().unwrap();   
     std::io::stdin().read_line(&mut input).expect("Failed to read line");
     let input = input.trim();
-    if input.is_empty() {
-        return Input::Invalid;
-    }
     match input {
         "exit" | "quit" | "/q" | "/x" => Input::Command(Command::Exit),
         "clear" | "/c" => Input::Command(Command::Clear),
         "history" | "/h" => Input::Command(Command::History),
         "prompt" | "/p"=> Input::Command(Command::PrintPrompt),
         "help" | "?" | "/" => Input::Command(Command::Help),
+        _ if input.is_empty() => Input::Invalid,
         _ => Input::Message(input.to_string()),
     }
 }
 
 async fn stream_next_response(conversation: &mut Conversation, message: String) -> Result<Vec<ResponseChunk>> {
-    if message.is_empty() {
-        println!("Please enter a valid message.");
-        return Ok(vec![]);
-    }
     let mut stream = conversation.send_message_streaming(message).await?;
     let mut output: Vec<ResponseChunk> = Vec::new();
     while let Some(chunk) = stream.next().await {
