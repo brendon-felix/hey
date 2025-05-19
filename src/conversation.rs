@@ -83,6 +83,7 @@ pub async fn conversation(client: &ChatGPT, prompt_path: String) -> Result<()> {
                         println!("Type 'prompt' or '/p' to view the system prompt.");
                         println!("Type 'exit', 'quit', '/q', '/x' to exit the program.");
                         println!("Type 'help', '?', or '/' for this help message.");
+                        println!("\n");
                         continue;
                     }
                 }
