@@ -78,11 +78,11 @@ pub async fn conversation(client: &ChatGPT, prompt_path: String) -> Result<()> {
                     }
                     Command::Help => {
                         println!("Type your message and press Enter to send it.");
-                        println!("Type 'exit' or 'q' to quit the program.");
-                        println!("Type 'clear' or 'c' to clear the conversation history.");
-                        println!("Type 'history' or 'h' to view the conversation history.");
-                        println!("Type 'system' to view the system prompt.");
-                        println!("Type 'help' or '?' for this help message.");
+                        println!("Type 'clear' or '/c' to clear the conversation.");
+                        println!("Type 'history' or '/h' to view the conversation history.");
+                        println!("Type 'prompt' or '/p' to view the system prompt.");
+                        println!("Type 'exit', 'quit', '/q', '/x' to exit the program.");
+                        println!("Type 'help', '?', or '/' for this help message.");
                         continue;
                     }
                 }
