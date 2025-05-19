@@ -1,13 +1,3 @@
-// TODO:
-// - Add flags for
-//   - Providing API key .txt file
-//   - Providing system prompt .txt file
-//   - Providing model name
-//   - Providing temperature
-//   - Providing max tokens
-// - Create utils.rs to hold utility functions
-// - Fix timeout issue
-
 use std::fs::File;
 use std::io::Read;
 use chatgpt::prelude::*;
@@ -15,7 +5,7 @@ use clap::Parser as ArgParser;
 
 mod commands;
 mod conversation;
-use conversation::{stream_single_response, start_conversation};
+use conversation::{stream_single_response, conversation};
 
 #[derive(ArgParser, Debug)]
 struct Args {
@@ -53,14 +43,13 @@ async fn main() -> Result<()> {
     };
     let client = ChatGPT::new_with_config(api_key, config)?;
 
-    if args.args.is_empty() {
-        // If no message is provided, start a conversation
-        start_conversation(&client, args.prompt_path).await?;
-    } else {
+    if !args.args.is_empty() {
         // If a single message is provided, send it to the model
         let message = args.args.join(" ");
         stream_single_response(&client, message, args.prompt_path).await?;
+    } else {
+        // If no message is provided, start a conversation
+        conversation(&client, args.prompt_path).await?;
     }
     Ok(())
 }
-

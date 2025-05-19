@@ -17,20 +17,7 @@ pub async fn stream_single_response(client: &ChatGPT, message: String, prompt_pa
             content: message,
         },
     ];
-    // let width = term_size::dimensions().unwrap_or((80, 24)).0;
-    // let separator = "-".repeat(width);
-    // println!("{}", separator);
-    // let mut line_index: usize = 0;
     let mut stream = client.send_history_streaming(&history).await?;
-    // stream.for_each(|each| async move {
-    //     match each {
-    //         ResponseChunk::Content { delta, response_index: _ } => {
-    //             print!("{}", delta);
-    //             stdout().lock().flush().unwrap();
-    //         }
-    //         _ => {}
-    //     }
-    // }).await;
     println!();
     while let Some(chunk) = stream.next().await {
         match chunk {
@@ -47,10 +34,11 @@ pub async fn stream_single_response(client: &ChatGPT, message: String, prompt_pa
     Ok(())
 }
 
-pub async fn start_conversation(client: &ChatGPT, prompt_path: String) -> Result<()> {
+pub async fn conversation(client: &ChatGPT, prompt_path: String) -> Result<()> {
     // let mut conversation: Conversation = client.new_conversation();
     let system_prompt = load_system_prompt(prompt_path);
     let mut conversation: Conversation = client.new_conversation_directed(system_prompt.clone());
+    clear_console();
     loop {
         let input = get_input();
         println!();
@@ -63,6 +51,8 @@ pub async fn start_conversation(client: &ChatGPT, prompt_path: String) -> Result
                 match command {
                     Command::Exit => {
                         println!("Exiting...");
+                        std::thread::sleep(std::time::Duration::from_millis(500));
+                        clear_console();
                         return Ok(());
                     }
                     Command::Clear => {
@@ -88,9 +78,9 @@ pub async fn start_conversation(client: &ChatGPT, prompt_path: String) -> Result
                     }
                     Command::Help => {
                         println!("Type your message and press Enter to send it.");
-                        println!("Type 'exit' or '/q' to quit the program.");
-                        println!("Type 'clear' or '/c' to clear the conversation history.");
-                        println!("Type 'history' or '/h' to view the conversation history.");
+                        println!("Type 'exit' or 'q' to quit the program.");
+                        println!("Type 'clear' or 'c' to clear the conversation history.");
+                        println!("Type 'history' or 'h' to view the conversation history.");
                         println!("Type 'system' to view the system prompt.");
                         println!("Type 'help' or '?' for this help message.");
                         continue;
@@ -98,7 +88,6 @@ pub async fn start_conversation(client: &ChatGPT, prompt_path: String) -> Result
                 }
             }
             Input::Invalid => {
-                println!("Please enter a valid message.");
                 continue;
             }
         };
@@ -163,5 +152,4 @@ async fn stream_next_response(conversation: &mut Conversation, message: String) 
 fn append_response(conversation: &mut Conversation, output: Vec<ResponseChunk>) {
     let messages = ChatMessage::from_response_chunks(output);
     conversation.history.push(messages[0].to_owned());
-    // dbg!(&conversation.history); // Debugging to see the last message in the conversation history
 }

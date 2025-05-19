@@ -4,8 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-chatgpt_rs = { version = "1.2.3", features = ["streams"] }
+chatgpt_rs = { version = "1.2", features = ["streams"] }
 tokio = { version = "1.44", features = ["full", "rt-multi-thread"] }
-futures-util = "0.3.21"
+futures-util = "0.3"
 clap = { version = "4.5", features = ["derive"] }
-rand = "0.9"
