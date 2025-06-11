@@ -38,7 +38,7 @@ pub async fn conversation(client: &ChatGPT, prompt_path: String) -> Result<()> {
     // let mut conversation: Conversation = client.new_conversation();
     let system_prompt = load_system_prompt(prompt_path);
     let mut conversation: Conversation = client.new_conversation_directed(system_prompt.clone());
-    clear_console();
+    // clear_console();
     loop {
         let input = get_input();
         println!();
@@ -52,7 +52,7 @@ pub async fn conversation(client: &ChatGPT, prompt_path: String) -> Result<()> {
                     Command::Exit => {
                         println!("Exiting...");
                         std::thread::sleep(std::time::Duration::from_millis(500));
-                        clear_console();
+                        // clear_console();
                         return Ok(());
                     }
                     Command::Clear => {
