@@ -11,6 +11,8 @@ pub enum Command {
     Exit,
     Clear,
     History,
+    Save,
+    Load,
     PrintPrompt,
     Help,
 }
@@ -52,10 +54,10 @@ pub fn print_msg(message: &ChatMessage) {
     let role = message.role;
     let content = &message.content;
     let role_str = match role {
-        Role::System => "System",
-        Role::Assistant => "Assistant",
-        Role::User => "User",
-        Role::Function => "Function",
+        Role::System => "System: ",
+        Role::Assistant => "",
+        Role::User => "> ",
+        Role::Function => "Function: ",
     };
-    println!("{}: {}", role_str, content);
+    println!("{}{}\n", role_str, content);
 }
