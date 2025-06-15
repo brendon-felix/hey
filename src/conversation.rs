@@ -28,14 +28,12 @@ pub async fn stream_single_response(client: &ChatGPT, message: String, prompt_pa
             _ => {}
         }
     }
-
     println!("\n");
     std::thread::sleep(std::time::Duration::from_millis(500));
     Ok(())
 }
 
 pub async fn conversation(client: &ChatGPT, prompt_path: String) -> Result<()> {
-    // let mut conversation: Conversation = client.new_conversation();
     let system_prompt = load_system_prompt(prompt_path);
     let mut conversation: Conversation = client.new_conversation_directed(system_prompt.clone());
     // clear_console();
@@ -114,7 +112,6 @@ pub async fn conversation(client: &ChatGPT, prompt_path: String) -> Result<()> {
                 continue;
             }
         };
-        
     }
 }
 
@@ -186,42 +183,6 @@ fn append_response(conversation: &mut Conversation, output: Vec<ResponseChunk>) 
     let messages = ChatMessage::from_response_chunks(output);
     conversation.history.push(messages[0].to_owned());
 }
-
-/* -------------------------------------------------------------------------- */
-
-// pub fn run_file_dialog(filename: &str, directory: &Option<PathBuf>) -> Option<PathBuf> {
-//     let dialog = FileDialog::new();
-
-//     let dialog = if let Some(path) = directory {
-//         dialog.set_directory(path)
-//     } else {
-//         dialog
-//     };
-//     dialog
-//         .add_filter("log", &["txt", "log"])
-//         .set_title("Save Log File")
-//         .set_file_name(filename)
-//         .save_file()
-// }
-// pub fn save_active_log(settings: &Settings, shared_state: &Arc<Mutex<State>>) {
-//     let mut state = shared_state.lock().unwrap();
-//     match state.active_log {
-//         Some(ref mut log) => {
-//             if log.unsaved_changes {
-//                 match run_file_dialog(&log.filename, &settings.log_folder) {
-//                     Some(log_path) => {
-//                         log.save_as(&log_path);
-//                         print_success(&format!("Saved log to {}", log_path.display()));
-//                     },
-//                     None => print_warning("Save operation was canceled!"),
-//                 }
-//             } else {
-//                 print_warning("No unsaved changes to save!");
-//             }
-//         },
-//         None => print_warning("No log started! Press `L` to start one"),
-//     }
-// }
 
 pub fn print_history(conversation: &Conversation) {
     for msg in &conversation.history[1..] {
