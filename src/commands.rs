@@ -11,8 +11,8 @@ pub enum Command {
     Exit,
     Clear,
     History,
-    Save,
-    Load,
+    Save(String),
+    Load(String),
     PrintPrompt,
     Help,
 }

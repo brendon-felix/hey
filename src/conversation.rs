@@ -72,16 +72,15 @@ pub async fn conversation(client: &ChatGPT, prompt_path: String) -> Result<()> {
                         println!("---- End History ----\n");
                         continue;
                     }
-                    Command::Save => {
-                        let filename = "conversation.json";
-                        if let Err(e) = save_conversation(&conversation, filename).await {
+                    Command::Save(path  ) => {
+                        if let Err(e) = save_conversation(&conversation, &path).await {
                             eprintln!("Error saving conversation: {}", e);
                         }
                         continue;
                     }
-                    Command::Load => {
-                        let filename = "conversation.json";
-                        match load_conversation(&client, filename).await {
+                    Command::Load(path ) => {
+                        // let filename = "conversation.json";
+                        match load_conversation(&client, &path).await {
                             Ok(loaded_conversation) => {
                                 conversation = loaded_conversation;
                                 println!("Conversation loaded successfully.");
@@ -136,8 +135,22 @@ fn get_input() -> Input {
         "exit" | "quit" | "/q" | "/x" => Input::Command(Command::Exit),
         "clear" | "/c" => Input::Command(Command::Clear),
         "history" | "/h" => Input::Command(Command::History),
-        "save" | "/s" => Input::Command(Command::Save),
-        "load" | "/l" => Input::Command(Command::Load),
+        i if i.starts_with("save ") || i.starts_with("/s ") => {
+            let path = i.trim_start_matches("save ").trim_start_matches("/s ");
+            if path.is_empty() {
+                eprintln!("Please provide a filename to save the conversation.");
+                return Input::Invalid;
+            }
+            Input::Command(Command::Save(path.to_string()))
+        },
+        i if i.starts_with("load ") || i.starts_with("/l ") => {
+            let path = i.trim_start_matches("load ").trim_start_matches("/l ");
+            if path.is_empty() {
+                eprintln!("Please provide a filename to load the conversation.");
+                return Input::Invalid;
+            }
+            Input::Command(Command::Load(path.to_string()))
+        },
         "prompt" | "/p"=> Input::Command(Command::PrintPrompt),
         "help" | "?" | "/" => Input::Command(Command::Help),
         _ if input.is_empty() => Input::Invalid,
