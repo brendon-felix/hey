@@ -5,6 +5,28 @@ use std::io::{stdout, Write};
 use std::fs;
 use crate::commands::{Command, Input, print_msg, clear_console};
 
+use colored::Colorize;
+
+// const COLORS: [[u8; 3]; 6] = [
+//     [224, 108, 117], // Red
+//     [152, 195, 121], // Green
+//     [97, 175, 239],  // Blue
+//     [86, 182, 194],  // Cyan
+//     [198, 120, 221], // Magenta
+//     [229, 192, 123], // Yellow
+// ];
+
+// const COLORS: [[u8; 3]; 6] = [
+//     [255, 0, 0], // Red
+//     [0, 255, 0], // Green
+//     [0, 0, 255],  // Blue
+//     [225, 225, 0],  // Cyan
+//     [255, 0, 255], // Magenta
+//     [0, 255, 255], // Yellow
+// ];
+
+const MAX_LINE_LENGTH: usize = 80;
+
 pub async fn stream_single_response(client: &ChatGPT, message: String, prompt_path: String) -> Result<()> {
     let system_prompt = load_system_prompt(prompt_path);
     let history: Vec<ChatMessage> = vec![
@@ -19,10 +41,43 @@ pub async fn stream_single_response(client: &ChatGPT, message: String, prompt_pa
     ];
     let mut stream = client.send_history_streaming(&history).await?;
     println!();
+    let mut curr_line_length = 0;
     while let Some(chunk) = stream.next().await {
         match chunk {
             ResponseChunk::Content { delta, response_index: _ } => {
-                print!("{}", delta);
+                let printed_token = match delta.as_str() {
+                    t if t.starts_with('\n') => {
+                        curr_line_length = delta.len() - 1;
+                        format!("{}", delta)
+                    }
+                    t if t.ends_with('\n') => {
+                        curr_line_length = 0;
+                        format!("{}", delta)
+                    }
+                    t if t.contains('\n') => {
+                        curr_line_length = delta.len() - delta.rfind('\n').unwrap_or(0) - 1;
+                        format!("{}", delta)
+                    }
+                    t => {
+                        if (curr_line_length + delta.len()) > MAX_LINE_LENGTH {
+                            match t {
+                                "." | ". " | "," | ", " | "!" | "! " | "?" | "? " => {
+                                    curr_line_length = delta.len();
+                                    format!("{}\n", delta)
+                                }
+                                _ => {
+                                    curr_line_length = delta.trim_start().len();
+                                    format!("\n{}", delta.trim_start())
+                                }
+                            }
+                        } else {
+                            curr_line_length += delta.len();
+                            format!("{}", delta)
+                        }
+                    }
+                };
+                print!("{}", printed_token.blue());
+                // print!("{}", delta);
                 stdout().lock().flush().unwrap();
             }
             _ => {}
@@ -48,7 +103,7 @@ pub async fn conversation(client: &ChatGPT, prompt_path: String) -> Result<()> {
             Input::Command(command) => {
                 match command {
                     Command::Exit => {
-                        println!("Exiting...");
+                        println!("{}", "Exiting...".red());
                         std::thread::sleep(std::time::Duration::from_millis(500));
                         // clear_console();
                         return Ok(());
@@ -158,13 +213,57 @@ fn get_input() -> Input {
 async fn stream_next_response(conversation: &mut Conversation, message: String) -> Result<Vec<ResponseChunk>> {
     let mut stream = conversation.send_message_streaming(message).await?;
     let mut output: Vec<ResponseChunk> = Vec::new();
+    let mut curr_line_length = 0;
+    // let mut idx = 0;
     while let Some(chunk) = stream.next().await {
         match chunk {
             ResponseChunk::Content {
                 delta,
                 response_index,
             } => {
-                print!("{}", delta);
+                // let color = [224, 108, 117];
+                // let color = COLORS[idx % COLORS.len()];
+                let printed_token = match delta.as_str() {
+                    t if t.starts_with('\n') => {
+                        curr_line_length = delta.len() - 1;
+                        format!("{}", delta)
+                    }
+                    t if t.ends_with('\n') => {
+                        curr_line_length = 0;
+                        format!("{}", delta)
+                    }
+                    t if t.contains('\n') => {
+                        curr_line_length = delta.len() - delta.rfind('\n').unwrap_or(0) - 1;
+                        format!("{}", delta)
+                    }
+                    t => {
+                        if (curr_line_length + delta.len()) > MAX_LINE_LENGTH {
+                            match t {
+                                "." | ". " | "," | ", " | "!" | "! " | "?" | "? " => {
+                                    curr_line_length = delta.len();
+                                    format!("{}\n", delta)
+                                }
+                                _ => {
+                                    curr_line_length = delta.trim_start().len();
+                                    format!("\n{}", delta.trim_start())
+                                }
+                            }
+                        } else {
+                            curr_line_length += delta.len();
+                            format!("{}", delta)
+                        }
+                    }
+                };
+                print!("{}", printed_token.cyan());
+                // match idx % 6 {
+                //     0 => print!("{}", printed_token.red()),
+                //     1 => print!("{}", printed_token.green()),
+                //     2 => print!("{}", printed_token.blue()),
+                //     3 => print!("{}", printed_token.magenta()),
+                //     4 => print!("{}", printed_token.yellow()),
+                //     5 => print!("{}", printed_token.cyan()),
+                //     _ => print!("{}", printed_token),
+                // }
                 stdout().lock().flush().unwrap();
                 output.push(ResponseChunk::Content {
                     delta,
@@ -173,6 +272,7 @@ async fn stream_next_response(conversation: &mut Conversation, message: String) 
             }
             other => output.push(other),
         }
+        // idx += 1;
     }
     std::thread::sleep(std::time::Duration::from_millis(500));
     println!("\n");
