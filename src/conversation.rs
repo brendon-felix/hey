@@ -7,24 +7,6 @@ use crate::commands::{Command, Input, print_msg, clear_console};
 
 use colored::Colorize;
 
-// const COLORS: [[u8; 3]; 6] = [
-//     [224, 108, 117], // Red
-//     [152, 195, 121], // Green
-//     [97, 175, 239],  // Blue
-//     [86, 182, 194],  // Cyan
-//     [198, 120, 221], // Magenta
-//     [229, 192, 123], // Yellow
-// ];
-
-// const COLORS: [[u8; 3]; 6] = [
-//     [255, 0, 0], // Red
-//     [0, 255, 0], // Green
-//     [0, 0, 255],  // Blue
-//     [225, 225, 0],  // Cyan
-//     [255, 0, 255], // Magenta
-//     [0, 255, 255], // Yellow
-// ];
-
 const MAX_LINE_LENGTH: usize = 80;
 
 pub async fn stream_single_response(client: &ChatGPT, message: String, prompt_path: String) -> Result<()> {
@@ -109,7 +91,6 @@ pub async fn conversation(client: &ChatGPT, prompt_path: String) -> Result<()> {
                         return Ok(());
                     }
                     Command::Clear => {
-                        // conversation.history.clear();
                         conversation.history = vec![
                             ChatMessage {
                                 role: Role::System,
@@ -214,15 +195,12 @@ async fn stream_next_response(conversation: &mut Conversation, message: String) 
     let mut stream = conversation.send_message_streaming(message).await?;
     let mut output: Vec<ResponseChunk> = Vec::new();
     let mut curr_line_length = 0;
-    // let mut idx = 0;
     while let Some(chunk) = stream.next().await {
         match chunk {
             ResponseChunk::Content {
                 delta,
                 response_index,
             } => {
-                // let color = [224, 108, 117];
-                // let color = COLORS[idx % COLORS.len()];
                 let printed_token = match delta.as_str() {
                     t if t.starts_with('\n') => {
                         curr_line_length = delta.len() - 1;
@@ -255,15 +233,6 @@ async fn stream_next_response(conversation: &mut Conversation, message: String) 
                     }
                 };
                 print!("{}", printed_token.cyan());
-                // match idx % 6 {
-                //     0 => print!("{}", printed_token.red()),
-                //     1 => print!("{}", printed_token.green()),
-                //     2 => print!("{}", printed_token.blue()),
-                //     3 => print!("{}", printed_token.magenta()),
-                //     4 => print!("{}", printed_token.yellow()),
-                //     5 => print!("{}", printed_token.cyan()),
-                //     _ => print!("{}", printed_token),
-                // }
                 stdout().lock().flush().unwrap();
                 output.push(ResponseChunk::Content {
                     delta,
@@ -272,7 +241,6 @@ async fn stream_next_response(conversation: &mut Conversation, message: String) 
             }
             other => output.push(other),
         }
-        // idx += 1;
     }
     std::thread::sleep(std::time::Duration::from_millis(500));
     println!("\n");

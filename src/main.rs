@@ -17,6 +17,10 @@ struct Args {
     #[arg(long, short, default_value = "system_prompt.txt")]
     prompt_path: String,
 
+    /// Path to the keywords file for syntax highlighting
+    #[arg(long, short, default_value = "keywords.txt")]
+    keywords_path: String,
+
     /// Single message to send to the model
     #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
     args: Vec<String>,
