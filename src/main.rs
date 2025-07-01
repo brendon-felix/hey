@@ -5,6 +5,7 @@ use clap::Parser as ArgParser;
 
 mod commands;
 mod conversation;
+// mod highlight;
 use conversation::{stream_single_response, conversation};
 
 #[derive(ArgParser, Debug)]

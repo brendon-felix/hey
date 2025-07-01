@@ -5,11 +5,25 @@ use std::io::{stdout, Write};
 use std::fs;
 use crate::commands::{Command, Input, print_msg, clear_console};
 
-use colored::Colorize;
+use bat::assets::HighlightingAssets;
+use yansi::Paint;
+use syntect::{
+    easy::HighlightLines,
+    dumps::from_uncompressed_data,
+    parsing::SyntaxSet
+};
 
-const MAX_LINE_LENGTH: usize = 80;
+const SYNTAX_SET: &[u8] = include_bytes!("../syntax_set.bin");
+const MAX_LINE_LENGTH: usize = 100;
 
 pub async fn stream_single_response(client: &ChatGPT, message: String, prompt_path: String) -> Result<()> {
+    let term_width = term_size::dimensions().map(|(w, _)| w).expect("Failed to get terminal width");
+    let max_width = term_width.min(MAX_LINE_LENGTH);
+    let ha = HighlightingAssets::from_binary();
+    let syntax_set: SyntaxSet = from_uncompressed_data(SYNTAX_SET).expect("Failed to load syntax set");
+    let syntax_ref = syntax_set.find_syntax_by_name("Markdown").expect("Failed to find syntax");
+    let theme = ha.get_theme("ansi");
+    let mut highlighter = HighlightLines::new(&syntax_ref, &theme);
     let system_prompt = load_system_prompt(prompt_path);
     let history: Vec<ChatMessage> = vec![
         ChatMessage {
@@ -23,65 +37,236 @@ pub async fn stream_single_response(client: &ChatGPT, message: String, prompt_pa
     ];
     let mut stream = client.send_history_streaming(&history).await?;
     println!();
-    let mut curr_line_length = 0;
+    let mut curr_line = String::new();
     while let Some(chunk) = stream.next().await {
         match chunk {
             ResponseChunk::Content { delta, response_index: _ } => {
-                let printed_token = match delta.as_str() {
-                    t if t.starts_with('\n') => {
-                        curr_line_length = delta.len() - 1;
-                        format!("{}", delta)
+                curr_line = curr_line + &delta;
+                while curr_line.contains('\n') {
+                    let before_newline = curr_line.split_inclusive('\n').next().unwrap();
+                    let ranges = highlighter.highlight_line(before_newline, &syntax_set).expect("Failed to highlight line");
+                    let highlighted_line = ranges.iter().map(|(style, text)| {
+                        let text = text.replace('\n', "");
+                        match style.foreground.r {
+                            // 0 => text.rgb(RESPONSE_COLOR.0, RESPONSE_COLOR.1, RESPONSE_COLOR.2),
+                            0 => text.primary(),
+                            1 => text.red(),
+                            2 => text.green(),        // strings and stuff
+                            3 => text.yellow(),     // literals and numbers
+                            4 => text.blue(),       // headers and function names
+                            5 => text.magenta(),    // keywords
+                            6 => text.white(),
+                            7 => text.black(),
+                            _ => text.primary(),
+                        }.to_string()
+                    }).collect::<String>();
+                    // }).collect::<Vec<_>>();
+
+                    // for range in highlighted_line {
+                    //     print!("{}", range);
+                    //     stdout().lock().flush().unwrap();
+                    //     std::thread::sleep(std::time::Duration::from_millis(5));
+                    // }
+
+                    let wrapped = textwrap::wrap(&highlighted_line, max_width);
+
+                    // println!("{}", textwrap::wrap(&highlighted_line, term_width));
+                    for line in wrapped {
+                        line.chars().for_each(|c| {
+                            print!("{}", c);
+                            stdout().lock().flush().unwrap();
+                            std::thread::sleep(std::time::Duration::from_micros(500));
+                        });
+                        println!();
+                        stdout().lock().flush().unwrap();
                     }
-                    t if t.ends_with('\n') => {
-                        curr_line_length = 0;
-                        format!("{}", delta)
-                    }
-                    t if t.contains('\n') => {
-                        curr_line_length = delta.len() - delta.rfind('\n').unwrap_or(0) - 1;
-                        format!("{}", delta)
-                    }
-                    t => {
-                        if (curr_line_length + delta.len()) > MAX_LINE_LENGTH {
-                            match t {
-                                "." | ". " | "," | ", " | "!" | "! " | "?" | "? " => {
-                                    curr_line_length = delta.len();
-                                    format!("{}\n", delta)
-                                }
-                                _ => {
-                                    curr_line_length = delta.trim_start().len();
-                                    format!("\n{}", delta.trim_start())
-                                }
-                            }
-                        } else {
-                            curr_line_length += delta.len();
-                            format!("{}", delta)
-                        }
-                    }
-                };
-                print!("{}", printed_token.blue());
-                // print!("{}", delta);
+                    curr_line = curr_line.splitn(2, '\n').nth(1).unwrap_or("").to_string();
+                }
+                // print!("{}\r", curr_line.rgb(PARTIAL_LINE_COLOR.0, PARTIAL_LINE_COLOR.1, PARTIAL_LINE_COLOR.2));
                 stdout().lock().flush().unwrap();
             }
-            _ => {}
+            _ => (),
         }
     }
-    println!("\n");
+    let ranges = highlighter.highlight_line(&curr_line, &syntax_set).expect("Failed to highlight line");
+    let highlighted_line = ranges.iter().map(|(style, text)| {
+        let text = text.replace('\n', "");
+        match style.foreground.r {
+            // 0 => text.rgb(RESPONSE_COLOR.0, RESPONSE_COLOR.1, RESPONSE_COLOR.2),
+            0 => text.primary(),
+            1 => text.red(),
+            2 => text.green(),
+            3 => text.yellow(),
+            4 => text.blue(),
+            5 => text.magenta(),
+            6 => text.white(),
+            7 => text.black(),
+            _ => text.primary(),
+        }.to_string()
+    }).collect::<String>();
+    let wrapped = textwrap::wrap(&highlighted_line, max_width);
+    for line in wrapped {
+        line.chars().for_each(|c| {
+            print!("{}", c);
+            stdout().lock().flush().unwrap();
+            std::thread::sleep(std::time::Duration::from_micros(500));
+        });
+        println!();
+        stdout().lock().flush().unwrap();
+    }
     std::thread::sleep(std::time::Duration::from_millis(500));
+    println!();
+    // println!("\n");
     Ok(())
+}
+
+pub struct GPTConversation {
+    pub system_prompt: String,
+    pub conversation: Conversation,
+}
+impl GPTConversation {
+    pub fn new(client: ChatGPT, system_prompt: String) -> Self {
+        let conversation = client.new_conversation_directed(system_prompt.clone());
+        GPTConversation { system_prompt, conversation }
+    }
+
+    pub async fn stream_next_response(&mut self, message: String) -> Result<()> {
+        let term_width = term_size::dimensions().map(|(w, _)| w).expect("Failed to get terminal width");
+        let max_width = term_width.min(MAX_LINE_LENGTH);
+        let ha = HighlightingAssets::from_binary();
+        let syntax_set: SyntaxSet = from_uncompressed_data(SYNTAX_SET).expect("Failed to load syntax set");
+        let syntax_ref = syntax_set.find_syntax_by_name("Markdown").expect("Failed to find syntax");
+        let theme = ha.get_theme("ansi");
+        let mut highlighter = HighlightLines::new(&syntax_ref, &theme);
+        let mut stream = self.conversation.send_message_streaming(message).await?;
+        let mut output: Vec<ResponseChunk> = Vec::new();
+        // let mut curr_line_length = 0;
+        let mut curr_line = String::new();
+        while let Some(chunk) = stream.next().await {
+            match chunk {
+                ResponseChunk::Content { delta, response_index } => {
+                    curr_line = curr_line + &delta;
+                    while curr_line.contains('\n') {
+                        let before_newline = curr_line.split_inclusive('\n').next().unwrap();
+                        let ranges = highlighter.highlight_line(before_newline, &syntax_set).expect("Failed to highlight line");
+                        let highlighted_line = ranges.iter().map(|(style, text)| {
+                            let text = text.replace('\n', "");
+                            match style.foreground.r {
+                                // 0 => text.rgb(RESPONSE_COLOR.0, RESPONSE_COLOR.1, RESPONSE_COLOR.2),
+                                0 => text.primary(),
+                                1 => text.red(),
+                                2 => text.green(),        // strings and stuff
+                                3 => text.yellow(),     // literals and numbers
+                                4 => text.blue(),       // headers and function names
+                                5 => text.magenta(),    // keywords
+                                6 => text.white(),
+                                7 => text.black(),
+                                _ => text.primary(),
+                            }.to_string()
+                        }).collect::<String>();
+                        // }).collect::<Vec<_>>();
+
+                        // for range in highlighted_line {
+                        //     print!("{}", range);
+                        //     stdout().lock().flush().unwrap();
+                        //     std::thread::sleep(std::time::Duration::from_millis(5));
+                        // }
+
+                        let wrapped = textwrap::wrap(&highlighted_line, max_width);
+
+                        // println!("{}", textwrap::wrap(&highlighted_line, term_width));
+                        for line in wrapped {
+                            line.chars().for_each(|c| {
+                                print!("{}", c);
+                                stdout().lock().flush().unwrap();
+                                std::thread::sleep(std::time::Duration::from_micros(500));
+                            });
+                            println!();
+                            stdout().lock().flush().unwrap();
+                        }
+                        curr_line = curr_line.splitn(2, '\n').nth(1).unwrap_or("").to_string();
+                    }
+                    // print!("{}\r", curr_line.rgb(PARTIAL_LINE_COLOR.0, PARTIAL_LINE_COLOR.1, PARTIAL_LINE_COLOR.2));
+                    stdout().lock().flush().unwrap();
+                    output.push(ResponseChunk::Content {
+                        delta,
+                        response_index,
+                    });
+                }
+                other => output.push(other),
+            }
+        }
+        let ranges = highlighter.highlight_line(&curr_line, &syntax_set).expect("Failed to highlight line");
+        let highlighted_line = ranges.iter().map(|(style, text)| {
+            let text = text.replace('\n', "");
+            match style.foreground.r {
+                // 0 => text.rgb(RESPONSE_COLOR.0, RESPONSE_COLOR.1, RESPONSE_COLOR.2),
+                0 => text.primary(),
+                1 => text.red(),
+                2 => text.green(),
+                3 => text.yellow(),
+                4 => text.blue(),
+                5 => text.magenta(),
+                6 => text.white(),
+                7 => text.black(),
+                _ => text.primary(),
+            }.to_string()
+        }).collect::<String>();
+        let wrapped = textwrap::wrap(&highlighted_line, max_width);
+        for line in wrapped {
+            line.chars().for_each(|c| {
+                print!("{}", c);
+                stdout().lock().flush().unwrap();
+                std::thread::sleep(std::time::Duration::from_micros(500));
+            });
+            println!();
+            stdout().lock().flush().unwrap();
+        }
+        std::thread::sleep(std::time::Duration::from_millis(500));
+        println!();
+        self.conversation.history.push(ChatMessage::from_response_chunks(output)[0].to_owned());
+        Ok(())
+    }
+
+    pub fn print_history(&self) {
+        for msg in &self.conversation.history[1..] {
+            print_msg(msg);
+        }
+    }
+
+    pub async fn save(&self, filename: &str) -> Result<()> {
+        self.conversation.save_history_json(filename).await?;
+        println!("Conversation saved to {}", filename);
+        Ok(())
+    }
+
+    pub async fn load(&mut self, client: &ChatGPT, filename: &str) -> Result<()> {
+        let loaded_conversation = client.restore_conversation_json(filename).await?;
+        self.conversation = loaded_conversation;
+        println!("Conversation loaded from {}", filename);
+        Ok(())
+    }
+
+    pub fn clear_history(&mut self) {
+        self.conversation.history = vec![
+            ChatMessage {
+                role: Role::System,
+                content: self.system_prompt.clone(),
+            }
+        ];
+    }
 }
 
 pub async fn conversation(client: &ChatGPT, prompt_path: String) -> Result<()> {
     let system_prompt = load_system_prompt(prompt_path);
-    let mut conversation: Conversation = client.new_conversation_directed(system_prompt.clone());
+    let mut conversation = GPTConversation::new(client.clone(), system_prompt.clone());
+
     // clear_console();
     loop {
         let input = get_input();
         println!();
         match input {
-            Input::Message(message) => {
-                let output = stream_next_response(&mut conversation, message).await?;
-                append_response(&mut conversation, output);
-            }
+            Input::Message(message) => conversation.stream_next_response(message).await?,
             Input::Command(command) => {
                 match command {
                     Command::Exit => {
@@ -91,32 +276,25 @@ pub async fn conversation(client: &ChatGPT, prompt_path: String) -> Result<()> {
                         return Ok(());
                     }
                     Command::Clear => {
-                        conversation.history = vec![
-                            ChatMessage {
-                                role: Role::System,
-                                content: system_prompt.clone(),
-                            },
-                        ];
+                        conversation.clear_history();
                         clear_console();
                         continue;
                     }
                     Command::History => {
                         println!("--- Start History ---\n");
-                        print_history(&conversation);
+                        conversation.print_history();
                         println!("---- End History ----\n");
                         continue;
                     }
                     Command::Save(path  ) => {
-                        if let Err(e) = save_conversation(&conversation, &path).await {
+                        if let Err(e) = conversation.save(&path).await {
                             eprintln!("Error saving conversation: {}", e);
                         }
                         continue;
                     }
                     Command::Load(path ) => {
-                        // let filename = "conversation.json";
-                        match load_conversation(&client, &path).await {
-                            Ok(loaded_conversation) => {
-                                conversation = loaded_conversation;
+                        match conversation.load(client, &path).await {
+                            Ok(_) => {
                                 println!("Conversation loaded successfully.");
                             }
                             Err(e) => {
@@ -124,7 +302,7 @@ pub async fn conversation(client: &ChatGPT, prompt_path: String) -> Result<()> {
                             }
                         }
                         clear_console();
-                        print_history(&conversation);
+                        conversation.print_history();
                         continue;
                     }
                     Command::PrintPrompt => {
@@ -160,10 +338,11 @@ fn load_system_prompt(prompt_path: String) -> String {
 
 fn get_input() -> Input {
     let mut input = String::new();
-    print!("> ");
-    stdout().lock().flush().unwrap();   
+    print!("{} {}", ">".cyan(), "".green().linger());
+    stdout().lock().flush().unwrap();
     std::io::stdin().read_line(&mut input).expect("Failed to read line");
     let input = input.trim();
+    print!("{}", "".resetting());
     match input {
         "exit" | "quit" | "/q" | "/x" => Input::Command(Command::Exit),
         "clear" | "/c" => Input::Command(Command::Clear),
@@ -191,83 +370,14 @@ fn get_input() -> Input {
     }
 }
 
-async fn stream_next_response(conversation: &mut Conversation, message: String) -> Result<Vec<ResponseChunk>> {
-    let mut stream = conversation.send_message_streaming(message).await?;
-    let mut output: Vec<ResponseChunk> = Vec::new();
-    let mut curr_line_length = 0;
-    while let Some(chunk) = stream.next().await {
-        match chunk {
-            ResponseChunk::Content {
-                delta,
-                response_index,
-            } => {
-                let printed_token = match delta.as_str() {
-                    t if t.starts_with('\n') => {
-                        curr_line_length = delta.len() - 1;
-                        format!("{}", delta)
-                    }
-                    t if t.ends_with('\n') => {
-                        curr_line_length = 0;
-                        format!("{}", delta)
-                    }
-                    t if t.contains('\n') => {
-                        curr_line_length = delta.len() - delta.rfind('\n').unwrap_or(0) - 1;
-                        format!("{}", delta)
-                    }
-                    t => {
-                        if (curr_line_length + delta.len()) > MAX_LINE_LENGTH {
-                            match t {
-                                "." | ". " | "," | ", " | "!" | "! " | "?" | "? " => {
-                                    curr_line_length = delta.len();
-                                    format!("{}\n", delta)
-                                }
-                                _ => {
-                                    curr_line_length = delta.trim_start().len();
-                                    format!("\n{}", delta.trim_start())
-                                }
-                            }
-                        } else {
-                            curr_line_length += delta.len();
-                            format!("{}", delta)
-                        }
-                    }
-                };
-                print!("{}", printed_token.cyan());
-                stdout().lock().flush().unwrap();
-                output.push(ResponseChunk::Content {
-                    delta,
-                    response_index,
-                });
-            }
-            other => output.push(other),
-        }
-    }
-    std::thread::sleep(std::time::Duration::from_millis(500));
-    println!("\n");
-    Ok(output)
-}
-
-fn append_response(conversation: &mut Conversation, output: Vec<ResponseChunk>) {
-    let messages = ChatMessage::from_response_chunks(output);
-    conversation.history.push(messages[0].to_owned());
-}
-
-pub fn print_history(conversation: &Conversation) {
-    for msg in &conversation.history[1..] {
-        print_msg(msg);
-    }
-}
-
-pub async fn save_conversation(conversation: &Conversation, filename: &str) -> Result<()> {
-    conversation.save_history_json(filename).await?;
-    println!("Conversation saved to {}", filename);
-    Ok(())
-}
-
-pub async fn load_conversation(client: &ChatGPT, filename: &str) -> Result<Conversation> {
-    let conversation = client
-        .restore_conversation_json(filename)
-        .await?;
-    println!("Conversation loaded from {}", filename);
-    Ok(conversation)
-}
+// pub fn highlight_code_block(code: &str, language: Option<&str>) -> String {
+//     match Highlighter::new() {
+//         Ok(highlighter) => {
+//             match highlighter.highlight_text(code, language) {
+//                 Ok(highlighted) => highlighted,
+//                 Err(_) => code.to_string(), // Fallback to plain text if highlighting fails
+//             }
+//         }
+//         Err(_) => code.to_string(), // Fallback to plain text if highlighter creation fails
+//     }
+// }
