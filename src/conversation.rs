@@ -338,7 +338,7 @@ fn load_system_prompt(prompt_path: String) -> String {
 
 fn get_input() -> Input {
     let mut input = String::new();
-    print!("{} {}", ">".cyan(), "".green().linger());
+    print!("{} {}", ">".magenta(), "".green().linger());
     stdout().lock().flush().unwrap();
     std::io::stdin().read_line(&mut input).expect("Failed to read line");
     let input = input.trim();
