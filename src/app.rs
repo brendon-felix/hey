@@ -81,12 +81,13 @@ impl App {
                 Input::Command(command) => {
                     match command {
                         Command::Exit => {
-                            println!("\n{}", "Exiting...".red());
+                            animate_line(&format!("\n{}", "Exiting...".red()), 1000);
                             sleep(Duration::from_millis(500));
                             return Ok(());
                         }
                         Command::Clear => {
-                            println!("\n{}", "Clearing...".yellow());
+                            // println!("\n{}", "Clearing...".yellow());
+                            animate_line(&format!("\n{}", "Clearing...".yellow()), 1000);
                             sleep(Duration::from_millis(500));
                             clear_console();
                             self.reset_conversation();
