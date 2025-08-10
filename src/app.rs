@@ -81,14 +81,14 @@ impl App {
                 Input::Command(command) => {
                     match command {
                         Command::Exit => {
-                            animate_line(&format!("\n{}", "Exiting...".red()), 1000);
-                            sleep(Duration::from_millis(500));
+                            animate_line(&format!("\n{}", "Exiting...".red()), 2000);
+                            sleep(Duration::from_millis(100));
                             return Ok(());
                         }
                         Command::Clear => {
                             // println!("\n{}", "Clearing...".yellow());
-                            animate_line(&format!("\n{}", "Clearing...".yellow()), 1000);
-                            sleep(Duration::from_millis(500));
+                            animate_line(&format!("\n{}", "Clearing...".yellow()), 2000);
+                            sleep(Duration::from_millis(250));
                             clear_console();
                             self.reset_conversation();
                         }
@@ -147,10 +147,10 @@ impl App {
 }
 
 fn print_help() {
-    println!("\n{}", "Available commands:".blue());
+    animate_line(&format!("\n{}\n", "Available commands:".blue()), 1000);
     enum_iterator::all::<Command>()
         .for_each(|command| {
-            println!("{}", command.strings().iter().map(|s| format!("/{}", s.cyan())).collect::<Vec<_>>().join(", "));
+            animate_line(&format!("{}\n", command.strings().iter().map(|s| format!("/{}", s.cyan())).collect::<Vec<_>>().join(", ")), 1000);
         });
 }
 

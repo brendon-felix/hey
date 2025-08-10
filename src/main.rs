@@ -5,6 +5,8 @@
 // TODO: Save and Load Reedline line editor history
 // TODO: Support command tab completion
 // TODO: Experiment with ratatui based UI
+// TODO: Allow for user to change edit mode (emacs)
+// TODO: Use nushell $env to configure reedline
 
 use clap::Parser;
 use yansi::Paint;

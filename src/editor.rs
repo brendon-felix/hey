@@ -126,34 +126,112 @@ struct PromptHighlighter {
     commands: Vec<String>,
 }
 
+enum CommandInputState {
+    Slash,
+    Recognized,
+    Unrecognized,
+    Argument,
+    Invalid,
+}
+
+enum InputState {
+    None,
+    Message,
+    Command(CommandInputState)
+}
+
+struct HighlightState {
+    commands: Vec<String>,
+    input_state: InputState,
+    curr_style: Style,
+}
+
+impl HighlightState {
+    fn new(commands: Vec<String>) -> Self {
+        HighlightState {
+            commands: commands,
+            input_state: InputState::None,
+            curr_style: Style::default(),
+        }
+    }
+
+    pub fn next_char(&mut self, c: char) -> (Style, String) {
+        self.input_state = match &self.input_state {
+            InputState::None => {
+                if c == '/' {
+                    InputState::Command(CommandInputState::Slash)
+                } else if c.is_whitespace() {
+                    InputState::None
+                } else {
+                    self.curr_style = Style::new().fg(NuColor::Green);
+                    InputState::Message
+                }
+            }
+            InputState::Message => InputState::Message,
+            InputState::Command(CommandInputState::Slash) => {
+                if c.is_whitespace() {
+                    InputState::Command(CommandInputState::Slash)
+                } else if self.commands.iter().any(|cmd| cmd.starts_with(c)) {
+                    self.curr_style = Style::new().fg(NuColor::Cyan);
+                    InputState::Command(CommandInputState::Recognized)
+                } else {
+                    self.curr_style = Style::new().fg(NuColor::Yellow);
+                    InputState::Command(CommandInputState::Unrecognized)
+                }
+            }
+            InputState::Command(CommandInputState::Recognized) => {
+                if c.is_whitespace() {
+                    self.curr_style = Style::new().fg(NuColor::Green);
+                    InputState::Command(CommandInputState::Argument)
+                } else {
+                    InputState::Command(CommandInputState::Recognized)
+                }
+            }
+            InputState::Command(CommandInputState::Unrecognized) => {
+                if c.is_whitespace() {
+                    InputState::Command(CommandInputState::Invalid)
+                } else {
+                    InputState::Command(CommandInputState::Unrecognized)
+                }
+            }
+            InputState::Command(CommandInputState::Argument) => {
+                if c.is_whitespace() {
+                    InputState::Command(CommandInputState::Argument)
+                } else {
+                    InputState::Command(CommandInputState::Argument)
+                }
+            }
+            InputState::Command(CommandInputState::Invalid) => {
+                if c.is_whitespace() {
+                    self.curr_style = Style::default();
+                    InputState::Command(CommandInputState::Invalid)
+                } else {
+                    self.curr_style = Style::new().on(NuColor::Red);
+                    InputState::Command(CommandInputState::Invalid)
+                }
+            }
+        };
+        (self.curr_style.clone(), c.to_string())
+    }
+}
+
 impl PromptHighlighter {
     pub fn new(commands: Vec<String>) -> Self {
         PromptHighlighter { commands }
     }
+
 }
 
 impl Highlighter for PromptHighlighter {
     fn highlight(&self, line: &str, _cursor: usize) -> StyledText {
-        let buffer = if line.starts_with('/') {
-            let command = line[1..].split_whitespace().next().unwrap_or("");
-            if self.commands.contains(&command.to_string()) {
-                vec![
-                    (Style::default(), '/'.to_string()),
-                    (Style::new().fg(NuColor::Cyan), command.to_string()),
-                    (Style::new().fg(NuColor::Green), line[command.len() + 1..].to_string()),
-                ]
-            } else {
-                vec![
-                    (Style::default(), '/'.to_string()),
-                    (Style::new().fg(NuColor::Yellow), command.to_string()),
-                    (Style::new().on(NuColor::Red), line[command.len() + 1..].to_string()),
-                ]
-            }
-        } else {
-            vec![(Style::new().fg(NuColor::Green), line.to_string())]
-        };
-
-        StyledText { buffer }
+        let mut state = HighlightState::new(self.commands.clone());
+        let mut styled_text = StyledText::new();
+        for c in line.chars() {
+            styled_text.push(state.next_char(c));
+        }
+        styled_text
     }
 }
+
+
 
