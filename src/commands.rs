@@ -1,63 +1,44 @@
-use chatgpt::prelude::*;
-use chatgpt::types::Role;
+/* -------------------------------------------------------------------------- */
+/*                                commands.rs                                 */
+/* -------------------------------------------------------------------------- */
 
-pub enum Input {
-    Invalid,
-    Command(Command),
-    Message(String),
-}
+use enum_iterator::Sequence;
 
+#[derive(Debug, Sequence)]
 pub enum Command {
     Exit,
     Clear,
-    History,
-    Save(String),
-    Load(String),
-    PrintPrompt,
     Help,
+    Invalid,
 }
 
-// pub fn get_input() -> Input {
-//     use std::io::{self, Write};
-
-//     print!("> ");
-//     io::stdout().flush().unwrap();
-
-//     let mut input = String::new();
-//     if io::stdin().read_line(&mut input).is_err() {
-//         return Input::Invalid;
-//     }
-
-//     let trimmed = input.trim();
-//     if trimmed.is_empty() {
-//         return Input::Invalid;
-//     }
-
-//     match trimmed {
-//         "exit" => Input::Command(Command::Exit),
-//         "clear" => Input::Command(Command::Clear),
-//         "history" => Input::Command(Command::History),
-//         "help" => Input::Command(Command::Help),
-//         _ => Input::Message(trimmed.to_string()),
-//     }
-// }
-
-pub fn clear_console() {
-    if cfg!(target_os = "windows") {
-        let _ = std::process::Command::new("cmd").args(["/c", "cls"]).status();
-    } else {
-        let _ = std::process::Command::new("clear").status();
+impl Command {
+    pub fn strings(&self) -> Vec<&str> {
+        match self {
+            Command::Exit => vec!["exit", "quit", "q", "x"],
+            Command::Clear => vec!["clear", "c"],
+            Command::Help => vec!["help", "h"],
+            Command::Invalid => vec![],
+        }
     }
 }
 
-pub fn print_msg(message: &ChatMessage) {
-    let role = message.role;
-    let content = &message.content;
-    let role_str = match role {
-        Role::System => "System: ",
-        Role::Assistant => "",
-        Role::User => "> ",
-        Role::Function => "Function: ",
-    };
-    println!("{}{}\n", role_str, content);
+pub fn parse_command(input: &str) -> Option<Command> {
+    let input = input.trim();
+    if input.starts_with('/') {
+        let parts: Vec<&str> = input[1..].split_whitespace().collect();
+        if let Some(command) = parts.get(0) {
+            match command.to_lowercase().as_str() {
+                c if Command::Exit.strings().contains(&c) => Some(Command::Exit),
+                c if Command::Clear.strings().contains(&c) => Some(Command::Clear),
+                c if Command::Help.strings().contains(&c) => Some(Command::Help),
+                _ => Some(Command::Invalid),
+            }
+        } else {
+            Some(Command::Help)
+        }
+    } else {
+        None
+    }
 }
+

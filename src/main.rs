@@ -1,60 +1,87 @@
-use std::fs::File;
-use std::io::Read;
-use chatgpt::prelude::*;
-use clap::Parser as ArgParser;
+// TODO: Add Load and Store conversation history commands
+// TODO: Support for model setting
+// TODO: Try using function calling
+// TODO: Support deserialized TOML configuration file
+// TODO: Save and Load Reedline line editor history
+// TODO: Support command tab completion
+// TODO: Experiment with ratatui based UI
 
+use clap::Parser;
+use yansi::Paint;
+// use toml;
+// use serde::Deserialize;
+
+mod app;
 mod commands;
-mod conversation;
-// mod highlight;
-use conversation::{stream_single_response, conversation};
+mod editor;
+mod render;
+mod utils;
 
-#[derive(ArgParser, Debug)]
+const DEFAULT_SYSTEM_PROMPT: &str = "You are a helpful assistant.";
+
+// #[derive(Deserialize, Debug)]
+// struct Config {
+//     name: Option<String>,
+//     api_key: Option<String>,
+//     prompt: Option<String>,
+//     model: String,
+//     temperature: f32,
+//     max_tokens: u32,
+// }
+
+#[derive(Parser, Debug)]
 struct Args {
-    /// Path to the API key file
-    #[arg(long, short, default_value = "api_key.txt")]
-    api_key: String,
+    ///// Path to the API key file
+    //#[arg(long, short)]
+    //api_key: String,
 
     /// Path to the system prompt file
-    #[arg(long, short, default_value = "system_prompt.txt")]
-    prompt_path: String,
-
-    /// Path to the keywords file for syntax highlighting
-    #[arg(long, short, default_value = "keywords.txt")]
-    keywords_path: String,
+    #[arg(long, short)]
+    prompt_path: Option<String>,
 
     /// Single message to send to the model
     #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
-    args: Vec<String>,
+    message: Vec<String>,
 }
 
 #[tokio::main]
-async fn main() -> Result<()> {
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
 
-    let api_key: String = File::open(args.api_key)
-        .and_then(|mut file| {
-            let mut key = String::new();
-            file.read_to_string(&mut key)?;
-            Ok(key)
-        })
-        .unwrap_or_else(|_| {
-            eprintln!("Failed to read API key from file. Please ensure 'api_key.txt' exists.");
-            std::process::exit(1);
-        });
+    let api_key = std::env::var("OPENAI_API_KEY")
+        .map_err(|_| {
+            "Please set the OPENAI_API_KEY environment variable to your OpenAI API key."
+        })?;
 
-    let config = ModelConfiguration {
-        engine: ChatGPTEngine::Gpt35Turbo,
-        ..Default::default()
-    };
-    let client = ChatGPT::new_with_config(api_key, config)?;
+    let system_prompt = get_prompt(args.prompt_path);
 
-    if !args.args.is_empty() {
-        // If a single message is provided, send it to the model
-        let message = args.args.join(" ");
-        stream_single_response(&client, message, args.prompt_path).await?;
+    // let config = std::fs::read_to_string("config.toml")
+    //     .map_err(|_| "Failed to read config.toml")?;
+    // let config: Config = toml::from_str(&config)?;
+    // let system_prompt = config.prompt
+    //     .unwrap_or_else(|| String::from(DEFAULT_SYSTEM_PROMPT));
+ 
+    let mut app = app::App::new(&api_key, system_prompt);
+
+    if args.message.is_empty() {
+        // let name = "RustyGPT";
+        // app.print_nametag(name);
+        app.run().await?;
     } else {
-        // If no message is provided, start a conversation
-        conversation(&client, args.prompt_path).await?;
+        app.get_response(args.message.join(" ")).await?;
     }
     Ok(())
 }
+
+fn get_prompt(path: Option<String>) -> String {
+    match path {
+        Some(p) => std::fs::read_to_string(&p).unwrap_or_else(|_| {
+            panic!("Failed to read system prompt at path {}", p)
+        }),
+        None => {
+            println!("{}", "No system prompt file provided, using default.".yellow());
+            String::from(DEFAULT_SYSTEM_PROMPT)
+        }
+    }
+}
+

@@ -1,16 +1,21 @@
 [package]
 name = "rusty-gpt"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 
 [dependencies]
 chatgpt_rs = { version = "1.2", features = ["streams"] }
-tokio = { version = "1.44", features = ["full", "rt-multi-thread"] }
+tokio = { version = "1", features = ["full", "rt-multi-thread"] }
 futures-util = "0.3"
 clap = { version = "4.5", features = ["derive"] }
-colored = "2.0"
 syntect = "5.2"
 bat = { version = "0.25", default-features = false }
 yansi = "1.0"
 textwrap = "0.16"
 term_size = "0.3"
+reedline = "0.41"
+nu-ansi-term = "0.50"
+crossterm = "0.28"
+enum-iterator = "2.1"
+# toml = "0.9"
+# serde = { version = "1", features = ["derive"] }
