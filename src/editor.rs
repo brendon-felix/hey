@@ -141,21 +141,19 @@ enum InputState {
 }
 
 struct HighlightState {
-    commands: Vec<String>,
     input_state: InputState,
     curr_style: Style,
 }
 
 impl HighlightState {
-    fn new(commands: Vec<String>) -> Self {
+    fn new() -> Self {
         HighlightState {
-            commands: commands,
             input_state: InputState::None,
             curr_style: Style::default(),
         }
     }
 
-    pub fn next_char(&mut self, c: char) -> (Style, String) {
+    pub fn next_char(&mut self, c: char, commands: &Vec<String>) -> (Style, String) {
         self.input_state = match &self.input_state {
             InputState::None => {
                 if c == '/' {
@@ -171,7 +169,7 @@ impl HighlightState {
             InputState::Command(CommandInputState::Slash) => {
                 if c.is_whitespace() {
                     InputState::Command(CommandInputState::Slash)
-                } else if self.commands.iter().any(|cmd| cmd.starts_with(c)) {
+                } else if commands.iter().any(|cmd| cmd.starts_with(c)) {
                     self.curr_style = Style::new().fg(NuColor::Cyan);
                     InputState::Command(CommandInputState::Recognized)
                 } else {
@@ -224,10 +222,10 @@ impl PromptHighlighter {
 
 impl Highlighter for PromptHighlighter {
     fn highlight(&self, line: &str, _cursor: usize) -> StyledText {
-        let mut state = HighlightState::new(self.commands.clone());
+        let mut state = HighlightState::new();
         let mut styled_text = StyledText::new();
         for c in line.chars() {
-            styled_text.push(state.next_char(c));
+            styled_text.push(state.next_char(c, &self.commands));
         }
         styled_text
     }
