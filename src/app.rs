@@ -7,8 +7,9 @@ use std::time::Duration;
 
 use chatgpt::prelude::*;
 use futures_util::stream::StreamExt;
-use crate::editor::{Editor, Input};
+
 use crate::commands::Command;
+use crate::editor::{Editor, Input};
 use crate::render::{Highlighter, animate_line, render_line};
 use crate::utils::clear_console;
 
@@ -20,7 +21,9 @@ struct ResponseBuffer {
 
 impl ResponseBuffer {
     fn new() -> Self {
-        ResponseBuffer { buffer: String::new() }
+        ResponseBuffer {
+            buffer: String::new(),
+        }
     }
 
     fn append(&mut self, chunk: &str) {
@@ -61,11 +64,16 @@ impl App {
             engine: ChatGPTEngine::Gpt35Turbo,
             ..Default::default()
         };
-        let client = ChatGPT::new_with_config(api_key, config)
-            .expect("Failed to create ChatGPT client");
+        let client =
+            ChatGPT::new_with_config(api_key, config).expect("Failed to create ChatGPT client");
         let conversation = client.new_conversation_directed(system_prompt.clone());
         let editor = Editor::new();
-        App { client, system_prompt, conversation, editor }
+        App {
+            client,
+            system_prompt,
+            conversation,
+            editor,
+        }
     }
 
     // pub fn print_nametag(&self, name: &str) {
@@ -96,7 +104,10 @@ impl App {
                             print_help();
                         }
                         Command::Invalid => {
-                            println!("\nInvalid command. Type /{} for a list of commands.", "help".cyan());
+                            println!(
+                                "\nInvalid command. Type /{} for a list of commands.",
+                                "help".cyan()
+                            );
                         }
                     }
                 }
@@ -118,7 +129,10 @@ impl App {
         println!();
         while let Some(chunk) = stream.next().await {
             match chunk {
-                ResponseChunk::Content { delta, response_index } => {
+                ResponseChunk::Content {
+                    delta,
+                    response_index,
+                } => {
                     buffer.append(&delta);
                     output.push(ResponseChunk::Content {
                         delta,
@@ -148,13 +162,21 @@ impl App {
 
 fn print_help() {
     animate_line(&format!("\n{}\n", "Available commands:".blue()), 1000);
-    enum_iterator::all::<Command>()
-        .for_each(|command| {
-            animate_line(&format!("{}\n", command.strings().iter().map(|s| format!("/{}", s.cyan())).collect::<Vec<_>>().join(", ")), 1000);
-        });
+    enum_iterator::all::<Command>().for_each(|command| {
+        animate_line(
+            &format!(
+                "{}\n",
+                command
+                    .strings()
+                    .iter()
+                    .map(|s| format!("/{}", s.cyan()))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+            1000,
+        );
+    });
 }
-
-
 
 // fn create_nametag(name: &str) -> String {
 //     let length = name.to_string().len();
@@ -166,5 +188,3 @@ fn print_help() {
 //         "─".repeat(length + 2)
 //     )
 // }
-
-

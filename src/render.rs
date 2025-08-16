@@ -2,19 +2,14 @@
 /*                                 render.rs                                  */
 /* -------------------------------------------------------------------------- */
 
-use bat::assets::HighlightingAssets;
-use syntect::{
-    easy::HighlightLines,
-    dumps::from_uncompressed_data,
-    parsing::SyntaxSet
-};
-
-use yansi::Paint;
+use std::io::{Write, stdout};
 use std::rc::Rc;
-
 use std::thread::sleep;
 use std::time::Duration;
-use std::io::{stdout, Write};
+
+use bat::assets::HighlightingAssets;
+use syntect::{dumps::from_uncompressed_data, easy::HighlightLines, parsing::SyntaxSet};
+use yansi::Paint;
 
 /* -------------------------------------------------------------------------- */
 
@@ -29,20 +24,20 @@ const MAX_LINE_LENGTH: usize = 100;
 
 impl Highlighter {
     pub fn new() -> Self {
-        let ss: SyntaxSet = from_uncompressed_data(SYNTAX_SET)
-            .expect("Failed to load syntax set");
-        let syntax_ref = ss.find_syntax_by_name("Markdown")
+        let ss: SyntaxSet = from_uncompressed_data(SYNTAX_SET).expect("Failed to load syntax set");
+        let syntax_ref = ss
+            .find_syntax_by_name("Markdown")
             .expect("Failed to find syntax");
 
         let highlighting_assets = Rc::new(HighlightingAssets::from_binary());
         let theme = highlighting_assets.get_theme("ansi");
-        
+
         // Safety: We know that highlighting_assets will live as long as the struct
         // since it's an Rc field in the same struct
         let theme_static: &'static _ = unsafe { std::mem::transmute(theme) };
         let highlighter = HighlightLines::new(&syntax_ref, theme_static);
-        
-        Highlighter { 
+
+        Highlighter {
             _highlighting_assets: highlighting_assets,
             highlighter,
             syntax_set: ss,
@@ -50,7 +45,8 @@ impl Highlighter {
     }
 
     pub fn highlight_line(&mut self, line: &str) -> String {
-        let ranges = self.highlighter
+        let ranges = self
+            .highlighter
             .highlight_line(line, &self.syntax_set)
             .expect("Failed to highlight line");
         ranges
@@ -61,21 +57,24 @@ impl Highlighter {
                     // use yansi::Paint to colorize
                     0 => text.primary(),
                     1 => text.red(),
-                    2 => text.green(),      // strings and stuff
-                    3 => text.yellow(),     // literals and numbers
-                    4 => text.blue(),       // headers and function names
-                    5 => text.magenta(),    // keywords
+                    2 => text.green(),   // strings and stuff
+                    3 => text.yellow(),  // literals and numbers
+                    4 => text.blue(),    // headers and function names
+                    5 => text.magenta(), // keywords
                     6 => text.white(),
                     7 => text.black(),
                     _ => text.primary(),
-                }.to_string()
-            }).collect::<String>()
+                }
+                .to_string()
+            })
+            .collect::<String>()
     }
 }
 
 fn wrap_line(line: &str) -> String {
-    let term_width = term_size::dimensions().map(|(w, _)| w).
-        expect("Failed to get terminal width");
+    let term_width = term_size::dimensions()
+        .map(|(w, _)| w)
+        .expect("Failed to get terminal width");
     let max_width = term_width.min(MAX_LINE_LENGTH);
     textwrap::wrap(line, max_width).join("\n")
 }

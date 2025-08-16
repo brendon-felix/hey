@@ -1,3 +1,4 @@
+// TODO: Unify command parsring for command processor and highlighter
 // TODO: Add Load and Store conversation history commands
 // TODO: Support for model setting
 // TODO: Try using function calling
@@ -36,7 +37,6 @@ struct Args {
     ///// Path to the API key file
     //#[arg(long, short)]
     //api_key: String,
-
     /// Path to the system prompt file
     #[arg(long, short)]
     prompt_path: Option<String>,
@@ -50,10 +50,9 @@ struct Args {
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
 
-    let api_key = std::env::var("OPENAI_API_KEY")
-        .map_err(|_| {
-            "Please set the OPENAI_API_KEY environment variable to your OpenAI API key."
-        })?;
+    let api_key = std::env::var("OPENAI_API_KEY").map_err(
+        |_| "Please set the OPENAI_API_KEY environment variable to your OpenAI API key.",
+    )?;
 
     let system_prompt = get_prompt(args.prompt_path);
 
@@ -62,7 +61,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // let config: Config = toml::from_str(&config)?;
     // let system_prompt = config.prompt
     //     .unwrap_or_else(|| String::from(DEFAULT_SYSTEM_PROMPT));
- 
+
     let mut app = app::App::new(&api_key, system_prompt);
 
     if args.message.is_empty() {
@@ -77,13 +76,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 fn get_prompt(path: Option<String>) -> String {
     match path {
-        Some(p) => std::fs::read_to_string(&p).unwrap_or_else(|_| {
-            panic!("Failed to read system prompt at path {}", p)
-        }),
+        Some(p) => std::fs::read_to_string(&p)
+            .unwrap_or_else(|_| panic!("Failed to read system prompt at path {}", p)),
         None => {
-            println!("{}", "No system prompt file provided, using default.".yellow());
+            println!(
+                "{}",
+                "No system prompt file provided, using default.".yellow()
+            );
             String::from(DEFAULT_SYSTEM_PROMPT)
         }
     }
 }
-

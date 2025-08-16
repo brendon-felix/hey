@@ -41,4 +41,3 @@ pub fn parse_command(input: &str) -> Option<Command> {
         None
     }
 }
-

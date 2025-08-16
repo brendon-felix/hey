@@ -4,28 +4,13 @@
 
 use std::borrow::Cow;
 
-use reedline::{
-    Reedline,
-    Signal,
-    Prompt,
-    PromptEditMode,
-    PromptHistorySearch,
-    Color,
-    Vi,
-    CursorConfig,
-    Highlighter,
-    StyledText,
-};
-
-use nu_ansi_term::Style;
-use nu_ansi_term::Color as NuColor;
-
-use crossterm::cursor::SetCursorStyle;
-
 use crate::commands::{Command, parse_command};
-
-const PROMPT_INDICATOR: &str = env!("PROMPT_INDICATOR");
-const PROMPT_MULTILINE_INDICATOR: &str = env!("PROMPT_MULTILINE_INDICATOR");
+use crossterm::cursor::SetCursorStyle;
+use nu_ansi_term::{Color as NuColor, Style};
+use reedline::{
+    Color, CursorConfig, Highlighter, Prompt, PromptEditMode, PromptHistorySearch, Reedline,
+    Signal, StyledText, Vi,
+};
 
 pub enum Input {
     Command(Command),
@@ -40,7 +25,8 @@ pub struct Editor {
 
 impl Editor {
     pub fn new() -> Self {
-        let commands = Command::Exit.strings()
+        let commands = Command::Exit
+            .strings()
             .into_iter()
             .chain(Command::Clear.strings())
             .chain(Command::Help.strings())
@@ -58,15 +44,16 @@ impl Editor {
             .use_kitty_keyboard_enhancement(true)
             .use_bracketed_paste(true);
 
-        let prompt = EditorPrompt {};
-        Editor { line_editor, prompt }
+        let prompt = EditorPrompt::new();
+        Editor {
+            line_editor,
+            prompt,
+        }
     }
 
     pub fn get_input(&mut self) -> Input {
         let input_str = match self.line_editor.read_line(&self.prompt) {
-            Ok(Signal::Success(buffer)) => {
-                buffer.trim().to_string()
-            }
+            Ok(Signal::Success(buffer)) => buffer.trim().to_string(),
             Ok(Signal::CtrlD) | Ok(Signal::CtrlC) => {
                 return Input::Command(Command::Exit);
             }
@@ -84,12 +71,21 @@ impl Editor {
                 } else {
                     Input::Message(s)
                 }
-            },
+            }
         }
     }
 }
 
-struct EditorPrompt {
+struct EditorPrompt {}
+
+impl EditorPrompt {
+    pub fn new() -> Self {
+        // let prompt_indicator =
+        //     std::env::var("PROMPT_INDICATOR").unwrap_or_else(|_| "> ".to_string());
+        // let prompt_multiline_indicator =
+        //     std::env::var("PROMPT_MULTILINE_INDICATOR").unwrap_or_else(|_| "::: ".to_string());
+        EditorPrompt {}
+    }
 }
 
 impl Prompt for EditorPrompt {
@@ -102,14 +98,17 @@ impl Prompt for EditorPrompt {
     }
 
     fn render_prompt_indicator(&self, _prompt_mode: PromptEditMode) -> Cow<'static, str> {
-        Cow::Borrowed(PROMPT_INDICATOR)
+        Cow::Borrowed("> ")
     }
 
     fn render_prompt_multiline_indicator(&self) -> Cow<'static, str> {
-        Cow::Borrowed(PROMPT_MULTILINE_INDICATOR)
+        Cow::Borrowed("")
     }
 
-    fn render_prompt_history_search_indicator(&self, _history_search: PromptHistorySearch) -> Cow<'static, str> {
+    fn render_prompt_history_search_indicator(
+        &self,
+        _history_search: PromptHistorySearch,
+    ) -> Cow<'static, str> {
         Cow::Borrowed("? ")
     }
 
@@ -137,7 +136,7 @@ enum CommandInputState {
 enum InputState {
     None,
     Message,
-    Command(CommandInputState)
+    Command(CommandInputState),
 }
 
 struct HighlightState {
@@ -217,7 +216,6 @@ impl PromptHighlighter {
     pub fn new(commands: Vec<String>) -> Self {
         PromptHighlighter { commands }
     }
-
 }
 
 impl Highlighter for PromptHighlighter {
@@ -230,6 +228,3 @@ impl Highlighter for PromptHighlighter {
         styled_text
     }
 }
-
-
-
