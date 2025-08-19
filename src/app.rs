@@ -10,13 +10,13 @@ use std::time::Duration;
 
 use chatgpt::prelude::*;
 use chatgpt::types::Role;
-use dialoguer::Select;
+use dialoguer::{Confirm, Input as DialoguerInput, Select};
 use futures_util::stream::StreamExt;
 
 use crate::commands::Command;
 use crate::editor::{Editor, Input};
 use crate::render::{Highlighter, animate_line, render_line};
-use crate::utils::clear_console;
+use crate::utils::{clear_console, print_separator};
 
 use yansi::Paint;
 
@@ -61,6 +61,7 @@ pub struct App {
     system_prompt: String,
     conversation: Conversation,
     editor: Editor,
+    history_file: Option<String>,
 }
 
 impl App {
@@ -73,11 +74,13 @@ impl App {
             ChatGPT::new_with_config(api_key, config).expect("Failed to create ChatGPT client");
         let conversation = client.new_conversation_directed(system_prompt.clone());
         let editor = Editor::new();
+        let history_file = None;
         App {
             client,
             system_prompt,
             conversation,
             editor,
+            history_file,
         }
     }
 
@@ -87,58 +90,53 @@ impl App {
     // }
 
     pub async fn run(&mut self) -> Result<()> {
-        animate_line("\nHey!\n\n", 5000);
+        animate_line("\nHey!\n\n", 10000);
         loop {
             let input = self.editor.get_input();
             match input {
                 Input::Command(command) => match command {
                     Command::Exit => {
-                        animate_line(&format!("\n{}\n", "Exiting...".red()), 2000);
-                        sleep(Duration::from_millis(100));
+                        animate_line(&format!("\n{}\n\n", "Exiting...".red()), 5000);
+                        sleep(Duration::from_millis(250));
                         return Ok(());
                     }
                     Command::Clear => {
-                        animate_line(&format!("\n{}\n", "Clearing...".yellow()), 2000);
+                        animate_line(&format!("\n{}\n\n", "Clearing...".yellow()), 5000);
                         sleep(Duration::from_millis(250));
                         clear_console();
                     }
                     Command::Reset => {
                         animate_line(
                             &format!("\n{}\n", "Resetting conversation...".yellow()),
-                            2000,
+                            5000,
                         );
+                        print_separator();
+                        println!();
                         sleep(Duration::from_millis(500));
                         self.reset_conversation();
                     }
-                    Command::Save => match self.save_conversation().await {
-                        Ok(_) => {
-                            println!("\n{}", format!("Conversation saved successfully.").green());
-                        }
-                        Err(e) => {
-                            eprintln!("\n{}", format!("Failed to save conversation: {}", e).red());
-                        }
-                    },
+                    Command::Save => {
+                        let _ = self.save_conversation().await;
+                    }
                     Command::Load => {
-                        self.load_conversation().await;
-                        print_history(&self.conversation.history);
+                        if let Some(Ok(_)) = self.load_conversation().await {
+                            print_history(&self.conversation.history);
+                        }
                         println!();
                     }
                     Command::History => {
-                        if self.conversation.history.is_empty() {
-                            println!("\nNo conversation history available.\n");
-                        } else {
-                            println!();
-                            print_history(&self.conversation.history);
-                            println!();
-                        }
+                        print_history(&self.conversation.history);
                     }
                     Command::Help => {
                         print_help();
                     }
                     Command::Invalid => {
-                        println!(
-                            "\nInvalid command. Type /{} for a list of commands.",
-                            "help".cyan()
+                        animate_line(
+                            &format!(
+                                "\nInvalid command. Type /{} for a list of commands.\n\n",
+                                "help".cyan()
+                            ),
+                            2000,
                         );
                     }
                 },
@@ -146,9 +144,7 @@ impl App {
                     let mut response = self.get_response(message).await?;
                     self.conversation.history.append(&mut response);
                 }
-                Input::Invalid => {
-                    println!("Invalid input. Please try again.");
-                }
+                Input::Invalid => {}
             }
         }
     }
@@ -216,14 +212,54 @@ impl App {
     }
 
     async fn save_conversation(&self) -> Result<()> {
-        let title = self.get_title().await;
-        let filename = if title.is_empty() {
-            "conversation.json".to_string()
+        let filename = if let Some(filename) = &self.history_file {
+            filename.clone()
         } else {
-            format!("{}.json", title.to_lowercase().replace(' ', "_"))
+            let title = self.get_title().await;
+            let title_confirmed = Confirm::new()
+                .with_prompt(&format!(
+                    "\nDo you want to save the conversation with the title: {}?",
+                    title.blue()
+                ))
+                .default(true)
+                .interact()
+                .unwrap();
+            let title = if title_confirmed {
+                title
+            } else {
+                DialoguerInput::new()
+                    .with_prompt("Enter a title for the conversation")
+                    .interact_text()
+                    .unwrap()
+            };
+            if title.is_empty() {
+                format!(
+                    "conversation_{}.json",
+                    chrono::Utc::now().format("%Y%m%d_%H%M%S")
+                )
+            } else {
+                format!("{}.json", title.to_lowercase().replace(' ', "_"))
+            }
         };
+
         let filepath = filename;
-        self.conversation.save_history_json(&filepath).await
+        match self.conversation.save_history_json(&filepath).await {
+            Ok(_) => {
+                animate_line(
+                    &format!(
+                        "\n{} {}.\n\n",
+                        "Conversation saved successfully to".green(),
+                        filepath.blue()
+                    ),
+                    2000,
+                );
+                Ok(())
+            }
+            Err(e) => {
+                animate_line(&format!("\nFailed to save conversation: {}\n\n", e), 2000);
+                Err(e)
+            }
+        }
     }
 
     async fn load_conversation(&mut self) -> Option<Result<()>> {
@@ -231,10 +267,11 @@ impl App {
         let filepath = match select_conversation(conversations_folder) {
             Some(file) => file,
             None => {
-                println!("\nNo conversation selected.\n");
+                // println!("\nNo conversation selected.\n");
                 return None;
             }
         };
+        self.history_file = Some(filepath.clone());
         match self.client.restore_conversation_json(&filepath).await {
             Ok(conversation) => {
                 self.conversation = conversation;
@@ -242,7 +279,10 @@ impl App {
                 Some(Ok(()))
             }
             Err(e) => {
-                eprintln!("\nFailed to load conversation from {}: {}\n", filepath, e);
+                animate_line(
+                    &format!("\nFailed to load conversation from {}: {}\n\n", filepath, e),
+                    2000,
+                );
                 Some(Err(e))
             }
         }
@@ -250,6 +290,10 @@ impl App {
 }
 
 fn print_history(history: &[ChatMessage]) {
+    if history.len() < 2 {
+        animate_line("\nNo history available.\n\n", 5000);
+        return;
+    }
     for msg in history {
         match msg.role {
             Role::User => {
@@ -297,7 +341,10 @@ fn select_conversation(folder: &str) -> Option<String> {
         .collect();
 
     if conversation_files.is_empty() {
-        println!("No conversation files found in {}", folder);
+        animate_line(
+            &format!("\nNo conversation files found in {}\n", folder.blue()),
+            2000,
+        );
         return None;
     }
 

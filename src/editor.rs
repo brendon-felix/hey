@@ -4,13 +4,14 @@
 
 use std::borrow::Cow;
 
-use crate::commands::{Command, parse_command};
 use crossterm::cursor::SetCursorStyle;
 use nu_ansi_term::{Color as NuColor, Style};
 use reedline::{
     Color, CursorConfig, Highlighter, Prompt, PromptEditMode, PromptHistorySearch, Reedline,
-    Signal, StyledText, Vi,
+    Signal, StyledText, ValidationResult, Validator, Vi,
 };
+
+use crate::commands::{Command, parse_command};
 
 pub enum Input {
     Command(Command),
@@ -36,6 +37,7 @@ impl Editor {
         let line_editor = Reedline::create()
             .with_edit_mode(Box::new(Vi::default()))
             .with_highlighter(Box::new(PromptHighlighter::new()))
+            .with_validator(Box::new(PromptValidator::new()))
             .with_cursor_config(CursorConfig {
                 vi_insert: Some(SetCursorStyle::BlinkingBar),
                 vi_normal: Some(SetCursorStyle::BlinkingBlock),
@@ -253,6 +255,24 @@ impl InputPart {
             InputPart::InvalidCommand => Style::new().fg(NuColor::Yellow),
             InputPart::ValidArgument => Style::new().fg(NuColor::Blue),
             InputPart::InvalidArgument => Style::new().on(NuColor::Red),
+        }
+    }
+}
+
+struct PromptValidator;
+
+impl PromptValidator {
+    pub fn new() -> Self {
+        PromptValidator {}
+    }
+}
+
+impl Validator for PromptValidator {
+    fn validate(&self, line: &str) -> ValidationResult {
+        if line.trim().is_empty() {
+            ValidationResult::Incomplete
+        } else {
+            ValidationResult::Complete
         }
     }
 }

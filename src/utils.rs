@@ -2,6 +2,7 @@
 /*                                  utils.rs                                  */
 /* -------------------------------------------------------------------------- */
 
+use term_size;
 use yansi::Paint;
 
 const DEFAULT_SYSTEM_PROMPT: &str = "You are a helpful assistant.";
@@ -16,15 +17,20 @@ pub fn clear_console() {
     }
 }
 
+pub fn print_separator() {
+    let term_width = term_size::dimensions().map(|(w, _)| w).unwrap_or(80);
+    let separator = "─".repeat(term_width);
+    println!("{}", separator);
+}
+
 pub async fn api_check(api_key: &str) -> Result<(), String> {
     let client = reqwest::Client::new();
     let response = client
         .get("https://api.openai.com/v1/models")
         .header("Authorization", format!("Bearer {}", api_key))
-        .send()
-        .await;
+        .send();
 
-    match response {
+    match response.await {
         Ok(resp) if resp.status().is_success() => Ok(()),
         Ok(resp) => Err(format!("Failed to reach OpenAI API: {}", resp.status())),
         Err(e) => Err(format!("Error reaching OpenAI API: {}", e)),
