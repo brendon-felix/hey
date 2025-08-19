@@ -1,5 +1,3 @@
-// TODO: Unify command parsring for command processor and highlighter
-// TODO: Add Load and Store conversation history commands
 // TODO: Support for model setting
 // TODO: Try using function calling
 // TODO: Support deserialized TOML configuration file
@@ -10,7 +8,7 @@
 // TODO: Use nushell $env to configure reedline
 
 use clap::Parser;
-use yansi::Paint;
+// use yansi::Paint;
 // use toml;
 // use serde::Deserialize;
 
@@ -19,8 +17,6 @@ mod commands;
 mod editor;
 mod render;
 mod utils;
-
-const DEFAULT_SYSTEM_PROMPT: &str = "You are a helpful assistant.";
 
 // #[derive(Deserialize, Debug)]
 // struct Config {
@@ -34,9 +30,10 @@ const DEFAULT_SYSTEM_PROMPT: &str = "You are a helpful assistant.";
 
 #[derive(Parser, Debug)]
 struct Args {
-    ///// Path to the API key file
-    //#[arg(long, short)]
-    //api_key: String,
+    // Path to the API key file
+    #[arg(long, short)]
+    api_key_path: Option<String>,
+
     /// Path to the system prompt file
     #[arg(long, short)]
     prompt_path: Option<String>,
@@ -50,11 +47,19 @@ struct Args {
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
 
-    let api_key = std::env::var("OPENAI_API_KEY").map_err(
-        |_| "Please set the OPENAI_API_KEY environment variable to your OpenAI API key.",
-    )?;
+    let api_key = match args.api_key_path {
+        Some(path) => std::fs::read_to_string(path)
+            .map_err(|_| "Failed to read API key from file")?
+            .trim()
+            .to_string(),
+        None => std::env::var("OPENAI_API_KEY").map_err(
+            |_| "Please set the OPENAI_API_KEY environment variable to your OpenAI API key.",
+        )?,
+    };
 
-    let system_prompt = get_prompt(args.prompt_path);
+    utils::api_check(&api_key).await?;
+
+    let system_prompt = utils::get_prompt(args.prompt_path);
 
     // let config = std::fs::read_to_string("config.toml")
     //     .map_err(|_| "Failed to read config.toml")?;
@@ -72,18 +77,4 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         app.get_response(args.message.join(" ")).await?;
     }
     Ok(())
-}
-
-fn get_prompt(path: Option<String>) -> String {
-    match path {
-        Some(p) => std::fs::read_to_string(&p)
-            .unwrap_or_else(|_| panic!("Failed to read system prompt at path {}", p)),
-        None => {
-            println!(
-                "{}",
-                "No system prompt file provided, using default.".yellow()
-            );
-            String::from(DEFAULT_SYSTEM_PROMPT)
-        }
-    }
 }
