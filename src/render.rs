@@ -71,7 +71,7 @@ impl Highlighter {
     }
 }
 
-fn wrap_line(line: &str) -> String {
+pub fn wrap_line(line: &str) -> String {
     let term_width = term_size::dimensions()
         .map(|(w, _)| w)
         .expect("Failed to get terminal width");

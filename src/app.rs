@@ -12,7 +12,7 @@ use futures_util::stream::StreamExt;
 
 use crate::commands::Command;
 use crate::editor::{Editor, Input};
-use crate::render::{Highlighter, animate_line, render_line};
+use crate::render::{Highlighter, animate_line, render_line, wrap_line};
 use crate::utils::{clear_console, print_separator};
 
 use yansi::Paint;
@@ -301,6 +301,7 @@ fn print_history(history: &[ChatMessage]) {
                 println!();
                 for line in msg.content.split_inclusive("\n") {
                     let line = highlighter.highlight_line(line);
+                    let line = wrap_line(&line);
                     print!("{}", line);
                 }
                 println!();
