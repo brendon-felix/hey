@@ -2,9 +2,6 @@
 /*                                   app.rs                                   */
 /* -------------------------------------------------------------------------- */
 
-// TODO: Add confirmation for filename and offer to change it
-//
-
 use std::thread::sleep;
 use std::time::Duration;
 
