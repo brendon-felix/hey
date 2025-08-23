@@ -211,49 +211,12 @@ impl App {
     }
 
     async fn get_title(&self) -> String {
-        // let history_string = self.conversation[1..]
-        //     .iter()
-        //     .map(|msg| format!("{:?}: {}\n", msg., msg.content))
-        //     .collect::<String>();
-        // let new_prompt = ChatMessage {
-        //     role: Role::System,
-        //     content: "You're job is to generate a title/subject line for the following conversation. The title/subject line should be around 2-6 words and should be concise enough to be used as a filename for storing the conversation history. I will now provide a transcript of the conversation and you should reply only with the title/subject line (and nothing else). Your reply will be directly used to generate the filename".to_string(),
-        // };
-        // let transcript = ChatMessage {
-        //     role: Role::User,
-        //     content: history_string,
-        // };
-        // let history = vec![new_prompt, transcript];
-        // let response = self
-        //     .client
-        //     .send_history(&history)
-        //     .await
-        //     .expect("Failed to get response");
-        // response.message().content.clone()
-        //
         let history_string = self.conversation[1..]
             .iter()
             .map(|msg| match msg {
                 ChatCompletionRequestMessage::User(user_msg) => {
-                    // if let Some(ChatCompletionRequestUserMessageContent::Text(ref content)) =
-                    //     user_msg.content
-                    // {
-                    //     format!("User: {}\n", content)
-                    // } else {
-                    //     "".to_string()
-                    // }
                     let content = match &user_msg.content {
                         ChatCompletionRequestUserMessageContent::Text(content) => content,
-                        // ChatCompletionRequestUserMessageContent::Array(parts) => parts
-                        //     .iter()
-                        //     .filter_map(|part| match part {
-                        //         ChatCompletionRequestUserMessageContentPart::Text(text) => {
-                        //             Some(text.text.clone())
-                        //         }
-                        //         _ => None,
-                        //     })
-                        //     .collect::<String>()
-                        //     .as_str(),
                         _ => "",
                     };
                     format!("User: {}\n", content)
@@ -263,16 +226,6 @@ impl App {
                         Some(ChatCompletionRequestAssistantMessageContent::Text(content)) => {
                             content
                         }
-                        // Some(ChatCompletionRequestAssistantMessageContent::Array(parts)) => parts
-                        //     .iter()
-                        //     .filter_map(|part| match part {
-                        //         ChatCompletionRequestAssistantMessageContentPart::Text(text) => {
-                        //             Some(text.text.clone())
-                        //         }
-                        //         _ => None,
-                        //     })
-                        //     .collect::<String>()
-                        //     .as_str(),
                         _ => "",
                     };
                     format!("Assistant: {}\n", content)
