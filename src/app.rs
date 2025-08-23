@@ -173,7 +173,7 @@ impl App {
     pub async fn get_response(&mut self) -> Result<String, Box<dyn std::error::Error>> {
         let mut buffer = ResponseBuffer::new();
         let request = CreateChatCompletionRequestArgs::default()
-            .model("gpt-3.5-turbo")
+            .model("gpt-4o")
             .max_tokens(512u32)
             .messages(self.conversation.clone())
             .build()?;

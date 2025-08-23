@@ -90,5 +90,5 @@ pub fn animate_line(line: &str, num_micros: u64) {
 pub fn render_line(line: &str, highlighter: &mut Highlighter) {
     let line = highlighter.highlight_line(line);
     let line = wrap_line(&line);
-    animate_line(&line, 500);
+    animate_line(&line, 2000);
 }
