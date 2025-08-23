@@ -2,11 +2,14 @@
 /*                                   app.rs                                   */
 /* -------------------------------------------------------------------------- */
 
+use std::io::Write;
 use std::thread::sleep;
 use std::time::Duration;
 
-use chatgpt::prelude::*;
-use chatgpt::types::Role;
+use async_openai::Client;
+use async_openai::config::OpenAIConfig;
+use async_openai::types::*;
+
 use dialoguer::{Confirm, Input as DialoguerInput, Select};
 use futures_util::stream::StreamExt;
 
@@ -54,22 +57,23 @@ impl ResponseBuffer {
 }
 
 pub struct App {
-    client: ChatGPT,
+    client: Client<OpenAIConfig>,
     system_prompt: String,
-    conversation: Conversation,
+    conversation: Vec<ChatCompletionRequestMessage>,
     editor: Editor,
     history_file: Option<String>,
 }
 
 impl App {
     pub fn new(api_key: &str, system_prompt: String) -> Self {
-        let config = ModelConfiguration {
-            engine: ChatGPTEngine::Gpt35Turbo,
-            ..Default::default()
-        };
-        let client =
-            ChatGPT::new_with_config(api_key, config).expect("Failed to create ChatGPT client");
-        let conversation = client.new_conversation_directed(system_prompt.clone());
+        let client = Client::new();
+        let conversation = vec![
+            ChatCompletionRequestSystemMessageArgs::default()
+                .content(system_prompt.to_string())
+                .build()
+                .unwrap()
+                .into(),
+        ];
         let editor = Editor::new();
         let history_file = None;
         App {
@@ -86,7 +90,7 @@ impl App {
     //     println!("{}", nametag);
     // }
 
-    pub async fn run(&mut self) -> Result<()> {
+    pub async fn run(&mut self) -> Result<(), Box<dyn std::error::Error>> {
         animate_line("\nHey!\n\n", 10000);
         loop {
             let input = self.editor.get_input();
@@ -113,16 +117,14 @@ impl App {
                         self.reset_conversation();
                     }
                     Command::Save => {
-                        let _ = self.save_conversation().await;
+                        self.save_conversation().await?;
                     }
                     Command::Load => {
-                        if let Some(Ok(_)) = self.load_conversation().await {
-                            print_history(&self.conversation.history);
-                        }
-                        println!();
+                        self.load_conversation()?;
+                        self.print_conversation();
                     }
                     Command::History => {
-                        print_history(&self.conversation.history);
+                        self.print_conversation();
                     }
                     Command::Help => {
                         print_help();
@@ -138,36 +140,65 @@ impl App {
                     }
                 },
                 Input::Message(message) => {
-                    let mut response = self.get_response(message).await?;
-                    self.conversation.history.append(&mut response);
+                    self.push_user_message(&message);
+                    let response = self.get_response().await?;
+                    // dbg!(&response);
+                    self.push_assistant_message(&response);
                 }
                 Input::Invalid => {}
             }
         }
     }
 
-    pub async fn get_response(&mut self, message: String) -> Result<Vec<ChatMessage>> {
+    pub fn push_user_message(&mut self, message: &str) {
+        self.conversation.push(
+            ChatCompletionRequestUserMessageArgs::default()
+                .content(message)
+                .build()
+                .unwrap()
+                .into(),
+        );
+    }
+
+    pub fn push_assistant_message(&mut self, message: &str) {
+        self.conversation.push(
+            ChatCompletionRequestAssistantMessageArgs::default()
+                .content(message)
+                .build()
+                .unwrap()
+                .into(),
+        );
+    }
+
+    pub async fn get_response(&mut self) -> Result<String, Box<dyn std::error::Error>> {
         let mut buffer = ResponseBuffer::new();
-        let mut stream = self.conversation.send_message_streaming(message).await?;
+        let request = CreateChatCompletionRequestArgs::default()
+            .model("gpt-3.5-turbo")
+            .max_tokens(512u32)
+            .messages(self.conversation.clone())
+            .build()?;
+
+        let mut stream = self.client.chat().create_stream(request).await?;
+        let mut response = String::new();
+        // let mut lock = stdout().lock();
+
         let mut highlighter = Highlighter::new();
-        let mut output: Vec<ResponseChunk> = Vec::new();
         println!();
-        while let Some(chunk) = stream.next().await {
-            match chunk {
-                ResponseChunk::Content {
-                    delta,
-                    response_index,
-                } => {
-                    buffer.append(&delta);
-                    output.push(ResponseChunk::Content {
-                        delta,
-                        response_index,
-                    });
+        while let Some(result) = stream.next().await {
+            match result {
+                Ok(response_chunk) => {
+                    if let Some(ref delta) = response_chunk.choices[0].delta.content {
+                        buffer.append(delta);
+                        response.push_str(delta);
+                    }
                     while let Some(line) = buffer.get_line() {
                         render_line(&line, &mut highlighter);
                     }
                 }
-                chunk => output.push(chunk),
+                Err(err) => {
+                    animate_line(&format!("\n{} {}\n", "Error:".red(), err), 5000);
+                    return Err(Box::new(err));
+                }
             }
         }
         if let Some(remaining) = buffer.get_remaining() {
@@ -176,39 +207,122 @@ impl App {
             }
         }
         println!("\n");
-        let response = ChatMessage::from_response_chunks(output);
         Ok(response)
     }
 
     async fn get_title(&self) -> String {
-        let history_string = self.conversation.history[1..]
-            .to_vec()
+        // let history_string = self.conversation[1..]
+        //     .iter()
+        //     .map(|msg| format!("{:?}: {}\n", msg., msg.content))
+        //     .collect::<String>();
+        // let new_prompt = ChatMessage {
+        //     role: Role::System,
+        //     content: "You're job is to generate a title/subject line for the following conversation. The title/subject line should be around 2-6 words and should be concise enough to be used as a filename for storing the conversation history. I will now provide a transcript of the conversation and you should reply only with the title/subject line (and nothing else). Your reply will be directly used to generate the filename".to_string(),
+        // };
+        // let transcript = ChatMessage {
+        //     role: Role::User,
+        //     content: history_string,
+        // };
+        // let history = vec![new_prompt, transcript];
+        // let response = self
+        //     .client
+        //     .send_history(&history)
+        //     .await
+        //     .expect("Failed to get response");
+        // response.message().content.clone()
+        //
+        let history_string = self.conversation[1..]
             .iter()
-            .map(|msg| format!("{:?}: {}\n", msg.role, msg.content))
+            .map(|msg| match msg {
+                ChatCompletionRequestMessage::User(user_msg) => {
+                    // if let Some(ChatCompletionRequestUserMessageContent::Text(ref content)) =
+                    //     user_msg.content
+                    // {
+                    //     format!("User: {}\n", content)
+                    // } else {
+                    //     "".to_string()
+                    // }
+                    let content = match &user_msg.content {
+                        ChatCompletionRequestUserMessageContent::Text(content) => content,
+                        // ChatCompletionRequestUserMessageContent::Array(parts) => parts
+                        //     .iter()
+                        //     .filter_map(|part| match part {
+                        //         ChatCompletionRequestUserMessageContentPart::Text(text) => {
+                        //             Some(text.text.clone())
+                        //         }
+                        //         _ => None,
+                        //     })
+                        //     .collect::<String>()
+                        //     .as_str(),
+                        _ => "",
+                    };
+                    format!("User: {}\n", content)
+                }
+                ChatCompletionRequestMessage::Assistant(assistant_msg) => {
+                    let content = match &assistant_msg.content {
+                        Some(ChatCompletionRequestAssistantMessageContent::Text(content)) => {
+                            content
+                        }
+                        // Some(ChatCompletionRequestAssistantMessageContent::Array(parts)) => parts
+                        //     .iter()
+                        //     .filter_map(|part| match part {
+                        //         ChatCompletionRequestAssistantMessageContentPart::Text(text) => {
+                        //             Some(text.text.clone())
+                        //         }
+                        //         _ => None,
+                        //     })
+                        //     .collect::<String>()
+                        //     .as_str(),
+                        _ => "",
+                    };
+                    format!("Assistant: {}\n", content)
+                }
+                _ => "".to_string(),
+            })
             .collect::<String>();
-        let new_prompt = ChatMessage {
-            role: Role::System,
-            content: "You're job is to generate a title/subject line for the following conversation. The title/subject line should be around 2-6 words and should be concise enough to be used as a filename for storing the conversation history. I will now provide a transcript of the conversation and you should reply only with the title/subject line (and nothing else). Your reply will be directly used to generate the filename".to_string(),
-        };
-        let transcript = ChatMessage {
-            role: Role::User,
-            content: history_string,
-        };
+        let new_prompt = ChatCompletionRequestSystemMessageArgs::default()
+            .content("You're job is to generate a title/subject line for the following conversation. The title/subject line should be around 2-6 words and should be concise enough to be used as a filename for storing the conversation history. I will now provide a transcript of the conversation and you should reply only with the title/subject line (and nothing else). Your reply will be directly used to generate the filename.")
+            .build()
+            .unwrap()
+            .into();
+        let transcript = ChatCompletionRequestUserMessageArgs::default()
+            .content(history_string)
+            .build()
+            .unwrap()
+            .into();
         let history = vec![new_prompt, transcript];
-        let response = self
-            .client
-            .send_history(&history)
+        self.client
+            .chat()
+            .create(
+                CreateChatCompletionRequestArgs::default()
+                    .model("gpt-3.5-turbo")
+                    .messages(history)
+                    .build()
+                    .unwrap(),
+            )
             .await
-            .expect("Failed to get response");
-        response.message().content.clone()
+            .map(|response| {
+                response.choices[0]
+                    .message
+                    .content
+                    .clone()
+                    .unwrap_or_else(|| "conversation".to_string())
+            })
+            .unwrap_or_else(|_| "conversation".to_string())
     }
 
     fn reset_conversation(&mut self) {
-        let prompt = self.system_prompt.clone();
-        self.conversation = self.client.new_conversation_directed(prompt);
+        self.conversation = vec![
+            ChatCompletionRequestSystemMessageArgs::default()
+                .content(self.system_prompt.clone())
+                .build()
+                .unwrap()
+                .into(),
+        ];
     }
 
-    async fn save_conversation(&self) -> Result<()> {
+    async fn save_conversation(&self) -> Result<(), Box<dyn std::error::Error>> {
+        let serialized = serde_json::to_string(&self.conversation)?;
         let filename = if let Some(filename) = &self.history_file {
             filename.clone()
         } else {
@@ -219,94 +333,108 @@ impl App {
                     title.blue()
                 ))
                 .default(true)
-                .interact()
-                .unwrap();
-            let title = if title_confirmed {
+                .interact()?;
+            let title: String = if title_confirmed {
                 title
             } else {
                 DialoguerInput::new()
-                    .with_prompt("Enter a title for the conversation")
-                    .interact_text()
-                    .unwrap()
+                    .with_prompt("Enter a filename or title for the conversation")
+                    .interact_text()?
             };
-            if title.is_empty() {
+            let name = if title.is_empty() {
                 format!(
-                    "conversation_{}.json",
+                    "conversation_{}",
                     chrono::Utc::now().format("%Y%m%d_%H%M%S")
                 )
             } else {
-                format!("{}.json", title.to_lowercase().replace(' ', "_"))
+                format!(
+                    "{}",
+                    title
+                        .trim()
+                        .to_lowercase()
+                        .replace(' ', "_")
+                        .replace(", ", "_")
+                )
+            };
+            if name.ends_with(".json") {
+                name
+            } else {
+                format!("{}.json", name)
             }
         };
+        let filepath = filename;
+        let mut file = std::fs::File::create(&filepath)?;
+        file.write_all(serialized.as_bytes())?;
+        animate_line(
+            &format!(
+                "\n{} {}.\n\n",
+                "Conversation saved successfully to".green(),
+                filepath.blue()
+            ),
+            2000,
+        );
+        Ok(())
+    }
+
+    fn load_conversation(&mut self) -> Result<(), Box<dyn std::error::Error>> {
+        let conversations_folder = "./";
+
+        let filename = select_conversation(conversations_folder).unwrap();
 
         let filepath = filename;
-        match self.conversation.save_history_json(&filepath).await {
-            Ok(_) => {
-                animate_line(
-                    &format!(
-                        "\n{} {}.\n\n",
-                        "Conversation saved successfully to".green(),
-                        filepath.blue()
-                    ),
-                    2000,
-                );
-                Ok(())
-            }
-            Err(e) => {
-                animate_line(&format!("\nFailed to save conversation: {}\n\n", e), 2000);
-                Err(e)
-            }
-        }
-    }
 
-    async fn load_conversation(&mut self) -> Option<Result<()>> {
-        let conversations_folder = "./";
-        let filepath = match select_conversation(conversations_folder) {
-            Some(file) => file,
-            None => {
-                // println!("\nNo conversation selected.\n");
-                return None;
-            }
-        };
         self.history_file = Some(filepath.clone());
-        match self.client.restore_conversation_json(&filepath).await {
-            Ok(conversation) => {
-                self.conversation = conversation;
-                // println!("\nConversation loaded successfully from {}.\n", filepath);
-                Some(Ok(()))
-            }
-            Err(e) => {
-                animate_line(
-                    &format!("\nFailed to load conversation from {}: {}\n\n", filepath, e),
-                    2000,
-                );
-                Some(Err(e))
-            }
-        }
+        self.conversation = serde_json::from_str(&std::fs::read_to_string(&filepath)?)?;
+        animate_line(
+            &format!("\nConversation loaded successfully from {}.\n", filepath),
+            2000,
+        );
+        Ok(())
     }
-}
 
-fn print_history(history: &[ChatMessage]) {
-    if history.len() < 2 {
-        animate_line("\nNo history available.\n\n", 5000);
-        return;
-    }
-    for msg in history {
-        match msg.role {
-            Role::User => {
-                println!("\n{}{}", "> ".magenta(), msg.content.green());
+    fn print_conversation(&self) {
+        if self.conversation.len() <= 1 {
+            animate_line("\nNo conversation history available.\n\n", 5000);
+            return;
+        }
+        for msg in &self.conversation {
+            // dbg!(&msg);
+            match msg {
+                ChatCompletionRequestMessage::User(msg) => match msg.content {
+                    ChatCompletionRequestUserMessageContent::Text(ref content) => {
+                        println!("\n{}{}", "> ".magenta(), content.green());
+                    }
+                    // ChatCompletionRequestUserMessageContent::Array(ref content_parts) => {
+                    //     let content = content_parts
+                    //         .iter()
+                    //         .map(|part| match part {
+                    //             ChatCompletionRequestUserMessageContentPart::Text(text) => {
+                    //                 &text.text
+                    //             }
+                    //             _ => "",
+                    //         })
+                    //         .collect::<Vec<_>>()
+                    //         .join("");
+                    //     println!("\n{}{}", "> ".magenta(), content.green());
+                    // }
+                    _ => {}
+                },
+                ChatCompletionRequestMessage::Assistant(msg) => match msg.content {
+                    Some(ChatCompletionRequestAssistantMessageContent::Text(ref content)) => {
+                        // let mut highlighter = Highlighter::new();
+                        let mut highlighter = Highlighter::new();
+                        println!();
+                        for line in content.split_inclusive("\n") {
+                            let line = highlighter.highlight_line(line);
+                            let line = wrap_line(&line);
+                            print!("{}", line);
+                        }
+                        println!();
+                    }
+                    _ => {}
+                },
+                _ => {}
             }
-            Role::Assistant => {
-                let mut highlighter = Highlighter::new();
-                println!();
-                for line in msg.content.split_inclusive("\n") {
-                    let line = highlighter.highlight_line(line);
-                    let line = wrap_line(&line);
-                    print!("{}", line);
-                }
-                println!();
-            }
-            _ => {}
         }
     }
 }

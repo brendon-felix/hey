@@ -4,7 +4,8 @@ version = "0.2.0"
 edition = "2024"
 
 [dependencies]
-chatgpt_rs = { version = "1.2", features = ["streams"] }
+async-openai = "0.29"
+serde_json = "1.0"
 tokio = { version = "1", features = ["full", "rt-multi-thread"] }
 futures-util = "0.3"
 clap = { version = "4.5", features = ["derive"] }

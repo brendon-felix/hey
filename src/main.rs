@@ -74,7 +74,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         // app.print_nametag(name);
         app.run().await?;
     } else {
-        app.get_response(args.message.join(" ")).await?;
+        app.push_user_message(&args.message.join(" "));
+        app.get_response().await?;
     }
     Ok(())
 }
