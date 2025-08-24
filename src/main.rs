@@ -2,6 +2,7 @@
 // FIX: Prevent saving conversations with no history
 // FIX: Generate up-to-date syntax set
 
+// TODO: Add config setting for conversations folder
 // TODO: Try using function calling
 // TODO: Support deserialized TOML configuration file
 // TODO: Save and Load Reedline line editor history
@@ -11,6 +12,7 @@
 // TODO: Use nushell $env to configure reedline
 
 use async_openai::{Client, config::OpenAIConfig};
+use anyhow::{Context, Result};
 use clap::Parser;
 use yansi::Paint;
 
@@ -23,6 +25,9 @@ mod response;
 mod utils;
 
 const DEFAULT_SYSTEM_PROMPT: &str = "You are a helpful assistant.";
+const DEFAULT_MODEL: &str = "gpt-4o";
+const DEFAULT_THEME: &str = "ansi";
+const DEFAULT_MAX_TOKENS: u32 = 2048;
 
 #[derive(Parser, Debug)]
 struct Args {
@@ -40,16 +45,16 @@ struct Args {
 }
 
 #[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
+async fn main() -> Result<()> {
     let args = Args::parse();
 
     let api_key = match args.api_key_path {
         Some(path) => std::fs::read_to_string(path)
-            .map_err(|_| "Failed to read API key from file")?
+            .context("Failed to read API key from file")?
             .trim()
             .to_string(),
-        None => std::env::var("OPENAI_API_KEY").map_err(
-            |_| "Please set the OPENAI_API_KEY environment variable to your OpenAI API key.",
+        None => std::env::var("OPENAI_API_KEY").context(
+            "Please set the OPENAI_API_KEY environment variable to your OpenAI API key.",
         )?,
     };
 
@@ -57,7 +62,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let system_prompt = if let Some(path) = args.prompt_path {
         std::fs::read_to_string(&path)
-            .unwrap_or_else(|_| panic!("Failed to read system prompt at path {}", path))
+            .with_context(|| format!("Failed to read system prompt at path {}", path.blue()))?
     } else {
         println!(
             "{}",
@@ -70,16 +75,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let client = Client::with_config(openai_config);
 
     if args.message.is_empty() {
+        // interactive REPL
         let mut repl = repl::ReadEvalPrintLoop::new(client, system_prompt);
         repl.run().await?;
     } else {
+        // single message
         let messages = vec![
             utils::new_system_message(system_prompt),
             utils::new_user_message(args.message.join(" ")),
         ];
-        let request = response::create_request("gpt-4o", 2048u32, messages)?;
-        let highlighter = &mut render::Highlighter::new("ansi");
-        response::stream_response(&client, request, highlighter).await?;
+        let request = response::create_request(DEFAULT_MODEL, DEFAULT_MAX_TOKENS, messages)?;
+        let mut highlighter = render::Highlighter::new(DEFAULT_THEME)?;
+        response::stream_response(&client, request, &mut highlighter).await?;
     }
     Ok(())
 }

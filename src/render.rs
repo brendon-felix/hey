@@ -3,6 +3,7 @@
 /* -------------------------------------------------------------------------- */
 
 use ansi_parser::{AnsiParser, Output};
+use anyhow::{Context, Result};
 use std::io::{Write, stdout};
 use std::rc::Rc;
 use std::thread::sleep;
@@ -26,37 +27,41 @@ const SYNTAX_SET: &[u8] = include_bytes!("../syntax_set.bin");
 const MAX_LINE_LENGTH: usize = 100;
 
 impl Highlighter {
-    pub fn new(theme_name: &str) -> Self {
-        let ss: SyntaxSet = from_uncompressed_data(SYNTAX_SET).expect("Failed to load syntax set");
+    pub fn new(theme_name: &str) -> Result<Self> {
+        let ss: SyntaxSet = from_uncompressed_data(SYNTAX_SET)
+            .context("Failed to load syntax set")?;
+        
         let syntax_ref = ss
             .find_syntax_by_name("Markdown")
-            .expect("Failed to find syntax");
+            .unwrap_or_else(|| ss.find_syntax_plain_text());
 
         let highlighting_assets = Rc::new(HighlightingAssets::from_binary());
-        // let theme = highlighting_assets.get_theme("ansi");
         let theme = highlighting_assets.get_theme(theme_name);
 
-        // Safety: We know that highlighting_assets will live as long as the struct
-        // since it's an Rc field in the same struct
+        // highlighting_assets will live as long as the struct
         let theme_static: &'static _ = unsafe { std::mem::transmute(theme) };
         let highlighter = HighlightLines::new(&syntax_ref, theme_static);
 
-        Highlighter {
+        Ok(Highlighter {
             _highlighting_assets: highlighting_assets,
             highlighter,
             syntax_set: ss,
             theme_name: theme_name.to_string(),
-        }
+        })
     }
 
     pub fn highlight_line(&mut self, line: &str) -> String {
         let theme_is_ansi = &self.theme_name == "ansi"
             || &self.theme_name == "base16"
             || &self.theme_name == "base16-256";
-        let ranges = self
-            .highlighter
-            .highlight_line(line, &self.syntax_set)
-            .expect("Failed to highlight line");
+        
+        let ranges = match self.highlighter.highlight_line(line, &self.syntax_set) {
+            Ok(ranges) => ranges,
+            Err(_) => {
+                return line.to_string();
+            }
+        };
+        
         ranges
             .iter()
             .map(|(style, text)| {
@@ -86,30 +91,32 @@ impl Highlighter {
 pub fn wrap_line(line: &str) -> String {
     let term_width = term_size::dimensions()
         .map(|(w, _)| w)
-        .expect("Failed to get terminal width");
+        .unwrap_or(80);
     let max_width = term_width.min(MAX_LINE_LENGTH);
     textwrap::wrap(line, max_width).join("\n")
 }
 
-pub fn render_line(line: &str, highlighter: &mut Highlighter) {
+pub fn render_line(line: &str, highlighter: &mut Highlighter) -> Result<()> {
     let line = highlighter.highlight_line(line);
     let line = wrap_line(&line);
-    snailprint(&line, 5000);
-    // print!("{}", line);
+    snailprint(&line, 5000)?;
+    Ok(())
 }
 
-pub fn snailprint(text: &str, num_micros: u64) {
+pub fn snailprint(text: &str, num_micros: u64) -> Result<()> {
     text.ansi_parse().for_each(|output| match output {
         Output::TextBlock(t) => {
             t.graphemes(true).for_each(|g| {
                 sleep(Duration::from_micros(num_micros));
                 print!("{}", g);
-                stdout().flush().unwrap();
+                let _ = stdout().flush();
             });
         }
         Output::Escape(esc) => {
             print!("{}", esc);
-            stdout().flush().unwrap();
+            let _ = stdout().flush();
         }
-    })
+    });
+    stdout().flush().context("Failed to flush output to terminal")?;
+    Ok(())
 }

@@ -5,6 +5,7 @@
 use std::thread::sleep;
 use std::time::Duration;
 
+use anyhow::{bail, Result};
 use async_openai::Client;
 use async_openai::config::OpenAIConfig;
 use yansi::Paint;
@@ -45,24 +46,24 @@ impl ReadEvalPrintLoop {
         }
     }
 
-    pub async fn run(&mut self) -> Result<(), Box<dyn std::error::Error>> {
-        snailprint("\nHey!\n\n", 10000);
+    pub async fn run(&mut self) -> Result<()> {
+        let _ = snailprint("\nHey!\n\n", 10000);
         loop {
             let input = self.editor.get_input();
             match input {
                 Input::Command(command) => match command {
                     Command::Exit => {
-                        snailprint(&format!("\n{}\n\n", "Exiting...".red()), 5000);
+                        let _ = snailprint(&format!("\n{}\n\n", "Exiting...".red()), 5000);
                         sleep(Duration::from_millis(250));
                         return Ok(());
                     }
                     Command::Clear => {
-                        snailprint(&format!("\n{}\n\n", "Clearing...".yellow()), 5000);
+                        let _ = snailprint(&format!("\n{}\n\n", "Clearing...".yellow()), 5000);
                         sleep(Duration::from_millis(250));
                         clear_console();
                     }
                     Command::Reset => {
-                        snailprint(
+                        let _ = snailprint(
                             &format!("\n{}\n", "Resetting conversation...".yellow()),
                             5000,
                         );
@@ -75,7 +76,7 @@ impl ReadEvalPrintLoop {
                     Command::SelectModel => {
                         let selection = match select_model(&self.model) {
                             Err(e) => {
-                                snailprint(&format!("\n{} {}\n\n", "Error:".red(), e), 5000);
+                                let _ = snailprint(&format!("\n{} {}\n\n", "Error:".red(), e), 5000);
                                 continue;
                             }
                             Ok(model) => model,
@@ -85,24 +86,26 @@ impl ReadEvalPrintLoop {
                     Command::SelectTheme => {
                         let selection = match select_theme() {
                             Err(e) => {
-                                snailprint(&format!("\n{} {}\n\n", "Error:".red(), e), 5000);
+                                let _ = snailprint(&format!("\n{} {}\n\n", "Error:".red(), e), 5000);
                                 continue;
                             }
                             Ok(theme) => theme,
                         };
                         self.theme = selection;
-                        print_sample_text(&self.theme);
+                        if let Err(e) = print_sample_text(&self.theme) {
+                            let _ = snailprint(&format!("\n{} {}\n\n", "Error:".red(), e), 5000);
+                        }
                     }
                     Command::Save => match self.save_conversation().await {
                         Err(e) => {
-                            snailprint(&format!("\n{} {}\n\n", "Error:".red(), e), 5000);
+                            let _ = snailprint(&format!("\n{} {}\n\n", "Error:".red(), e), 5000);
                             continue;
                         }
                         Ok(_) => {}
                     },
                     Command::Load => match self.load_conversation() {
                         Err(e) => {
-                            snailprint(&format!("\n{} {}\n\n", "Error:".red(), e), 5000);
+                            let _ = snailprint(&format!("\n{} {}\n\n", "Error:".red(), e), 5000);
                             continue;
                         }
                         Ok(_) => {
@@ -117,7 +120,7 @@ impl ReadEvalPrintLoop {
                         print_help();
                     }
                     Command::Invalid => {
-                        snailprint(
+                        let _ = snailprint(
                             &format!(
                                 "\nInvalid command. Type /{} for a list of commands.\n\n",
                                 "help".cyan()
@@ -127,17 +130,14 @@ impl ReadEvalPrintLoop {
                     }
                 },
                 Input::Message(message) => {
-                    // self.push_user_message(&message);
                     self.conversation.add_user_message(message);
                     let response = match self.get_response().await {
                         Err(e) => {
-                            snailprint(&format!("\n{} {}\n\n", "Error:".red(), e), 5000);
+                            let _ = snailprint(&format!("\n{} {}\n\n", "Error:".red(), e), 5000);
                             continue;
                         }
                         Ok(response) => response,
                     };
-                    // dbg!(&response);
-                    // self.push_assistant_message(&response);
                     self.conversation.add_assistant_message(response);
                 }
                 Input::Invalid => {}
@@ -145,13 +145,13 @@ impl ReadEvalPrintLoop {
         }
     }
 
-    pub async fn get_response(&mut self) -> Result<String, Box<dyn std::error::Error>> {
+    pub async fn get_response(&mut self) -> Result<String> {
         let request = create_request(&self.model, 2048u32, self.conversation.messages.clone())?;
-        let highlighter = &mut Highlighter::new(&self.theme);
-        stream_response(&self.client, request, highlighter).await
+        let mut highlighter = Highlighter::new(&self.theme)?;
+        stream_response(&self.client, request, &mut highlighter).await
     }
 
-    async fn save_conversation(&self) -> Result<(), Box<dyn std::error::Error>> {
+    async fn save_conversation(&self) -> Result<()> {
         let filename = if let Some(filename) = &self.history_file {
             filename.clone()
         } else {
@@ -161,7 +161,7 @@ impl ReadEvalPrintLoop {
         };
         let filepath = filename;
         self.conversation.save_to_json_file(&filepath)?;
-        snailprint(
+        let _ = snailprint(
             &format!(
                 "\n{} {}.\n\n",
                 "Conversation saved successfully to".green(),
@@ -172,18 +172,16 @@ impl ReadEvalPrintLoop {
         Ok(())
     }
 
-    fn load_conversation(&mut self) -> Result<(), Box<dyn std::error::Error>> {
+    fn load_conversation(&mut self) -> Result<()> {
         let conversations_folder = "./";
 
         let filename = match select_json_file(conversations_folder) {
             Ok(None) => {
-                // snailprint("\nLoad cancelled.\n\n", 2000);
-                // return Ok(());
-                return Err("Load cancelled.".into());
+                bail!("Load cancelled.");
             }
             Ok(Some(filename)) => filename,
             Err(e) => {
-                return Err(e.into());
+                return Err(e);
             }
         };
         let filepath = filename; // need to add config setting for conversations folder
@@ -194,20 +192,21 @@ impl ReadEvalPrintLoop {
 
     fn print_conversation(&self) {
         if self.conversation.messages.len() <= 1 {
-            snailprint("\nNo conversation history available.\n\n", 5000);
+            let _ = snailprint("\nNo conversation history available.\n\n", 5000);
             return;
         }
-        self.conversation
-            .print_messages(&mut Highlighter::new(&self.theme));
+        if let Ok(mut highlighter) = Highlighter::new(&self.theme) {
+            self.conversation.print_messages(&mut highlighter);
+        }
         println!();
     }
 }
 
 fn print_help() {
-    snailprint(&format!("\n{}\n", "Available commands:".blue()), 1000);
+    let _ = snailprint(&format!("\n{}\n", "Available commands:".blue()), 1000);
     // snailprint("TODO\n", 10000);
     enum_iterator::all::<Command>().for_each(|command| {
-        snailprint(
+        let _ = snailprint(
             &format!(
                 "{}\n",
                 command

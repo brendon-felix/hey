@@ -6,6 +6,7 @@ use async_openai::types::{
     ChatCompletionRequestAssistantMessageArgs, ChatCompletionRequestMessage,
     ChatCompletionRequestSystemMessageArgs, ChatCompletionRequestUserMessageArgs,
 };
+use anyhow::{Context, Result};
 use dialoguer::{Confirm, Input, Select, theme::ColorfulTheme};
 use term_size;
 use yansi::Paint;
@@ -42,9 +43,9 @@ pub fn print_separator() {
 //     }
 // }
 
-pub fn select_json_file(dir_path: &str) -> Result<Option<String>, String> {
+pub fn select_json_file(dir_path: &str) -> Result<Option<String>> {
     let entries = std::fs::read_dir(dir_path)
-        .map_err(|e| format!("Failed to read directory {}: {}", dir_path, e))?;
+        .with_context(|| format!("Failed to read directory {}", dir_path))?;
     let json_files: Vec<_> = entries
         .filter_map(|e| e.ok())
         .filter(|e| e.path().extension().map_or(false, |ext| ext == "json"))
@@ -73,7 +74,7 @@ pub fn select_json_file(dir_path: &str) -> Result<Option<String>, String> {
         .items(&options)
         .default(0)
         .interact()
-        .map_err(|e| format!("Failed to read input: {}", e))?;
+        .context("Failed to read input")?;
     println!();
 
     let filepath = json_files[selection].to_string_lossy().to_string();
@@ -81,7 +82,7 @@ pub fn select_json_file(dir_path: &str) -> Result<Option<String>, String> {
     Ok(Some(filepath))
 }
 
-pub fn select_filename(generated_title: String) -> Result<String, Box<dyn std::error::Error>> {
+pub fn select_filename(generated_title: String) -> Result<String> {
     let title = generated_title;
     let title_confirmed = Confirm::new()
         .with_prompt(&format!(
@@ -119,7 +120,7 @@ pub fn select_filename(generated_title: String) -> Result<String, Box<dyn std::e
     }
 }
 
-pub fn select_model(default: &str) -> Result<String, Box<dyn std::error::Error>> {
+pub fn select_model(default: &str) -> Result<String> {
     let models = vec![
         "gpt-3.5-turbo",
         "gpt-4o",
@@ -139,7 +140,7 @@ pub fn select_model(default: &str) -> Result<String, Box<dyn std::error::Error>>
     Ok(models[selection].to_string())
 }
 
-pub fn select_theme() -> Result<String, Box<dyn std::error::Error>> {
+pub fn select_theme() -> Result<String> {
     let assets = bat::assets::HighlightingAssets::from_binary();
     let themes = assets.themes().collect::<Vec<&str>>();
     println!();
@@ -152,7 +153,7 @@ pub fn select_theme() -> Result<String, Box<dyn std::error::Error>> {
     Ok(themes[selection].to_string())
 }
 
-pub fn print_sample_text(theme_name: &str) {
+pub fn print_sample_text(theme_name: &str) -> Result<()> {
     let sample_text = r#"# Sample text with code:
 
 - Rust **function** for computing _factorial_:
@@ -170,13 +171,14 @@ pub fn print_sample_text(theme_name: &str) {
             self.api_key = api_key
     ```
 "#;
-    let highlighter = &mut Highlighter::new(theme_name);
+    let mut highlighter = Highlighter::new(theme_name)?;
     for line in sample_text.split_inclusive("\n") {
         let line = highlighter.highlight_line(line);
         let line = wrap_line(&line);
         print!("{}", line);
     }
     println!();
+    Ok(())
 }
 
 pub fn new_system_message(content: String) -> ChatCompletionRequestMessage {

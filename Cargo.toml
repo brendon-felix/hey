@@ -4,6 +4,7 @@ version = "0.2.0"
 edition = "2024"
 
 [dependencies]
+anyhow = "1.0"
 async-openai = "0.29"
 serde_json = "1.0"
 tokio = { version = "1", features = ["full", "rt-multi-thread"] }

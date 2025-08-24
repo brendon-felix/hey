@@ -1945,6 +1945,7 @@ name = "rusty-gpt"
 version = "0.2.0"
 dependencies = [
  "ansi-parser",
+ "anyhow",
  "async-openai",
  "bat",
  "chrono",

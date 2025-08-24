@@ -2,6 +2,7 @@ use async_openai::types::{
     ChatCompletionRequestAssistantMessageContent, ChatCompletionRequestMessage,
     ChatCompletionRequestUserMessageContent,
 };
+use anyhow::Result;
 
 use yansi::Paint;
 
@@ -49,9 +50,9 @@ impl Conversation {
                     // let mut highlighter = Highlighter::new();
                     println!();
                     for line in content.split_inclusive("\n") {
-                        let line = highlighter.highlight_line(line);
-                        let line = wrap_line(&line);
-                        print!("{}", line);
+                        let highlighted_line = highlighter.highlight_line(line);
+                        let wrapped_line = wrap_line(&highlighted_line);
+                        print!("{}", wrapped_line);
                     }
                     println!();
                 }
@@ -86,13 +87,13 @@ impl Conversation {
             .collect::<String>()
     }
 
-    pub fn save_to_json_file(&self, path: &str) -> Result<(), Box<dyn std::error::Error>> {
+    pub fn save_to_json_file(&self, path: &str) -> Result<()> {
         let json = serde_json::to_string_pretty(&self.messages)?;
         std::fs::write(path, json)?;
         Ok(())
     }
 
-    pub fn from_json_file(path: &str) -> Result<Self, Box<dyn std::error::Error>> {
+    pub fn from_json_file(path: &str) -> Result<Self> {
         let data = std::fs::read_to_string(path)?;
         let messages: Vec<ChatCompletionRequestMessage> = serde_json::from_str(&data)?;
         Ok(Conversation::from_messages(messages))

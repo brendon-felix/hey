@@ -2,6 +2,7 @@ use async_openai::types::{
     ChatCompletionRequestMessage, CreateChatCompletionRequest, CreateChatCompletionRequestArgs,
 };
 use async_openai::{Client, config::OpenAIConfig};
+use anyhow::Result;
 use crossterm::cursor;
 use yansi::Paint;
 
@@ -50,7 +51,7 @@ pub fn create_request(
     model: &str,
     max_tokens: u32,
     messages: Vec<ChatCompletionRequestMessage>,
-) -> Result<CreateChatCompletionRequest, Box<dyn std::error::Error>> {
+) -> Result<CreateChatCompletionRequest> {
     let request = CreateChatCompletionRequestArgs::default()
         .model(model)
         .max_tokens(max_tokens)
@@ -63,7 +64,7 @@ pub async fn stream_response(
     client: &Client<OpenAIConfig>,
     request: CreateChatCompletionRequest,
     highlighter: &mut Highlighter,
-) -> Result<String, Box<dyn std::error::Error>> {
+) -> Result<String> {
     let mut buffer = ResponseBuffer::new();
 
     let mut stream = client.chat().create_stream(request).await?;
@@ -79,17 +80,19 @@ pub async fn stream_response(
                     full_response.push_str(delta);
                 }
                 while let Some(line) = buffer.get_line_with_ending() {
-                    render_line(&line, highlighter);
+                    if let Err(e) = render_line(&line, highlighter) {
+                        let _ = snailprint(&format!("\n{} {}\n", "Error rendering line:".red(), e), 5000);
+                    }
                 }
             }
             Err(err) => {
-                snailprint(&format!("\n{} {}\n", "Error:".red(), err), 5000);
-                return Err(Box::new(err));
+                let _ = snailprint(&format!("\n{} {}\n", "Error:".red(), err), 5000);
+                return Err(err.into());
             }
         }
     }
     if let Some(remaining) = buffer.get_remaining() {
-        render_line(&remaining, highlighter);
+        let _ = render_line(&remaining, highlighter);
     }
 
     print!("\n{}\n", cursor::Show);
@@ -99,7 +102,7 @@ pub async fn stream_response(
 pub async fn generate_title(
     client: &Client<OpenAIConfig>,
     transcript: String,
-) -> Result<String, Box<dyn std::error::Error>> {
+) -> Result<String> {
     let prompt = format!(
         "Generate a concise title (max 5 words) for the following conversation (to be used in a filename). Do not use any special characters.\n"
     );
@@ -112,7 +115,5 @@ pub async fn generate_title(
             return Ok(content.trim().to_string());
         }
     }
-
-    // else
     Ok("Untitled Conversation".to_string())
 }
