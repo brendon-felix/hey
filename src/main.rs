@@ -60,7 +60,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             utils::new_user_message(args.message.join(" ")),
         ];
         let request = response::create_request("gpt-4o", 2048u32, messages)?;
-        let highlighter = &mut render::Highlighter::new();
+        let highlighter = &mut render::Highlighter::new("ansi");
         response::stream_response(&client, request, highlighter).await?;
     }
     Ok(())

@@ -15,7 +15,8 @@ use crate::editor::{Editor, Input};
 use crate::render::{Highlighter, snailprint};
 use crate::response::{create_request, generate_title, stream_response};
 use crate::utils::{
-    clear_console, print_separator, select_filename, select_json_file, select_model,
+    clear_console, print_sample_text, print_separator, select_filename, select_json_file,
+    select_model, select_theme,
 };
 
 pub struct App {
@@ -23,6 +24,7 @@ pub struct App {
     model: String,
     conversation: Conversation,
     editor: Editor,
+    theme: String,
     history_file: Option<String>,
 }
 
@@ -32,12 +34,14 @@ impl App {
         let model = "gpt-4o".to_string();
         let conversation = Conversation::new(system_prompt);
         let editor = Editor::new();
+        let theme = "ansi".to_string();
         let history_file = None;
         App {
             client,
             model,
             conversation,
             editor,
+            theme,
             history_file,
         }
     }
@@ -69,16 +73,33 @@ impl App {
                         self.conversation.reset();
                     }
                     Command::SelectModel => {
-                        let selection = select_model(&self.model)?;
+                        let selection = match select_model(&self.model) {
+                            Err(e) => {
+                                snailprint(&format!("\n{} {}\n\n", "Error:".red(), e), 5000);
+                                continue;
+                            }
+                            Ok(model) => model,
+                        };
                         self.model = selection;
-                        snailprint(
-                            &format!("\n{} {}\n\n", "Model changed to".green(), self.model.blue()),
-                            2000,
-                        );
                     }
-                    Command::Save => {
-                        self.save_conversation().await?;
+                    Command::SelectTheme => {
+                        let selection = match select_theme() {
+                            Err(e) => {
+                                snailprint(&format!("\n{} {}\n\n", "Error:".red(), e), 5000);
+                                continue;
+                            }
+                            Ok(theme) => theme,
+                        };
+                        self.theme = selection;
+                        print_sample_text(&self.theme);
                     }
+                    Command::Save => match self.save_conversation().await {
+                        Err(e) => {
+                            snailprint(&format!("\n{} {}\n\n", "Error:".red(), e), 5000);
+                            continue;
+                        }
+                        Ok(_) => {}
+                    },
                     Command::Load => match self.load_conversation() {
                         Err(e) => {
                             snailprint(&format!("\n{} {}\n\n", "Error:".red(), e), 5000);
@@ -86,7 +107,6 @@ impl App {
                         }
                         Ok(_) => {
                             print_separator();
-                            println!();
                             self.print_conversation();
                         }
                     },
@@ -109,7 +129,13 @@ impl App {
                 Input::Message(message) => {
                     // self.push_user_message(&message);
                     self.conversation.add_user_message(message);
-                    let response = self.get_response().await?;
+                    let response = match self.get_response().await {
+                        Err(e) => {
+                            snailprint(&format!("\n{} {}\n\n", "Error:".red(), e), 5000);
+                            continue;
+                        }
+                        Ok(response) => response,
+                    };
                     // dbg!(&response);
                     // self.push_assistant_message(&response);
                     self.conversation.add_assistant_message(response);
@@ -121,7 +147,7 @@ impl App {
 
     pub async fn get_response(&mut self) -> Result<String, Box<dyn std::error::Error>> {
         let request = create_request(&self.model, 2048u32, self.conversation.messages.clone())?;
-        let highlighter = &mut Highlighter::new();
+        let highlighter = &mut Highlighter::new(&self.theme);
         stream_response(&self.client, request, highlighter).await
     }
 
@@ -163,10 +189,6 @@ impl App {
         let filepath = filename; // need to add config setting for conversations folder
         self.history_file = Some(filepath.clone());
         self.conversation = Conversation::from_json_file(&filepath)?;
-        snailprint(
-            &format!("\nConversation loaded successfully from {}.\n", filepath),
-            2000,
-        );
         Ok(())
     }
 
@@ -175,7 +197,8 @@ impl App {
             snailprint("\nNo conversation history available.\n\n", 5000);
             return;
         }
-        self.conversation.print_messages();
+        self.conversation
+            .print_messages(&mut Highlighter::new(&self.theme));
         println!();
     }
 }

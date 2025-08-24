@@ -19,20 +19,22 @@ pub struct Highlighter {
     _highlighting_assets: Rc<HighlightingAssets>,
     highlighter: HighlightLines<'static>,
     syntax_set: SyntaxSet,
+    theme_name: String,
 }
 
 const SYNTAX_SET: &[u8] = include_bytes!("../syntax_set.bin");
 const MAX_LINE_LENGTH: usize = 100;
 
 impl Highlighter {
-    pub fn new() -> Self {
+    pub fn new(theme_name: &str) -> Self {
         let ss: SyntaxSet = from_uncompressed_data(SYNTAX_SET).expect("Failed to load syntax set");
         let syntax_ref = ss
             .find_syntax_by_name("Markdown")
             .expect("Failed to find syntax");
 
         let highlighting_assets = Rc::new(HighlightingAssets::from_binary());
-        let theme = highlighting_assets.get_theme("ansi");
+        // let theme = highlighting_assets.get_theme("ansi");
+        let theme = highlighting_assets.get_theme(theme_name);
 
         // Safety: We know that highlighting_assets will live as long as the struct
         // since it's an Rc field in the same struct
@@ -43,10 +45,14 @@ impl Highlighter {
             _highlighting_assets: highlighting_assets,
             highlighter,
             syntax_set: ss,
+            theme_name: theme_name.to_string(),
         }
     }
 
     pub fn highlight_line(&mut self, line: &str) -> String {
+        let theme_is_ansi = &self.theme_name == "ansi"
+            || &self.theme_name == "base16"
+            || &self.theme_name == "base16-256";
         let ranges = self
             .highlighter
             .highlight_line(line, &self.syntax_set)
@@ -55,18 +61,23 @@ impl Highlighter {
             .iter()
             .map(|(style, text)| {
                 // for ansi theme, red channel is an index
-                match style.foreground.r {
-                    0 => text.primary(),
-                    1 => text.red(),
-                    2 => text.green(),
-                    3 => text.yellow(),
-                    4 => text.blue(),
-                    5 => text.magenta(),
-                    6 => text.white(),
-                    7 => text.black(),
-                    _ => text.primary(),
+                if theme_is_ansi {
+                    match style.foreground.r {
+                        0 => text.primary(),
+                        1 => text.red(),
+                        2 => text.green(),
+                        3 => text.yellow(),
+                        4 => text.blue(),
+                        5 => text.magenta(),
+                        6 => text.white(),
+                        7 => text.black(),
+                        _ => text.primary(),
+                    }
+                    .to_string()
+                } else {
+                    let fg = style.foreground;
+                    text.rgb(fg.r, fg.g, fg.b).to_string()
                 }
-                .to_string()
             })
             .collect::<String>()
     }

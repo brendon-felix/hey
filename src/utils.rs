@@ -6,9 +6,11 @@ use async_openai::types::{
     ChatCompletionRequestAssistantMessageArgs, ChatCompletionRequestMessage,
     ChatCompletionRequestSystemMessageArgs, ChatCompletionRequestUserMessageArgs,
 };
-use dialoguer::{Confirm, Input, Select};
+use dialoguer::{Confirm, Input, Select, theme::ColorfulTheme};
 use term_size;
 use yansi::Paint;
+
+use crate::render::{Highlighter, wrap_line};
 
 const DEFAULT_SYSTEM_PROMPT: &str = "You are a helpful assistant.";
 const SUPPORTED_MODELS: [&str; 3] = ["gpt-3.5-turbo", "gpt-4o", "gpt-4o-mini"];
@@ -83,7 +85,7 @@ pub fn select_json_file(dir_path: &str) -> Result<Option<String>, String> {
         })
         .collect();
 
-    let selection = Select::new()
+    let selection = Select::with_theme(&ColorfulTheme::default())
         .with_prompt("\nSelect a JSON file to load")
         .items(&options)
         .default(0)
@@ -136,12 +138,50 @@ pub fn select_filename(generated_title: String) -> Result<String, Box<dyn std::e
 pub fn select_model(default: &str) -> Result<String, Box<dyn std::error::Error>> {
     let models = &SUPPORTED_MODELS;
     let default_index = models.iter().position(|&m| m == default).unwrap_or(0);
-    let selection = Select::new()
+    let selection = Select::with_theme(&ColorfulTheme::default())
         .with_prompt("Select a model")
         .items(models)
         .default(default_index)
         .interact()?;
     Ok(models[selection].to_string())
+}
+
+pub fn select_theme() -> Result<String, Box<dyn std::error::Error>> {
+    let assets = bat::assets::HighlightingAssets::from_binary();
+    let themes = assets.themes().collect::<Vec<&str>>();
+    let selection = Select::with_theme(&ColorfulTheme::default())
+        .with_prompt("Select a theme")
+        .items(&themes)
+        .default(0)
+        .interact()?;
+    Ok(themes[selection].to_string())
+}
+
+pub fn print_sample_text(theme_name: &str) {
+    let sample_text = r#"# Sample text with code:
+
+- Rust **function** for computing _factorial_:
+
+    ```rust
+    fn factorial(n: u32) -> u32 {
+        if n == 0 { 1 } else { n * factorial(n - 1) }
+    }
+    ```
+- Python **class** for an _API client_:
+
+    ```python
+    class APIClient:
+        def __init__(self, api_key):
+            self.api_key = api_key
+    ```
+"#;
+    let highlighter = &mut Highlighter::new(theme_name);
+    for line in sample_text.split_inclusive("\n") {
+        let line = highlighter.highlight_line(line);
+        let line = wrap_line(&line);
+        print!("{}", line);
+    }
+    println!();
 }
 
 pub fn new_system_message(content: String) -> ChatCompletionRequestMessage {
