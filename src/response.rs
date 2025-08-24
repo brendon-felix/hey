@@ -81,7 +81,7 @@ pub async fn stream_response(
                 }
                 while let Some(line) = buffer.get_line_with_ending() {
                     if let Err(e) = render_line(&line, highlighter) {
-                        let _ = snailprint(
+                        snailprint(
                             &format!("\n{} {}\n", "Error rendering line:".red(), e),
                             5000,
                         );
@@ -89,7 +89,7 @@ pub async fn stream_response(
                 }
             }
             Err(err) => {
-                let _ = snailprint(&format!("\n{} {}\n", "Error:".red(), err), 5000);
+                snailprint(&format!("\n{} {}\n", "Error:".red(), err), 5000);
                 return Err(err.into());
             }
         }

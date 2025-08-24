@@ -97,11 +97,11 @@ pub fn wrap_line(line: &str) -> String {
 pub fn render_line(line: &str, highlighter: &mut Highlighter) -> Result<()> {
     let line = highlighter.highlight_line(line);
     let line = wrap_line(&line);
-    snailprint(&line, 5000)?;
+    snailprint(&line, 5000);
     Ok(())
 }
 
-pub fn snailprint(text: &str, num_micros: u64) -> Result<()> {
+pub fn snailprint(text: &str, num_micros: u64) {
     text.ansi_parse().for_each(|output| match output {
         Output::TextBlock(t) => {
             t.graphemes(true).for_each(|g| {
@@ -115,8 +115,5 @@ pub fn snailprint(text: &str, num_micros: u64) -> Result<()> {
             let _ = stdout().flush();
         }
     });
-    stdout()
-        .flush()
-        .context("Failed to flush output to terminal")?;
-    Ok(())
+    let _ = stdout().flush();
 }

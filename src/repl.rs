@@ -47,7 +47,7 @@ impl ReadEvalPrintLoop {
     }
 
     pub async fn run(&mut self) -> Result<()> {
-        let _ = snailprint("\nHey!\n\n", 10000);
+        snailprint("\nHey!\n\n", 10000);
         loop {
             let input = self.editor.get_input();
             match input {
@@ -60,7 +60,7 @@ impl ReadEvalPrintLoop {
                     self.conversation.add_user_message(message);
                     let response = match self.get_response().await {
                         Err(e) => {
-                            let _ = snailprint(&format!("\n{} {}\n\n", "Error:".red(), e), 5000);
+                            snailprint(&format!("\n{} {}\n\n", "Error:".red(), e), 5000);
                             continue;
                         }
                         Ok(response) => response,
@@ -76,18 +76,18 @@ impl ReadEvalPrintLoop {
     async fn handle_command(&mut self, command: Command) -> Result<bool> {
         match command {
             Command::Exit => {
-                let _ = snailprint(&format!("\n{}\n\n", "Exiting...".red()), 5000);
+                snailprint(&format!("\n{}\n\n", "Exiting...".red()), 5000);
                 sleep(Duration::from_millis(250));
                 Ok(true)
             }
             Command::Clear => {
-                let _ = snailprint(&format!("\n{}\n\n", "Clearing...".yellow()), 5000);
+                snailprint(&format!("\n{}\n\n", "Clearing...".yellow()), 5000);
                 sleep(Duration::from_millis(250));
                 clear_console();
                 Ok(false)
             }
             Command::Reset => {
-                let _ = snailprint(
+                snailprint(
                     &format!("\n{}\n", "Resetting conversation...".yellow()),
                     5000,
                 );
@@ -107,7 +107,7 @@ impl ReadEvalPrintLoop {
                 let selection = select_theme()?;
                 self.theme = selection;
                 if let Err(e) = print_sample_text(&self.theme) {
-                    let _ = snailprint(&format!("\n{} {}\n\n", "Error:".red(), e), 5000);
+                    snailprint(&format!("\n{} {}\n\n", "Error:".red(), e), 5000);
                 }
                 Ok(false)
             }
@@ -130,7 +130,7 @@ impl ReadEvalPrintLoop {
                 Ok(false)
             }
             Command::Invalid => {
-                let _ = snailprint(
+                snailprint(
                     &format!(
                         "\nInvalid command. Type /{} for a list of commands.\n\n",
                         "help".cyan()
@@ -158,7 +158,7 @@ impl ReadEvalPrintLoop {
         };
         let filepath = filename;
         self.conversation.save_to_json_file(&filepath)?;
-        let _ = snailprint(
+        snailprint(
             &format!(
                 "\n{} {}.\n\n",
                 "Conversation saved successfully to".green(),
@@ -189,7 +189,7 @@ impl ReadEvalPrintLoop {
 
     fn print_conversation(&self) {
         if self.conversation.messages.len() <= 1 {
-            let _ = snailprint("\nNo conversation history available.\n\n", 5000);
+            snailprint("\nNo conversation history available.\n\n", 5000);
             return;
         }
         if let Ok(mut highlighter) = Highlighter::new(&self.theme) {
@@ -200,10 +200,10 @@ impl ReadEvalPrintLoop {
 }
 
 fn print_help() {
-    let _ = snailprint(&format!("\n{}\n", "Available commands:".blue()), 1000);
+    snailprint(&format!("\n{}\n", "Available commands:".blue()), 1000);
     // snailprint("TODO\n", 10000);
     enum_iterator::all::<Command>().for_each(|command| {
-        let _ = snailprint(
+        snailprint(
             &format!(
                 "{}\n",
                 command
