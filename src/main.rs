@@ -1,18 +1,13 @@
-// TODO: Support for model setting
 // TODO: Try using function calling
 // TODO: Support deserialized TOML configuration file
 // TODO: Save and Load Reedline line editor history
-// TODO: Support command tab completion
+// TODO: Support command tab completion for commands
 // TODO: Experiment with ratatui based UI
 // TODO: Allow for user to change edit mode (emacs)
 // TODO: Use nushell $env to configure reedline
 
 use async_openai::Client;
 use clap::Parser;
-
-// use yansi::Paint;
-// use toml;
-// use serde::Deserialize;
 
 mod app;
 mod commands;
