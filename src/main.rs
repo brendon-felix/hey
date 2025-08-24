@@ -14,11 +14,11 @@ use async_openai::{Client, config::OpenAIConfig};
 use clap::Parser;
 use yansi::Paint;
 
-mod app;
 mod commands;
 mod conversation;
 mod editor;
 mod render;
+mod repl;
 mod response;
 mod utils;
 
@@ -70,8 +70,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let client = Client::with_config(openai_config);
 
     if args.message.is_empty() {
-        let mut app = app::App::new(client, system_prompt);
-        app.run().await?;
+        let mut repl = repl::ReadEvalPrintLoop::new(client, system_prompt);
+        repl.run().await?;
     } else {
         let messages = vec![
             utils::new_system_message(system_prompt),

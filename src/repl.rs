@@ -19,7 +19,7 @@ use crate::utils::{
     select_model, select_theme,
 };
 
-pub struct App {
+pub struct ReadEvalPrintLoop {
     client: Client<OpenAIConfig>,
     model: String,
     conversation: Conversation,
@@ -28,14 +28,14 @@ pub struct App {
     history_file: Option<String>,
 }
 
-impl App {
+impl ReadEvalPrintLoop {
     pub fn new(client: Client<OpenAIConfig>, system_prompt: String) -> Self {
         let model = "gpt-4o".to_string();
         let conversation = Conversation::new(system_prompt);
         let editor = Editor::new();
         let theme = "ansi".to_string();
         let history_file = None;
-        App {
+        Self {
             client,
             model,
             conversation,
