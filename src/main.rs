@@ -1,3 +1,6 @@
+// FIX: Highlight "Hey!" according to the set theme
+// FIX: Prevent saving conversations with no history
+
 // TODO: Try using function calling
 // TODO: Support deserialized TOML configuration file
 // TODO: Save and Load Reedline line editor history
