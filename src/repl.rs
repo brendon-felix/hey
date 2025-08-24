@@ -68,12 +68,10 @@ impl ReadEvalPrintLoop {
                     };
                     self.conversation.add_assistant_message(response);
                 }
-                Input::Command(command) => {
-                    match self.handle_command(command).await? {
-                        LoopControl::Exit => break,
-                        LoopControl::Continue => {}
-                    }
-                }
+                Input::Command(command) => match self.handle_command(command).await? {
+                    LoopControl::Exit => break,
+                    LoopControl::Continue => {}
+                },
                 Input::Invalid => {}
             }
         }
@@ -85,7 +83,7 @@ impl ReadEvalPrintLoop {
             Command::Exit => {
                 snailprint(&format!("\n{}\n\n", "Exiting...".red()), 5000);
                 sleep(Duration::from_millis(250));
-                return Ok(LoopControl::Exit)
+                return Ok(LoopControl::Exit);
             }
             Command::Clear => {
                 snailprint(&format!("\n{}\n\n", "Clearing...".yellow()), 5000);
