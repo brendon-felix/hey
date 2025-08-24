@@ -11,6 +11,12 @@ use async_openai::config::OpenAIConfig;
 use yansi::Paint;
 
 use crate::commands::Command;
+
+#[derive(Debug, PartialEq)]
+enum LoopControl {
+    Continue,
+    Exit,
+}
 use crate::conversation::Conversation;
 use crate::editor::{Editor, Input};
 use crate::render::{Highlighter, snailprint};
@@ -52,8 +58,9 @@ impl ReadEvalPrintLoop {
             let input = self.editor.get_input();
             match input {
                 Input::Command(command) => {
-                    if self.handle_command(command).await? {
-                        break;
+                    match self.handle_command(command).await? {
+                        LoopControl::Exit => break,
+                        LoopControl::Continue => {}
                     }
                 }
                 Input::Message(message) => {
@@ -73,18 +80,17 @@ impl ReadEvalPrintLoop {
         Ok(())
     }
 
-    async fn handle_command(&mut self, command: Command) -> Result<bool> {
+    async fn handle_command(&mut self, command: Command) -> Result<LoopControl> {
         match command {
             Command::Exit => {
                 snailprint(&format!("\n{}\n\n", "Exiting...".red()), 5000);
                 sleep(Duration::from_millis(250));
-                Ok(true)
+                return Ok(LoopControl::Exit)
             }
             Command::Clear => {
                 snailprint(&format!("\n{}\n\n", "Clearing...".yellow()), 5000);
                 sleep(Duration::from_millis(250));
                 clear_console();
-                Ok(false)
             }
             Command::Reset => {
                 snailprint(
@@ -96,12 +102,10 @@ impl ReadEvalPrintLoop {
                 println!();
                 sleep(Duration::from_millis(500));
                 self.conversation.reset();
-                Ok(false)
             }
             Command::SelectModel => {
                 let selection = select_model(&self.model)?;
                 self.model = selection;
-                Ok(false)
             }
             Command::SelectTheme => {
                 let selection = select_theme()?;
@@ -109,25 +113,20 @@ impl ReadEvalPrintLoop {
                 if let Err(e) = print_sample_text(&self.theme) {
                     snailprint(&format!("\n{} {}\n\n", "Error:".red(), e), 5000);
                 }
-                Ok(false)
             }
             Command::Save => {
                 self.save_conversation().await?;
-                Ok(false)
             }
             Command::Load => {
                 self.load_conversation()?;
                 print_separator();
                 self.print_conversation();
-                Ok(false)
             }
             Command::History => {
                 self.print_conversation();
-                Ok(false)
             }
             Command::Help => {
                 print_help();
-                Ok(false)
             }
             Command::Invalid => {
                 snailprint(
@@ -137,9 +136,9 @@ impl ReadEvalPrintLoop {
                     ),
                     2000,
                 );
-                Ok(false)
             }
         }
+        Ok(LoopControl::Continue)
     }
 
     pub async fn get_response(&mut self) -> Result<String> {
