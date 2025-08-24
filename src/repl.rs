@@ -57,12 +57,6 @@ impl ReadEvalPrintLoop {
         loop {
             let input = self.editor.get_input();
             match input {
-                Input::Command(command) => {
-                    match self.handle_command(command).await? {
-                        LoopControl::Exit => break,
-                        LoopControl::Continue => {}
-                    }
-                }
                 Input::Message(message) => {
                     self.conversation.add_user_message(message);
                     let response = match self.get_response().await {
@@ -73,6 +67,12 @@ impl ReadEvalPrintLoop {
                         Ok(response) => response,
                     };
                     self.conversation.add_assistant_message(response);
+                }
+                Input::Command(command) => {
+                    match self.handle_command(command).await? {
+                        LoopControl::Exit => break,
+                        LoopControl::Continue => {}
+                    }
                 }
                 Input::Invalid => {}
             }

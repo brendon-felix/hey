@@ -14,8 +14,8 @@ use reedline::{
 use crate::commands::{Command, parse_command};
 
 pub enum Input {
-    Command(Command),
     Message(String),
+    Command(Command),
     Invalid,
 }
 
