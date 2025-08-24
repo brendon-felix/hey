@@ -11,6 +11,7 @@ use term_size;
 use yansi::Paint;
 
 const DEFAULT_SYSTEM_PROMPT: &str = "You are a helpful assistant.";
+const SUPPORTED_MODELS: [&str; 3] = ["gpt-3.5-turbo", "gpt-4o", "gpt-4o-mini"];
 
 pub fn clear_console() {
     if cfg!(target_os = "windows") {
@@ -130,6 +131,17 @@ pub fn select_filename(generated_title: String) -> Result<String, Box<dyn std::e
     } else {
         Ok(format!("{}.json", name))
     }
+}
+
+pub fn select_model(default: &str) -> Result<String, Box<dyn std::error::Error>> {
+    let models = &SUPPORTED_MODELS;
+    let default_index = models.iter().position(|&m| m == default).unwrap_or(0);
+    let selection = Select::new()
+        .with_prompt("Select a model")
+        .items(models)
+        .default(default_index)
+        .interact()?;
+    Ok(models[selection].to_string())
 }
 
 pub fn new_system_message(content: String) -> ChatCompletionRequestMessage {

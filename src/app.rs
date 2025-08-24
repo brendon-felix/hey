@@ -7,22 +7,20 @@ use std::time::Duration;
 
 use async_openai::Client;
 use async_openai::config::OpenAIConfig;
-
-use dialoguer::Select;
+use yansi::Paint;
 
 use crate::commands::Command;
 use crate::conversation::Conversation;
 use crate::editor::{Editor, Input};
 use crate::render::{Highlighter, snailprint};
 use crate::response::{create_request, generate_title, stream_response};
-use crate::utils::{clear_console, print_separator, select_filename, select_json_file};
-
-use yansi::Paint;
+use crate::utils::{
+    clear_console, print_separator, select_filename, select_json_file, select_model,
+};
 
 pub struct App {
     client: Client<OpenAIConfig>,
     model: String,
-    // conversation: Vec<ChatCompletionRequestMessage>,
     conversation: Conversation,
     editor: Editor,
     history_file: Option<String>,
@@ -71,37 +69,12 @@ impl App {
                         self.conversation.reset();
                     }
                     Command::SelectModel => {
-                        let models = vec!["gpt-3.5-turbo", "gpt-4o", "gpt-4o-mini"];
-                        let selection_res = Select::new()
-                            .with_prompt(format!("Select a model (current: {})", self.model))
-                            .items(&models)
-                            .default(0)
-                            .interact()
-                            .ok();
-                        match selection_res {
-                            None => {
-                                snailprint(
-                                    &format!(
-                                        "\n{} {}\n\n",
-                                        "Model change cancelled.".yellow(),
-                                        self.model.blue()
-                                    ),
-                                    2000,
-                                );
-                                continue;
-                            }
-                            Some(selection) => {
-                                self.model = models[selection].to_string();
-                                snailprint(
-                                    &format!(
-                                        "\n{} {}\n\n",
-                                        "Model changed to".green(),
-                                        self.model.blue()
-                                    ),
-                                    2000,
-                                );
-                            }
-                        };
+                        let selection = select_model(&self.model)?;
+                        self.model = selection;
+                        snailprint(
+                            &format!("\n{} {}\n\n", "Model changed to".green(), self.model.blue()),
+                            2000,
+                        );
                     }
                     Command::Save => {
                         self.save_conversation().await?;
