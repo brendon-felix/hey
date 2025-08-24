@@ -22,8 +22,8 @@ use crate::editor::{Editor, Input};
 use crate::render::{Highlighter, snailprint};
 use crate::response::{create_request, generate_title, stream_response};
 use crate::utils::{
-    clear_console, print_sample_text, print_separator, select_filename, select_json_file,
-    select_model, select_theme,
+    clear_console, print_help, print_sample_text, print_separator, select_filename,
+    select_json_file, select_model, select_theme,
 };
 
 pub struct ReadEvalPrintLoop {
@@ -194,23 +194,4 @@ impl ReadEvalPrintLoop {
         }
         println!();
     }
-}
-
-fn print_help() {
-    snailprint(&format!("\n{}\n", "Available commands:".blue()), 1000);
-    // snailprint("TODO\n", 10000);
-    enum_iterator::all::<Command>().for_each(|command| {
-        snailprint(
-            &format!(
-                "{}\n",
-                command
-                    .strings()
-                    .iter()
-                    .map(|s| format!("/{}", s.cyan()))
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            ),
-            1000,
-        );
-    });
 }

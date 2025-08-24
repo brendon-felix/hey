@@ -11,7 +11,10 @@ use dialoguer::{Confirm, Input, Select, theme::ColorfulTheme};
 use term_size;
 use yansi::Paint;
 
-use crate::render::{Highlighter, wrap_line};
+use crate::{
+    commands::Command,
+    render::{Highlighter, snailprint, wrap_line},
+};
 
 pub fn clear_console() {
     if cfg!(target_os = "windows") {
@@ -21,6 +24,25 @@ pub fn clear_console() {
     } else {
         let _ = std::process::Command::new("clear").status();
     }
+}
+
+pub fn print_help() {
+    snailprint(&format!("\n{}\n", "Available commands:".blue()), 1000);
+    // snailprint("TODO\n", 10000);
+    enum_iterator::all::<Command>().for_each(|command| {
+        snailprint(
+            &format!(
+                "{}\n",
+                command
+                    .strings()
+                    .iter()
+                    .map(|s| format!("/{}", s.cyan()))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+            1000,
+        );
+    });
 }
 
 pub fn print_separator() {
