@@ -4,11 +4,12 @@
 
 use enum_iterator::Sequence;
 
-#[derive(Debug, Sequence, PartialEq)]
+#[derive(Debug, Sequence, PartialEq, Clone, Copy)]
 pub enum Command {
     Exit,
     Clear,
     Reset,
+    SelectModel,
     Save,
     Load,
     History,
@@ -22,6 +23,7 @@ impl Command {
             Command::Exit => vec!["exit", "quit", "q", "x"],
             Command::Clear => vec!["clear", "c"],
             Command::Reset => vec!["reset", "r"],
+            Command::SelectModel => vec!["model", "m"],
             Command::Save => vec!["save", "s"],
             Command::Load => vec!["load", "l"],
             Command::History => vec!["history"],
@@ -36,16 +38,9 @@ pub fn parse_command(input: &str) -> Option<Command> {
     if input.starts_with('/') {
         let parts: Vec<&str> = input[1..].split_whitespace().collect();
         if let Some(command) = parts.get(0) {
-            match command.to_lowercase().as_str() {
-                c if Command::Exit.strings().contains(&c) => Some(Command::Exit),
-                c if Command::Clear.strings().contains(&c) => Some(Command::Clear),
-                c if Command::Reset.strings().contains(&c) => Some(Command::Reset),
-                c if Command::Save.strings().contains(&c) => Some(Command::Save),
-                c if Command::Load.strings().contains(&c) => Some(Command::Load),
-                c if Command::History.strings().contains(&c) => Some(Command::History),
-                c if Command::Help.strings().contains(&c) => Some(Command::Help),
-                _ => Some(Command::Invalid),
-            }
+            enum_iterator::all::<Command>()
+                .find(|cmd| cmd.strings().contains(&command.to_lowercase().as_str()))
+                .or(Some(Command::Invalid))
         } else {
             Some(Command::Help)
         }

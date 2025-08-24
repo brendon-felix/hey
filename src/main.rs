@@ -7,26 +7,20 @@
 // TODO: Allow for user to change edit mode (emacs)
 // TODO: Use nushell $env to configure reedline
 
+use async_openai::Client;
 use clap::Parser;
+
 // use yansi::Paint;
 // use toml;
 // use serde::Deserialize;
 
 mod app;
 mod commands;
+mod conversation;
 mod editor;
 mod render;
+mod response;
 mod utils;
-
-// #[derive(Deserialize, Debug)]
-// struct Config {
-//     name: Option<String>,
-//     api_key: Option<String>,
-//     prompt: Option<String>,
-//     model: String,
-//     temperature: f32,
-//     max_tokens: u32,
-// }
 
 #[derive(Parser, Debug)]
 struct Args {
@@ -47,35 +41,32 @@ struct Args {
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
 
-    let api_key = match args.api_key_path {
-        Some(path) => std::fs::read_to_string(path)
-            .map_err(|_| "Failed to read API key from file")?
-            .trim()
-            .to_string(),
-        None => std::env::var("OPENAI_API_KEY").map_err(
-            |_| "Please set the OPENAI_API_KEY environment variable to your OpenAI API key.",
-        )?,
-    };
+    // let api_key = match args.api_key_path {
+    //     Some(path) => std::fs::read_to_string(path)
+    //         .map_err(|_| "Failed to read API key from file")?
+    //         .trim()
+    //         .to_string(),
+    //     None => std::env::var("OPENAI_API_KEY").map_err(
+    //         |_| "Please set the OPENAI_API_KEY environment variable to your OpenAI API key.",
+    //     )?,
+    // };
 
-    utils::api_check(&api_key).await?;
+    // utils::api_check(&api_key).await?;
 
     let system_prompt = utils::get_prompt(args.prompt_path);
 
-    // let config = std::fs::read_to_string("config.toml")
-    //     .map_err(|_| "Failed to read config.toml")?;
-    // let config: Config = toml::from_str(&config)?;
-    // let system_prompt = config.prompt
-    //     .unwrap_or_else(|| String::from(DEFAULT_SYSTEM_PROMPT));
-
-    let mut app = app::App::new(&api_key, system_prompt);
-
     if args.message.is_empty() {
-        // let name = "RustyGPT";
-        // app.print_nametag(name);
+        let mut app = app::App::new(system_prompt);
         app.run().await?;
     } else {
-        app.push_user_message(&args.message.join(" "));
-        app.get_response().await?;
+        let client = Client::new();
+        let messages = vec![
+            utils::new_system_message(system_prompt),
+            utils::new_user_message(args.message.join(" ")),
+        ];
+        let request = response::create_request("gpt-4o", 2048u32, messages)?;
+        let highlighter = &mut render::Highlighter::new();
+        response::stream_response(&client, request, highlighter).await?;
     }
     Ok(())
 }

@@ -2,10 +2,12 @@
 /*                                 render.rs                                  */
 /* -------------------------------------------------------------------------- */
 
+use ansi_parser::{AnsiParser, Output};
 use std::io::{Write, stdout};
 use std::rc::Rc;
 use std::thread::sleep;
 use std::time::Duration;
+use unicode_segmentation::UnicodeSegmentation;
 
 use bat::assets::HighlightingAssets;
 use syntect::{dumps::from_uncompressed_data, easy::HighlightLines, parsing::SyntaxSet};
@@ -54,13 +56,12 @@ impl Highlighter {
             .map(|(style, text)| {
                 // for ansi theme, red channel is an index
                 match style.foreground.r {
-                    // use yansi::Paint to colorize
                     0 => text.primary(),
                     1 => text.red(),
-                    2 => text.green(),   // strings and stuff
-                    3 => text.yellow(),  // literals and numbers
-                    4 => text.blue(),    // headers and function names
-                    5 => text.magenta(), // keywords
+                    2 => text.green(),
+                    3 => text.yellow(),
+                    4 => text.blue(),
+                    5 => text.magenta(),
                     6 => text.white(),
                     7 => text.black(),
                     _ => text.primary(),
@@ -79,16 +80,25 @@ pub fn wrap_line(line: &str) -> String {
     textwrap::wrap(line, max_width).join("\n")
 }
 
-pub fn animate_line(line: &str, num_micros: u64) {
-    line.chars().for_each(|c| {
-        print!("{}", c);
-        stdout().lock().flush().unwrap();
-        sleep(Duration::from_micros(num_micros));
-    });
-}
-
 pub fn render_line(line: &str, highlighter: &mut Highlighter) {
     let line = highlighter.highlight_line(line);
     let line = wrap_line(&line);
-    animate_line(&line, 2000);
+    snailprint(&line, 5000);
+    // print!("{}", line);
+}
+
+pub fn snailprint(text: &str, num_micros: u64) {
+    text.ansi_parse().for_each(|output| match output {
+        Output::TextBlock(t) => {
+            t.graphemes(true).for_each(|g| {
+                sleep(Duration::from_micros(num_micros));
+                print!("{}", g);
+                stdout().flush().unwrap();
+            });
+        }
+        Output::Escape(esc) => {
+            print!("{}", esc);
+            stdout().flush().unwrap();
+        }
+    })
 }

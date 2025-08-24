@@ -26,14 +26,6 @@ pub struct Editor {
 
 impl Editor {
     pub fn new() -> Self {
-        // let commands = Command::Exit
-        //     .strings()
-        //     .into_iter()
-        //     .chain(Command::Clear.strings())
-        //     .chain(Command::Help.strings())
-        //     .map(|s| s.to_string())
-        //     .collect::<Vec<String>>();
-
         let line_editor = Reedline::create()
             .with_edit_mode(Box::new(Vi::default()))
             .with_highlighter(Box::new(PromptHighlighter::new()))
@@ -190,31 +182,6 @@ impl PromptHighlighter {
                     ParseState::Invalid
                 }
             };
-            // if split.chars().all(char::is_whitespace) {
-            //     parts.push((InputPart::Whitespace, split.to_string()));
-            // } else if split.starts_with('/') {
-            //     // doesn't work because arguments starting with slashes are interpreted as commands
-            //     if let Some(cmd) = parse_command(split) {
-            //         parts.push((InputPart::ValidCommand(cmd), split.to_string()));
-            //         is_command = true;
-            //     } else {
-            //         parts.push((InputPart::InvalidCommand, split.to_string()));
-            //         is_command = false;
-            //     }
-            // } else if is_command {
-            //     let cmd = Command::strings().iter().find(|&&c| split.starts_with(c));
-            //     if let Some(command) = cmd {
-            //         parts.push((
-            //             InputPart::ValidCommand(Command::from_str(command)),
-            //             split.to_string(),
-            //         ));
-            //     } else {
-            //         parts.push((InputPart::InvalidCommand, split.to_string()));
-            //     }
-            //     is_command = false;
-            // } else {
-            //     parts.push((InputPart::MessageText, split.to_string()));
-            // }
         }
 
         parts
@@ -276,108 +243,3 @@ impl Validator for PromptValidator {
         }
     }
 }
-
-// enum CommandInputState {
-//     Slash,
-//     Recognized,
-//     Unrecognized,
-//     Argument,
-//     Invalid,
-// }
-
-// enum InputState {
-//     None,
-//     Message,
-//     Command(CommandInputState),
-// }
-
-// struct HighlightState {
-//     input_state: InputState,
-//     curr_style: Style,
-//     cmd_buffer: String,
-// }
-
-// impl HighlightState {
-//     fn new() -> Self {
-//         HighlightState {
-//             input_state: InputState::None,
-//             curr_style: Style::default(),
-//             cmd_buffer: String::new(),
-//         }
-//     }
-
-//     pub fn matches_command(&self, commands: &Vec<String>) -> bool {
-//         commands.iter().any(|cmd| &self.cmd_buffer.trim() == cmd)
-//     }
-
-//     pub fn next_char(&mut self, c: char, commands: &Vec<String>) -> (Style, String) {
-//         self.input_state = match &self.input_state {
-//             InputState::None => {
-//                 if c == '/' {
-//                     InputState::Command(CommandInputState::Slash)
-//                 } else if c.is_whitespace() {
-//                     InputState::None
-//                 } else {
-//                     self.curr_style = Style::new().fg(NuColor::Green);
-//                     InputState::Message
-//                 }
-//             }
-//             InputState::Message => InputState::Message,
-//             InputState::Command(CommandInputState::Slash) => {
-//                 self.cmd_buffer.push(c);
-//                 // if c.is_whitespace() {
-//                 //     InputState::Command(CommandInputState::Slash)
-//                 // } else if commands.iter().any(|cmd| cmd.starts_with(c)) {
-//                 //     self.curr_style = Style::new().fg(NuColor::Cyan);
-//                 //     self.cmd_buffer.push(c);
-//                 //     InputState::Command(CommandInputState::Recognized)
-//                 // } else {
-//                 //     self.curr_style = Style::new().fg(NuColor::Yellow);
-//                 //     InputState::Command(CommandInputState::Unrecognized)
-//                 // }
-//                 if self.matches_command(commands) {
-//                     self.curr_style = Style::new().fg(NuColor::Cyan);
-//                     InputState::Command(CommandInputState::Recognized)
-//                 } else {
-//                     self.curr_style = Style::new().fg(NuColor::Yellow);
-//                     InputState::Command(CommandInputState::Unrecognized)
-//                 }
-//             }
-//             InputState::Command(CommandInputState::Recognized) => {
-//                 if c.is_whitespace() {
-//                     self.curr_style = Style::new().fg(NuColor::Green);
-//                     InputState::Command(CommandInputState::Argument)
-//                 } else if commands.iter().any(|cmd| cmd.starts_with(c)) {
-//                     InputState::Command(CommandInputState::Recognized)
-//                 } else {
-//                     self.curr_style = Style::new().fg(NuColor::Yellow);
-//                     InputState::Command(CommandInputState::Unrecognized)
-//                 }
-//             }
-//             InputState::Command(CommandInputState::Unrecognized) => {
-//                 if c.is_whitespace() {
-//                     InputState::Command(CommandInputState::Invalid)
-//                 } else {
-//                     InputState::Command(CommandInputState::Unrecognized)
-//                 }
-//             }
-//             InputState::Command(CommandInputState::Argument) => {
-//                 if c.is_whitespace() {
-//                     InputState::Command(CommandInputState::Argument)
-//                 } else {
-//                     InputState::Command(CommandInputState::Argument)
-//                 }
-//             }
-//             InputState::Command(CommandInputState::Invalid) => {
-//                 if c.is_whitespace() {
-//                     self.curr_style = Style::default();
-//                     InputState::Command(CommandInputState::Invalid)
-//                 } else {
-//                     self.curr_style = Style::new().on(NuColor::Red);
-//                     InputState::Command(CommandInputState::Invalid)
-//                 }
-//             }
-//         };
-//         (self.curr_style.clone(), c.to_string())
-//     }
-// }
