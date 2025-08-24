@@ -2,11 +2,11 @@
 /*                                  utils.rs                                  */
 /* -------------------------------------------------------------------------- */
 
+use anyhow::{Context, Result};
 use async_openai::types::{
     ChatCompletionRequestAssistantMessageArgs, ChatCompletionRequestMessage,
     ChatCompletionRequestSystemMessageArgs, ChatCompletionRequestUserMessageArgs,
 };
-use anyhow::{Context, Result};
 use dialoguer::{Confirm, Input, Select, theme::ColorfulTheme};
 use term_size;
 use yansi::Paint;

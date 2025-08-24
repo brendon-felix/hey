@@ -28,9 +28,9 @@ const MAX_LINE_LENGTH: usize = 100;
 
 impl Highlighter {
     pub fn new(theme_name: &str) -> Result<Self> {
-        let ss: SyntaxSet = from_uncompressed_data(SYNTAX_SET)
-            .context("Failed to load syntax set")?;
-        
+        let ss: SyntaxSet =
+            from_uncompressed_data(SYNTAX_SET).context("Failed to load syntax set")?;
+
         let syntax_ref = ss
             .find_syntax_by_name("Markdown")
             .unwrap_or_else(|| ss.find_syntax_plain_text());
@@ -54,14 +54,14 @@ impl Highlighter {
         let theme_is_ansi = &self.theme_name == "ansi"
             || &self.theme_name == "base16"
             || &self.theme_name == "base16-256";
-        
+
         let ranges = match self.highlighter.highlight_line(line, &self.syntax_set) {
             Ok(ranges) => ranges,
             Err(_) => {
                 return line.to_string();
             }
         };
-        
+
         ranges
             .iter()
             .map(|(style, text)| {
@@ -89,9 +89,7 @@ impl Highlighter {
 }
 
 pub fn wrap_line(line: &str) -> String {
-    let term_width = term_size::dimensions()
-        .map(|(w, _)| w)
-        .unwrap_or(80);
+    let term_width = term_size::dimensions().map(|(w, _)| w).unwrap_or(80);
     let max_width = term_width.min(MAX_LINE_LENGTH);
     textwrap::wrap(line, max_width).join("\n")
 }
@@ -117,6 +115,8 @@ pub fn snailprint(text: &str, num_micros: u64) -> Result<()> {
             let _ = stdout().flush();
         }
     });
-    stdout().flush().context("Failed to flush output to terminal")?;
+    stdout()
+        .flush()
+        .context("Failed to flush output to terminal")?;
     Ok(())
 }

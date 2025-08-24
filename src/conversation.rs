@@ -1,8 +1,8 @@
+use anyhow::Result;
 use async_openai::types::{
     ChatCompletionRequestAssistantMessageContent, ChatCompletionRequestMessage,
     ChatCompletionRequestUserMessageContent,
 };
-use anyhow::Result;
 
 use yansi::Paint;
 

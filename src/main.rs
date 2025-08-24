@@ -11,8 +11,8 @@
 // TODO: Allow for user to change edit mode (emacs)
 // TODO: Use nushell $env to configure reedline
 
-use async_openai::{Client, config::OpenAIConfig};
 use anyhow::{Context, Result};
+use async_openai::{Client, config::OpenAIConfig};
 use clap::Parser;
 use yansi::Paint;
 

@@ -5,7 +5,7 @@
 use std::thread::sleep;
 use std::time::Duration;
 
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 use async_openai::Client;
 use async_openai::config::OpenAIConfig;
 use yansi::Paint;
@@ -76,7 +76,8 @@ impl ReadEvalPrintLoop {
                     Command::SelectModel => {
                         let selection = match select_model(&self.model) {
                             Err(e) => {
-                                let _ = snailprint(&format!("\n{} {}\n\n", "Error:".red(), e), 5000);
+                                let _ =
+                                    snailprint(&format!("\n{} {}\n\n", "Error:".red(), e), 5000);
                                 continue;
                             }
                             Ok(model) => model,
@@ -86,7 +87,8 @@ impl ReadEvalPrintLoop {
                     Command::SelectTheme => {
                         let selection = match select_theme() {
                             Err(e) => {
-                                let _ = snailprint(&format!("\n{} {}\n\n", "Error:".red(), e), 5000);
+                                let _ =
+                                    snailprint(&format!("\n{} {}\n\n", "Error:".red(), e), 5000);
                                 continue;
                             }
                             Ok(theme) => theme,

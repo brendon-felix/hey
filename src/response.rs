@@ -1,8 +1,8 @@
+use anyhow::Result;
 use async_openai::types::{
     ChatCompletionRequestMessage, CreateChatCompletionRequest, CreateChatCompletionRequestArgs,
 };
 use async_openai::{Client, config::OpenAIConfig};
-use anyhow::Result;
 use crossterm::cursor;
 use yansi::Paint;
 
@@ -81,7 +81,10 @@ pub async fn stream_response(
                 }
                 while let Some(line) = buffer.get_line_with_ending() {
                     if let Err(e) = render_line(&line, highlighter) {
-                        let _ = snailprint(&format!("\n{} {}\n", "Error rendering line:".red(), e), 5000);
+                        let _ = snailprint(
+                            &format!("\n{} {}\n", "Error rendering line:".red(), e),
+                            5000,
+                        );
                     }
                 }
             }
@@ -99,10 +102,7 @@ pub async fn stream_response(
     Ok(full_response)
 }
 
-pub async fn generate_title(
-    client: &Client<OpenAIConfig>,
-    transcript: String,
-) -> Result<String> {
+pub async fn generate_title(client: &Client<OpenAIConfig>, transcript: String) -> Result<String> {
     let prompt = format!(
         "Generate a concise title (max 5 words) for the following conversation (to be used in a filename). Do not use any special characters.\n"
     );
