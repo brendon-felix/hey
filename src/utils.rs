@@ -84,13 +84,14 @@ pub fn select_json_file(dir_path: &str) -> Result<Option<String>, String> {
                 .to_string()
         })
         .collect();
-
+    println!();
     let selection = Select::with_theme(&ColorfulTheme::default())
-        .with_prompt("\nSelect a JSON file to load")
+        .with_prompt("Select a JSON file to load")
         .items(&options)
         .default(0)
         .interact()
         .map_err(|e| format!("Failed to read input: {}", e))?;
+    println!();
 
     let filepath = json_files[selection].to_string_lossy().to_string();
 
@@ -138,22 +139,26 @@ pub fn select_filename(generated_title: String) -> Result<String, Box<dyn std::e
 pub fn select_model(default: &str) -> Result<String, Box<dyn std::error::Error>> {
     let models = &SUPPORTED_MODELS;
     let default_index = models.iter().position(|&m| m == default).unwrap_or(0);
+    println!();
     let selection = Select::with_theme(&ColorfulTheme::default())
         .with_prompt("Select a model")
         .items(models)
         .default(default_index)
         .interact()?;
+    println!();
     Ok(models[selection].to_string())
 }
 
 pub fn select_theme() -> Result<String, Box<dyn std::error::Error>> {
     let assets = bat::assets::HighlightingAssets::from_binary();
     let themes = assets.themes().collect::<Vec<&str>>();
+    println!();
     let selection = Select::with_theme(&ColorfulTheme::default())
         .with_prompt("Select a theme")
         .items(&themes)
         .default(0)
         .interact()?;
+    println!();
     Ok(themes[selection].to_string())
 }
 

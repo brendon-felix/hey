@@ -100,8 +100,9 @@ pub async fn generate_title(
     client: &Client<OpenAIConfig>,
     transcript: String,
 ) -> Result<String, Box<dyn std::error::Error>> {
-    let prompt =
-        format!("Generate a concise title (max 5 words) for the following conversation:\n");
+    let prompt = format!(
+        "Generate a concise title (max 5 words) for the following conversation (to be used in a filename). Do not use any special characters.\n"
+    );
     let messages = vec![new_system_message(prompt), new_user_message(transcript)];
     let request = create_request("gpt-3.5-turbo", 10u32, messages)?;
 

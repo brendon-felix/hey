@@ -67,6 +67,7 @@ impl App {
                             &format!("\n{}\n", "Resetting conversation...".yellow()),
                             5000,
                         );
+                        println!();
                         print_separator();
                         println!();
                         sleep(Duration::from_millis(500));
