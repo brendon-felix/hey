@@ -51,86 +51,11 @@ impl ReadEvalPrintLoop {
         loop {
             let input = self.editor.get_input();
             match input {
-                Input::Command(command) => match command {
-                    Command::Exit => {
-                        let _ = snailprint(&format!("\n{}\n\n", "Exiting...".red()), 5000);
-                        sleep(Duration::from_millis(250));
-                        return Ok(());
+                Input::Command(command) => {
+                    if self.handle_command(command).await? {
+                        break;
                     }
-                    Command::Clear => {
-                        let _ = snailprint(&format!("\n{}\n\n", "Clearing...".yellow()), 5000);
-                        sleep(Duration::from_millis(250));
-                        clear_console();
-                    }
-                    Command::Reset => {
-                        let _ = snailprint(
-                            &format!("\n{}\n", "Resetting conversation...".yellow()),
-                            5000,
-                        );
-                        println!();
-                        print_separator();
-                        println!();
-                        sleep(Duration::from_millis(500));
-                        self.conversation.reset();
-                    }
-                    Command::SelectModel => {
-                        let selection = match select_model(&self.model) {
-                            Err(e) => {
-                                let _ =
-                                    snailprint(&format!("\n{} {}\n\n", "Error:".red(), e), 5000);
-                                continue;
-                            }
-                            Ok(model) => model,
-                        };
-                        self.model = selection;
-                    }
-                    Command::SelectTheme => {
-                        let selection = match select_theme() {
-                            Err(e) => {
-                                let _ =
-                                    snailprint(&format!("\n{} {}\n\n", "Error:".red(), e), 5000);
-                                continue;
-                            }
-                            Ok(theme) => theme,
-                        };
-                        self.theme = selection;
-                        if let Err(e) = print_sample_text(&self.theme) {
-                            let _ = snailprint(&format!("\n{} {}\n\n", "Error:".red(), e), 5000);
-                        }
-                    }
-                    Command::Save => match self.save_conversation().await {
-                        Err(e) => {
-                            let _ = snailprint(&format!("\n{} {}\n\n", "Error:".red(), e), 5000);
-                            continue;
-                        }
-                        Ok(_) => {}
-                    },
-                    Command::Load => match self.load_conversation() {
-                        Err(e) => {
-                            let _ = snailprint(&format!("\n{} {}\n\n", "Error:".red(), e), 5000);
-                            continue;
-                        }
-                        Ok(_) => {
-                            print_separator();
-                            self.print_conversation();
-                        }
-                    },
-                    Command::History => {
-                        self.print_conversation();
-                    }
-                    Command::Help => {
-                        print_help();
-                    }
-                    Command::Invalid => {
-                        let _ = snailprint(
-                            &format!(
-                                "\nInvalid command. Type /{} for a list of commands.\n\n",
-                                "help".cyan()
-                            ),
-                            2000,
-                        );
-                    }
-                },
+                }
                 Input::Message(message) => {
                     self.conversation.add_user_message(message);
                     let response = match self.get_response().await {
@@ -143,6 +68,76 @@ impl ReadEvalPrintLoop {
                     self.conversation.add_assistant_message(response);
                 }
                 Input::Invalid => {}
+            }
+        }
+        Ok(())
+    }
+
+    async fn handle_command(&mut self, command: Command) -> Result<bool> {
+        match command {
+            Command::Exit => {
+                let _ = snailprint(&format!("\n{}\n\n", "Exiting...".red()), 5000);
+                sleep(Duration::from_millis(250));
+                Ok(true)
+            }
+            Command::Clear => {
+                let _ = snailprint(&format!("\n{}\n\n", "Clearing...".yellow()), 5000);
+                sleep(Duration::from_millis(250));
+                clear_console();
+                Ok(false)
+            }
+            Command::Reset => {
+                let _ = snailprint(
+                    &format!("\n{}\n", "Resetting conversation...".yellow()),
+                    5000,
+                );
+                println!();
+                print_separator();
+                println!();
+                sleep(Duration::from_millis(500));
+                self.conversation.reset();
+                Ok(false)
+            }
+            Command::SelectModel => {
+                let selection = select_model(&self.model)?;
+                self.model = selection;
+                Ok(false)
+            }
+            Command::SelectTheme => {
+                let selection = select_theme()?;
+                self.theme = selection;
+                if let Err(e) = print_sample_text(&self.theme) {
+                    let _ = snailprint(&format!("\n{} {}\n\n", "Error:".red(), e), 5000);
+                }
+                Ok(false)
+            }
+            Command::Save => {
+                self.save_conversation().await?;
+                Ok(false)
+            }
+            Command::Load => {
+                self.load_conversation()?;
+                print_separator();
+                self.print_conversation();
+                Ok(false)
+            }
+            Command::History => {
+                self.print_conversation();
+                Ok(false)
+            }
+            Command::Help => {
+                print_help();
+                Ok(false)
+            }
+            Command::Invalid => {
+                let _ = snailprint(
+                    &format!(
+                        "\nInvalid command. Type /{} for a list of commands.\n\n",
+                        "help".cyan()
+                    ),
+                    2000,
+                );
+                Ok(false)
             }
         }
     }
