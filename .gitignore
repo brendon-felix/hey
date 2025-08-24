@@ -1,5 +1,7 @@
 /target
+run.nu
 api_key.txt
 system_prompt.txt
 test*
 config.toml
+*.json
