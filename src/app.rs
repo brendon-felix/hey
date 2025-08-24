@@ -29,8 +29,7 @@ pub struct App {
 }
 
 impl App {
-    pub fn new(system_prompt: String) -> Self {
-        let client = Client::new();
+    pub fn new(client: Client<OpenAIConfig>, system_prompt: String) -> Self {
         let model = "gpt-4o".to_string();
         let conversation = Conversation::new(system_prompt);
         let editor = Editor::new();

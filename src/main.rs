@@ -1,5 +1,6 @@
 // FIX: Highlight "Hey!" according to the set theme
 // FIX: Prevent saving conversations with no history
+// FIX: Generate up-to-date syntax set
 
 // TODO: Try using function calling
 // TODO: Support deserialized TOML configuration file
@@ -9,8 +10,9 @@
 // TODO: Allow for user to change edit mode (emacs)
 // TODO: Use nushell $env to configure reedline
 
-use async_openai::Client;
+use async_openai::{Client, config::OpenAIConfig};
 use clap::Parser;
+use yansi::Paint;
 
 mod app;
 mod commands;
@@ -19,6 +21,8 @@ mod editor;
 mod render;
 mod response;
 mod utils;
+
+const DEFAULT_SYSTEM_PROMPT: &str = "You are a helpful assistant.";
 
 #[derive(Parser, Debug)]
 struct Args {
@@ -39,25 +43,36 @@ struct Args {
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
 
-    // let api_key = match args.api_key_path {
-    //     Some(path) => std::fs::read_to_string(path)
-    //         .map_err(|_| "Failed to read API key from file")?
-    //         .trim()
-    //         .to_string(),
-    //     None => std::env::var("OPENAI_API_KEY").map_err(
-    //         |_| "Please set the OPENAI_API_KEY environment variable to your OpenAI API key.",
-    //     )?,
-    // };
+    let api_key = match args.api_key_path {
+        Some(path) => std::fs::read_to_string(path)
+            .map_err(|_| "Failed to read API key from file")?
+            .trim()
+            .to_string(),
+        None => std::env::var("OPENAI_API_KEY").map_err(
+            |_| "Please set the OPENAI_API_KEY environment variable to your OpenAI API key.",
+        )?,
+    };
 
     // utils::api_check(&api_key).await?;
 
-    let system_prompt = utils::get_prompt(args.prompt_path);
+    let system_prompt = if let Some(path) = args.prompt_path {
+        std::fs::read_to_string(&path)
+            .unwrap_or_else(|_| panic!("Failed to read system prompt at path {}", path))
+    } else {
+        println!(
+            "{}",
+            "No system prompt file provided, using default.".yellow()
+        );
+        String::from(DEFAULT_SYSTEM_PROMPT)
+    };
+
+    let openai_config = OpenAIConfig::new().with_api_key(api_key);
+    let client = Client::with_config(openai_config);
 
     if args.message.is_empty() {
-        let mut app = app::App::new(system_prompt);
+        let mut app = app::App::new(client, system_prompt);
         app.run().await?;
     } else {
-        let client = Client::new();
         let messages = vec![
             utils::new_system_message(system_prompt),
             utils::new_user_message(args.message.join(" ")),

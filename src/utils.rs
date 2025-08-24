@@ -12,9 +12,6 @@ use yansi::Paint;
 
 use crate::render::{Highlighter, wrap_line};
 
-const DEFAULT_SYSTEM_PROMPT: &str = "You are a helpful assistant.";
-const SUPPORTED_MODELS: [&str; 3] = ["gpt-3.5-turbo", "gpt-4o", "gpt-4o-mini"];
-
 pub fn clear_console() {
     if cfg!(target_os = "windows") {
         let _ = std::process::Command::new("cmd")
@@ -44,20 +41,6 @@ pub fn print_separator() {
 //         Err(e) => Err(format!("Error reaching OpenAI API: {}", e)),
 //     }
 // }
-
-pub fn get_prompt(path: Option<String>) -> String {
-    match path {
-        Some(p) => std::fs::read_to_string(&p)
-            .unwrap_or_else(|_| panic!("Failed to read system prompt at path {}", p)),
-        None => {
-            println!(
-                "{}",
-                "No system prompt file provided, using default.".yellow()
-            );
-            String::from(DEFAULT_SYSTEM_PROMPT)
-        }
-    }
-}
 
 pub fn select_json_file(dir_path: &str) -> Result<Option<String>, String> {
     let entries = std::fs::read_dir(dir_path)
@@ -137,12 +120,19 @@ pub fn select_filename(generated_title: String) -> Result<String, Box<dyn std::e
 }
 
 pub fn select_model(default: &str) -> Result<String, Box<dyn std::error::Error>> {
-    let models = &SUPPORTED_MODELS;
+    let models = vec![
+        "gpt-3.5-turbo",
+        "gpt-4o",
+        "gpt-4o-mini",
+        "gpt-4.1",
+        "gpt-5",
+        "o3",
+    ];
     let default_index = models.iter().position(|&m| m == default).unwrap_or(0);
     println!();
     let selection = Select::with_theme(&ColorfulTheme::default())
         .with_prompt("Select a model")
-        .items(models)
+        .items(&models)
         .default(default_index)
         .interact()?;
     println!();
