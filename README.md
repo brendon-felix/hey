@@ -9,7 +9,7 @@ A minimal command-line copilot with streaming and syntax highlighting
 To install `hey`, run the following command:
 
 ```bash
-cargo install hey
+cargo install hey-rs
 ```
 
 ## Usage
