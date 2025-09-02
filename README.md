@@ -4,6 +4,18 @@ A minimal command-line copilot with streaming and syntax highlighting
 
 ![demo](./hey_demo.gif)
 
+## Features
+
+- Streaming responses via [async-openai](https://github.com/64bit/async-openai)
+- Extended markdown syntax highlighting via [syntect](https://github.com/trishume/syntect)
+- Fully-featured input prompt via [reedline](https://github.com/nushell/reedline)
+  - Vi mode support
+  - Bracketed paste support (multi-line paste)
+- Customizable system prompt
+- Save, load and view conversation history
+- Select from a list of OpenAI models
+- Select from a list of builtin themes
+
 ## Installation
 
 To install `hey`, run the following command:
@@ -25,11 +37,19 @@ To use `hey` in REPL mode, simply run:
 ```bash
 hey
 ```
+```
+Hey!
+
+> ...
+```
 
 You can also send a single message as a set of arguments:
 
 ```bash
-hey whats up
+hey who was the first US president
+```
+```
+George Washington was the first U.S. president.
 ```
 
 To use `hey` with a custom prompt, use the `-p` flag:
