@@ -2,6 +2,8 @@
 // FIX: Prevent saving conversations with no history
 // FIX: Generate up-to-date syntax set
 
+// TODO: Support models like o3 and gpt-5
+// TODO: Add file referencing for current working directory
 // TODO: Add config setting for conversations folder
 // TODO: Try using function calling
 // TODO: Support deserialized TOML configuration file

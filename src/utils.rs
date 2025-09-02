@@ -148,8 +148,9 @@ pub fn select_model(default: &str) -> Result<String> {
         "gpt-4o",
         "gpt-4o-mini",
         "gpt-4.1",
-        "gpt-5",
-        "o3",
+        // these don't work for some reason. need to investigate later
+        // "gpt-5",
+        // "o3",
     ];
     let default_index = models.iter().position(|&m| m == default).unwrap_or(0);
     println!();

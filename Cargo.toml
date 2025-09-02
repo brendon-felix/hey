@@ -1,6 +1,8 @@
 [package]
-name = "rusty-gpt"
-version = "0.2.0"
+name = "hey-rs"
+version = "0.1.1"
+authors = ["Brendon Felix"]
+description = "A minimal command-line copilot with streaming and syntax highlighting"
 edition = "2024"
 
 [dependencies]
@@ -26,3 +28,7 @@ unicode-segmentation = "1.12"
 ansi-parser = "0.9"
 # toml = "0.9"
 # serde = { version = "1", features = ["derive"] }
+
+[[bin]]
+name = "hey"
+path = "src/main.rs"

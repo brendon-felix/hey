@@ -892,6 +892,32 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2304e00983f87ffb38b55b444b5e3b60a884b5d30c0fca7d82fe33449bbe55ea"
 
 [[package]]
+name = "hey-rs"
+version = "0.1.1"
+dependencies = [
+ "ansi-parser",
+ "anyhow",
+ "async-openai",
+ "bat",
+ "chrono",
+ "clap",
+ "crossterm",
+ "dialoguer",
+ "enum-iterator",
+ "futures-util",
+ "nu-ansi-term",
+ "reedline",
+ "reqwest",
+ "serde_json",
+ "syntect",
+ "term_size",
+ "textwrap",
+ "tokio",
+ "unicode-segmentation",
+ "yansi",
+]
+
+[[package]]
 name = "home"
 version = "0.5.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1939,32 +1965,6 @@ name = "rustversion"
 version = "1.0.21"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8a0d197bd2c9dc6e53b84da9556a69ba4cdfab8619eb41a8bd1cc2027a0f6b1d"
-
-[[package]]
-name = "rusty-gpt"
-version = "0.2.0"
-dependencies = [
- "ansi-parser",
- "anyhow",
- "async-openai",
- "bat",
- "chrono",
- "clap",
- "crossterm",
- "dialoguer",
- "enum-iterator",
- "futures-util",
- "nu-ansi-term",
- "reedline",
- "reqwest",
- "serde_json",
- "syntect",
- "term_size",
- "textwrap",
- "tokio",
- "unicode-segmentation",
- "yansi",
-]
 
 [[package]]
 name = "ryu"
