@@ -5,3 +5,4 @@ system_prompt.txt
 test*
 config.toml
 *.json
+.DS_Store

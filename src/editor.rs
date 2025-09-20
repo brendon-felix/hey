@@ -7,16 +7,51 @@ use std::borrow::Cow;
 use crossterm::cursor::SetCursorStyle;
 use nu_ansi_term::{Color as NuColor, Style};
 use reedline::{
-    Color, CursorConfig, Highlighter, Prompt, PromptEditMode, PromptHistorySearch, Reedline,
-    Signal, StyledText, ValidationResult, Validator, Vi,
+    Color, CursorConfig, EditMode, Emacs, Highlighter, Prompt, PromptEditMode, PromptHistorySearch,
+    Reedline, Signal, StyledText, ValidationResult, Validator, Vi,
 };
 
-use crate::commands::{Command, parse_command};
+use crate::{
+    commands::{Command, parse_command},
+    config::Config,
+};
 
 pub enum Input {
     Message(String),
     Command(Command),
     Invalid,
+}
+
+enum ReedlineEditMode {
+    Emacs,
+    Vi,
+}
+
+pub struct EditorConfig {
+    edit_mode: ReedlineEditMode,
+    use_kitty_keyboard_enhancement: bool,
+    use_bracketed_paste: bool,
+}
+
+impl EditorConfig {
+    pub fn from_config(config: &Config) -> Self {
+        let edit_mode = match config.edit_mode.to_lowercase().as_str() {
+            "vi" | "vim" => ReedlineEditMode::Vi,
+            "emacs" | "default" => ReedlineEditMode::Emacs,
+            _ => {
+                println!(
+                    "Warning: Unknown edit mode '{}', defaulting to 'emacs'",
+                    config.edit_mode
+                );
+                ReedlineEditMode::Emacs
+            }
+        };
+        EditorConfig {
+            edit_mode,
+            use_kitty_keyboard_enhancement: true,
+            use_bracketed_paste: config.bracketed_paste,
+        }
+    }
 }
 
 pub struct Editor {
@@ -25,9 +60,14 @@ pub struct Editor {
 }
 
 impl Editor {
-    pub fn new() -> Self {
+    pub fn new(editor_config: EditorConfig) -> Self {
+        let edit_mode: Box<dyn EditMode> = match editor_config.edit_mode {
+            ReedlineEditMode::Vi => Box::new(Vi::default()),
+            ReedlineEditMode::Emacs => Box::new(Emacs::default()),
+        };
+
         let line_editor = Reedline::create()
-            .with_edit_mode(Box::new(Vi::default()))
+            .with_edit_mode(edit_mode)
             .with_highlighter(Box::new(PromptHighlighter::new()))
             .with_validator(Box::new(PromptValidator::new()))
             .with_cursor_config(CursorConfig {
@@ -35,8 +75,8 @@ impl Editor {
                 vi_normal: Some(SetCursorStyle::BlinkingBlock),
                 emacs: Some(SetCursorStyle::DefaultUserShape),
             })
-            .use_kitty_keyboard_enhancement(true)
-            .use_bracketed_paste(true);
+            .use_kitty_keyboard_enhancement(editor_config.use_kitty_keyboard_enhancement)
+            .use_bracketed_paste(editor_config.use_bracketed_paste);
 
         let prompt = EditorPrompt::new();
         Editor {

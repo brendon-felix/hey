@@ -8,17 +8,18 @@ use std::time::Duration;
 use anyhow::{Result, bail};
 use async_openai::Client;
 use async_openai::config::OpenAIConfig;
+use async_openai::types::ChatCompletionRequestMessage;
 use yansi::Paint;
-
-use crate::commands::Command;
 
 #[derive(Debug, PartialEq)]
 enum LoopControl {
     Continue,
     Exit,
 }
+use crate::commands::Command;
+use crate::config::Config;
 use crate::conversation::Conversation;
-use crate::editor::{Editor, Input};
+use crate::editor::{Editor, EditorConfig, Input};
 use crate::render::{Highlighter, snailprint};
 use crate::response::{create_request, generate_title, stream_response};
 use crate::utils::{
@@ -36,11 +37,33 @@ pub struct ReadEvalPrintLoop {
 }
 
 impl ReadEvalPrintLoop {
-    pub fn new(client: Client<OpenAIConfig>, system_prompt: String) -> Self {
-        let model = "gpt-4o".to_string();
-        let conversation = Conversation::new(system_prompt);
-        let editor = Editor::new();
-        let theme = "ansi".to_string();
+    pub fn new(client: Client<OpenAIConfig>, config: Config) -> Self {
+        let editor_config = EditorConfig::from_config(&config);
+        let editor = Editor::new(editor_config);
+        let model = config.model;
+        let conversation = Conversation::new(config.system_prompt);
+        let theme = config.theme;
+        let history_file = None;
+        Self {
+            client,
+            model,
+            conversation,
+            editor,
+            theme,
+            history_file,
+        }
+    }
+
+    pub fn with_conversation(
+        client: Client<OpenAIConfig>,
+        config: Config,
+        conversation: Conversation,
+        // history_file: Option<String>,
+    ) -> Self {
+        let editor_config = EditorConfig::from_config(&config);
+        let editor = Editor::new(editor_config);
+        let model = config.model;
+        let theme = config.theme;
         let history_file = None;
         Self {
             client,
@@ -53,7 +76,21 @@ impl ReadEvalPrintLoop {
     }
 
     pub async fn run(&mut self) -> Result<()> {
-        snailprint("\nHey!\n\n", 10000);
+        match self.conversation.messages.last().unwrap() {
+            ChatCompletionRequestMessage::User(_) => {
+                let response = match self.get_response().await {
+                    Err(e) => {
+                        snailprint(&format!("\n{} {}\n\n", "Error:".red(), e), 5000);
+                        String::new()
+                    }
+                    Ok(response) => response,
+                };
+                self.conversation.add_assistant_message(response);
+            }
+            _ => {
+                snailprint("\nHey!\n\n", 10000);
+            }
+        }
         loop {
             let input = self.editor.get_input();
             match input {
