@@ -11,7 +11,7 @@ use std::time::Duration;
 use unicode_segmentation::UnicodeSegmentation;
 
 use bat::assets::HighlightingAssets;
-use syntect::{dumps::from_uncompressed_data, easy::HighlightLines, parsing::SyntaxSet};
+use syntect::{dumps, easy::HighlightLines, parsing::SyntaxSet};
 use yansi::Paint;
 
 /* -------------------------------------------------------------------------- */
@@ -24,12 +24,13 @@ pub struct Highlighter {
 }
 
 const SYNTAX_SET: &[u8] = include_bytes!("../syntax_set.bin");
+// const SYNTAX_SET: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/syntax_set.bin"));
 const MAX_LINE_LENGTH: usize = 100;
 
 impl Highlighter {
     pub fn new(theme_name: &str) -> Result<Self> {
         let ss: SyntaxSet =
-            from_uncompressed_data(SYNTAX_SET).context("Failed to load syntax set")?;
+            dumps::from_uncompressed_data(SYNTAX_SET).context("Failed to load syntax set")?;
 
         let syntax_ref = ss
             .find_syntax_by_name("Markdown")
