@@ -88,7 +88,7 @@ syntax_highlighting = true
 theme = "ansi"                      # Run /theme to see all options
 wrap_width = 100                    # 0 to disable wrapping
 ansi_colors = true
-animations = false                  # Typewriter effect
+animations = true                   # Typewriter effect
 
 # Editor
 edit_mode = "emacs"                 # or "vi"
@@ -112,7 +112,7 @@ conversations_folder = "~/.hey"     # Where to save conversations
 | `syntax_highlighting` | `true` | Code syntax highlighting |
 | `theme` | `"ansi"` | Highlighting color scheme |
 | `ansi_colors` | `true` | Colored terminal output |
-| `animations` | `false` | Typewriter text effect |
+| `animations` | `true` | Typewriter text effect |
 | `edit_mode` | `"emacs"` | Input editor mode ("emacs" or "vi") |
 | `bracketed_paste` | `true` | Multi-line paste support |
 | `conversations_folder` | `"./"` | Directory for saved conversations |
