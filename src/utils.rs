@@ -176,7 +176,7 @@ pub fn select_theme() -> Result<String> {
     Ok(themes[selection].to_string())
 }
 
-pub fn print_sample_text(theme_name: &str) -> Result<()> {
+pub fn print_sample_text(theme_name: &str, wrap_width: u32) -> Result<()> {
     let sample_text = r#"# Sample text with code:
 
 - Rust **function** for computing _factorial_:
@@ -197,7 +197,7 @@ pub fn print_sample_text(theme_name: &str) -> Result<()> {
     let mut highlighter = Highlighter::new(theme_name)?;
     for line in sample_text.split_inclusive("\n") {
         let line = highlighter.highlight_line(line);
-        let line = wrap_line(&line);
+        let line = wrap_line(&line, wrap_width);
         print!("{}", line);
     }
     println!();

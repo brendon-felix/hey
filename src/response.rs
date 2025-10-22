@@ -64,6 +64,7 @@ pub async fn stream_response(
     client: &Client<OpenAIConfig>,
     request: CreateChatCompletionRequest,
     highlighter: &mut Highlighter,
+    wrap_width: u32,
 ) -> Result<String> {
     let mut buffer = ResponseBuffer::new();
 
@@ -80,7 +81,7 @@ pub async fn stream_response(
                     full_response.push_str(delta);
                 }
                 while let Some(line) = buffer.get_line_with_ending() {
-                    if let Err(e) = render_line(&line, highlighter) {
+                    if let Err(e) = render_line(&line, highlighter, wrap_width) {
                         snailprint(
                             &format!("\n{} {}\n", "Error rendering line:".red(), e),
                             5000,
@@ -95,7 +96,7 @@ pub async fn stream_response(
         }
     }
     if let Some(remaining) = buffer.get_remaining() {
-        let _ = render_line(&remaining, highlighter);
+        let _ = render_line(&remaining, highlighter, wrap_width);
     }
 
     print!("\n{}\n", cursor::Show);

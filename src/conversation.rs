@@ -37,7 +37,7 @@ impl Conversation {
         self.messages = self.messages[..1].to_vec();
     }
 
-    pub fn print_messages(&self, highlighter: &mut Highlighter) {
+    pub fn print_messages(&self, highlighter: &mut Highlighter, wrap_width: u32) {
         self.messages.iter().for_each(|msg| match msg {
             ChatCompletionRequestMessage::User(msg) => match msg.content {
                 ChatCompletionRequestUserMessageContent::Text(ref content) => {
@@ -51,7 +51,7 @@ impl Conversation {
                     println!();
                     for line in content.split_inclusive("\n") {
                         let highlighted_line = highlighter.highlight_line(line);
-                        let wrapped_line = wrap_line(&highlighted_line);
+                        let wrapped_line = wrap_line(&highlighted_line, wrap_width);
                         print!("{}", wrapped_line);
                     }
                     println!();

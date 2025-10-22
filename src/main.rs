@@ -140,7 +140,7 @@ async fn main() -> Result<()> {
         ];
         let request = response::create_request(&config.model, config.max_tokens, messages)?;
         let mut highlighter = render::Highlighter::new(&config.theme)?;
-        response::stream_response(&client, request, &mut highlighter).await?;
+        response::stream_response(&client, request, &mut highlighter, config.wrap_width).await?;
     }
     Ok(())
 }

@@ -25,7 +25,6 @@ pub struct Highlighter {
 
 const SYNTAX_SET: &[u8] = include_bytes!("../syntax_set.bin");
 // const SYNTAX_SET: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/syntax_set.bin"));
-const MAX_LINE_LENGTH: usize = 100;
 
 impl Highlighter {
     pub fn new(theme_name: &str) -> Result<Self> {
@@ -89,15 +88,19 @@ impl Highlighter {
     }
 }
 
-pub fn wrap_line(line: &str) -> String {
+pub fn wrap_line(line: &str, wrap_width: u32) -> String {
+    // If wrap_width is 0, disable wrapping entirely
+    if wrap_width == 0 {
+        return line.to_string();
+    }
     let term_width = term_size::dimensions().map(|(w, _)| w).unwrap_or(80);
-    let max_width = term_width.min(MAX_LINE_LENGTH);
+    let max_width = term_width.min(wrap_width as usize);
     textwrap::wrap(line, max_width).join("\n")
 }
 
-pub fn render_line(line: &str, highlighter: &mut Highlighter) -> Result<()> {
+pub fn render_line(line: &str, highlighter: &mut Highlighter, wrap_width: u32) -> Result<()> {
     let line = highlighter.highlight_line(line);
-    let line = wrap_line(&line);
+    let line = wrap_line(&line, wrap_width);
     snailprint(&line, 5000);
     Ok(())
 }

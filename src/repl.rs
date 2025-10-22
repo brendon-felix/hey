@@ -34,6 +34,7 @@ pub struct ReadEvalPrintLoop {
     editor: Editor,
     theme: String,
     history_file: Option<String>,
+    wrap_width: u32,
 }
 
 impl ReadEvalPrintLoop {
@@ -44,6 +45,7 @@ impl ReadEvalPrintLoop {
         let conversation = Conversation::new(config.system_prompt);
         let theme = config.theme;
         let history_file = None;
+        let wrap_width = config.wrap_width;
         Self {
             client,
             model,
@@ -51,6 +53,7 @@ impl ReadEvalPrintLoop {
             editor,
             theme,
             history_file,
+            wrap_width,
         }
     }
 
@@ -65,6 +68,7 @@ impl ReadEvalPrintLoop {
         let model = config.model;
         let theme = config.theme;
         let history_file = None;
+        let wrap_width = config.wrap_width;
         Self {
             client,
             model,
@@ -72,6 +76,7 @@ impl ReadEvalPrintLoop {
             editor,
             theme,
             history_file,
+            wrap_width,
         }
     }
 
@@ -145,7 +150,7 @@ impl ReadEvalPrintLoop {
             Command::SelectTheme => {
                 let selection = select_theme()?;
                 self.theme = selection;
-                if let Err(e) = print_sample_text(&self.theme) {
+                if let Err(e) = print_sample_text(&self.theme, self.wrap_width) {
                     snailprint(&format!("\n{} {}\n\n", "Error:".red(), e), 5000);
                 }
             }
@@ -179,7 +184,7 @@ impl ReadEvalPrintLoop {
     pub async fn get_response(&mut self) -> Result<String> {
         let request = create_request(&self.model, 2048u32, self.conversation.messages.clone())?;
         let mut highlighter = Highlighter::new(&self.theme)?;
-        stream_response(&self.client, request, &mut highlighter).await
+        stream_response(&self.client, request, &mut highlighter, self.wrap_width).await
     }
 
     async fn save_conversation(&self) -> Result<()> {
@@ -227,7 +232,8 @@ impl ReadEvalPrintLoop {
             return;
         }
         if let Ok(mut highlighter) = Highlighter::new(&self.theme) {
-            self.conversation.print_messages(&mut highlighter);
+            self.conversation
+                .print_messages(&mut highlighter, self.wrap_width);
         }
         println!();
     }

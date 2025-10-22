@@ -29,7 +29,7 @@ use yansi::Paint;
 //   - disable syntax highlighting
 //   - disable ansi color
 //   - default theme
-//   - wrap width ('auto' or int)
+//   - wrap width (int, 0 to disable)
 
 const DEFAULT_ENTER_REPL: bool = false;
 const DEFAULT_AUTO_SAVE: bool = false;
@@ -45,7 +45,6 @@ const DEFAULT_SYNTAX_HIGHLIGHTING: bool = true;
 const DEFAULT_THEME: &str = "ansi";
 const DEFAULT_WRAP_WIDTH: u32 = 100;
 
-#[allow(dead_code)]
 pub struct Config {
     pub system_prompt: String,
     pub model: String,
@@ -168,7 +167,7 @@ fn get_config_path() -> Result<PathBuf> {
     // │ Windows  │ %APPDATA%                         │
     // ╰──────────┴───────────────────────────────────╯
     let config_toml_path = config_dir()
-        .map(|path| path.join("hey").join("config.toml"))
+        .map(|path| path.join("hey").join("hey.toml"))
         .context("Failed to determine config path")?;
     Ok(config_toml_path)
 }
