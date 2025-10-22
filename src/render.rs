@@ -105,6 +105,12 @@ pub fn render_line(line: &str, highlighter: &mut Highlighter, wrap_width: u32) -
     Ok(())
 }
 
+pub fn render_line_plain(line: &str, wrap_width: u32) -> Result<()> {
+    let line = wrap_line(line, wrap_width);
+    snailprint(&line, 5000);
+    Ok(())
+}
+
 pub fn snailprint(text: &str, num_micros: u64) {
     text.ansi_parse().for_each(|output| match output {
         Output::TextBlock(t) => {

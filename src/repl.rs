@@ -33,6 +33,7 @@ pub struct ReadEvalPrintLoop {
     conversation: Conversation,
     editor: Editor,
     theme: String,
+    syntax_highlighting: bool,
     history_file: Option<String>,
     wrap_width: u32,
 }
@@ -44,6 +45,7 @@ impl ReadEvalPrintLoop {
         let model = config.model;
         let conversation = Conversation::new(config.system_prompt);
         let theme = config.theme;
+        let syntax_highlighting = config.syntax_highlighting;
         let history_file = None;
         let wrap_width = config.wrap_width;
         Self {
@@ -52,6 +54,7 @@ impl ReadEvalPrintLoop {
             conversation,
             editor,
             theme,
+            syntax_highlighting,
             history_file,
             wrap_width,
         }
@@ -67,6 +70,7 @@ impl ReadEvalPrintLoop {
         let editor = Editor::new(editor_config);
         let model = config.model;
         let theme = config.theme;
+        let syntax_highlighting = config.syntax_highlighting;
         let history_file = None;
         let wrap_width = config.wrap_width;
         Self {
@@ -75,6 +79,7 @@ impl ReadEvalPrintLoop {
             conversation,
             editor,
             theme,
+            syntax_highlighting,
             history_file,
             wrap_width,
         }
@@ -183,7 +188,11 @@ impl ReadEvalPrintLoop {
 
     pub async fn get_response(&mut self) -> Result<String> {
         let request = create_request(&self.model, 2048u32, self.conversation.messages.clone())?;
-        let mut highlighter = Highlighter::new(&self.theme)?;
+        let mut highlighter = if self.syntax_highlighting {
+            Some(Highlighter::new(&self.theme)?)
+        } else {
+            None
+        };
         stream_response(&self.client, request, &mut highlighter, self.wrap_width).await
     }
 
@@ -231,10 +240,13 @@ impl ReadEvalPrintLoop {
             snailprint("\nNo conversation history available.\n\n", 5000);
             return;
         }
-        if let Ok(mut highlighter) = Highlighter::new(&self.theme) {
-            self.conversation
-                .print_messages(&mut highlighter, self.wrap_width);
-        }
+        let mut highlighter = if self.syntax_highlighting {
+            Highlighter::new(&self.theme).ok()
+        } else {
+            None
+        };
+        self.conversation
+            .print_messages(&mut highlighter, self.wrap_width);
         println!();
     }
 }

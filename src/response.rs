@@ -8,7 +8,7 @@ use yansi::Paint;
 
 use futures_util::stream::StreamExt;
 
-use crate::render::{Highlighter, render_line, snailprint};
+use crate::render::{Highlighter, render_line, render_line_plain, snailprint};
 use crate::utils::{new_system_message, new_user_message};
 
 struct ResponseBuffer {
@@ -63,7 +63,7 @@ pub fn create_request(
 pub async fn stream_response(
     client: &Client<OpenAIConfig>,
     request: CreateChatCompletionRequest,
-    highlighter: &mut Highlighter,
+    highlighter: &mut Option<Highlighter>,
     wrap_width: u32,
 ) -> Result<String> {
     let mut buffer = ResponseBuffer::new();
@@ -81,7 +81,12 @@ pub async fn stream_response(
                     full_response.push_str(delta);
                 }
                 while let Some(line) = buffer.get_line_with_ending() {
-                    if let Err(e) = render_line(&line, highlighter, wrap_width) {
+                    let result = if let Some(h) = highlighter {
+                        render_line(&line, h, wrap_width)
+                    } else {
+                        render_line_plain(&line, wrap_width)
+                    };
+                    if let Err(e) = result {
                         snailprint(
                             &format!("\n{} {}\n", "Error rendering line:".red(), e),
                             5000,
@@ -96,7 +101,11 @@ pub async fn stream_response(
         }
     }
     if let Some(remaining) = buffer.get_remaining() {
-        let _ = render_line(&remaining, highlighter, wrap_width);
+        let _ = if let Some(h) = highlighter {
+            render_line(&remaining, h, wrap_width)
+        } else {
+            render_line_plain(&remaining, wrap_width)
+        };
     }
 
     print!("\n{}\n", cursor::Show);

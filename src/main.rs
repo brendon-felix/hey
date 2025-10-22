@@ -139,7 +139,11 @@ async fn main() -> Result<()> {
             utils::new_user_message(args.message.join(" ")),
         ];
         let request = response::create_request(&config.model, config.max_tokens, messages)?;
-        let mut highlighter = render::Highlighter::new(&config.theme)?;
+        let mut highlighter = if config.syntax_highlighting {
+            Some(render::Highlighter::new(&config.theme)?)
+        } else {
+            None
+        };
         response::stream_response(&client, request, &mut highlighter, config.wrap_width).await?;
     }
     Ok(())
