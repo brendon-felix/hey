@@ -1,6 +1,6 @@
 [package]
 name = "hey-rs"
-version = "0.1.2"
+version = "0.2.0"
 authors = ["Brendon Felix"]
 edition = "2024"
 license = "MIT"
@@ -12,7 +12,7 @@ keywords = ["copilot", "openai", "chatgpt"]
 categories = ["command-line-utilities"]
 
 [workspace.dependencies]
-syntect = "5.2"
+syntect = "5.3"
 bat = { version = "0.25", default-features = false }
 
 [dependencies]
@@ -30,7 +30,7 @@ term_size = "0.3"
 reedline = "0.41"
 nu-ansi-term = "0.50"
 crossterm = "0.28"
-enum-iterator = "2.1"
+enum-iterator = "2.3"
 dialoguer = "0.11"
 reqwest = "0.12"
 chrono = "0.4"

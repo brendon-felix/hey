@@ -1,16 +1,19 @@
 // TODO: Add load flag to load a conversation in comand line (--load, -l)
-// TODO: Add file referencing for current working directory (/context, /c)
-//   TODO: Add a context flag to load a file as context (--context, -c)
+// TODO: Add context referencing command (/context, /c)
+//   TODO: Add a context referenceing flag (--context, -c)
 // TODO: Implement auto saving and loading (default off)
 // TODO: Support models like o3 and gpt-5
-// TODO: Add config setting for conversations folder
-// TODO: Save and Load Reedline line editor history
-// TODO: Allow editor as prompt input as supported by reedline
-// TODO: Support command tab completion for commands
+// TODO: organize config into global, reedline config and response config
+// TODO: support api_key path
+//   TODO: support api_key path flag (--api-key-path, -k)
+// TODO: add config options for reedline prompt style (color, indicator char, etc.)
 
 // Experiments
 // Experiment with ratatui based UI
 // Use nushell $env to configure reedline
+// Support command tab completion for commands
+// Allow editor as prompt input as supported by reedline
+// Save and Load Reedline line editor history
 
 // Configuration options:
 // - API key path
@@ -54,8 +57,7 @@ struct Args {
     #[arg(long, short)]
     prompt_path: Option<String>,
 
-    /// Message to send to the model
-    /// - Enters the REPL if `enter_repl` is set to true
+    /// Message to send to the model. If not provided, enters interactive REPL mode.
     #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
     message: Vec<String>,
 }

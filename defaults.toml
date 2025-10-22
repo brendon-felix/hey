@@ -1,0 +1,56 @@
+# defaults.toml
+# This file documents all available configuration options with their default values.
+#
+# Config directory locations:
+# - Linux:   $XDG_CONFIG_HOME/hey/hey.toml or $HOME/.config/hey/hey.toml
+# - macOS:   $HOME/Library/Application Support/hey/hey.toml
+# - Windows: %APPDATA%/hey/hey.toml
+
+# System prompt for the model
+system_prompt = "You are a helpful assistant."
+
+# OpenAI model to use
+model = "gpt-4o"
+
+# Maximum tokens in the response
+max_tokens = 2048
+
+# Enter REPL mode even when a message is provided via command line
+enter_repl = false
+
+# Folder path for storing and loading conversation files
+# Set to a valid directory path to store conversations there
+# If the path doesn't exist when saving/loading, you'll be prompted to use the current directory
+# Supports robust cross-platform path expansion using shellexpand:
+#   - Tilde expansion: "~/Documents/hey/", "~" (expands to user home directory)
+#   - Environment variables: "$HOME/conversations", "${HOME}/Documents/hey"
+#   - Windows paths: "C:\Users\username\Documents\hey", ".\conversations"
+#   - Unix/Linux paths: "/home/user/conversations", "./conversations"
+#   - Relative paths: "./conversations", "../saved_chats"
+#   - Default values: "${CUSTOM_DIR:-~/Documents/hey}" (uses ~/Documents/hey if CUSTOM_DIR not set)
+conversations_folder = "./"
+
+# Enable animations (snail print effect)
+animations = false
+
+# Enable bracketed paste mode in the editor
+bracketed_paste = true
+
+# Enable ANSI colors in output
+# When set to false, all colored text (errors, warnings, messages, etc.) will be plain text
+ansi_colors = true
+
+# Edit mode for reedline editor: "emacs" or "vi"
+edit_mode = "emacs"
+
+# Enable syntax highlighting in responses
+syntax_highlighting = true
+
+# Theme for syntax highlighting
+# Available themes: "ansi", "base16", "base16-256", and various bat themes
+theme = "ansi"
+
+# Maximum width for line word wrapping
+# Set to 0 to disable word wrapping entirely
+# When set to a positive value, uses the minimum of wrap_width and terminal width
+wrap_width = 100
