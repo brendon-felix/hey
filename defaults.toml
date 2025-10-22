@@ -54,3 +54,16 @@ theme = "ansi"
 # Set to 0 to disable word wrapping entirely
 # When set to a positive value, uses the minimum of wrap_width and terminal width
 wrap_width = 100
+
+# Enable file-backed input history for reedline editor
+# When enabled, input history is persisted across sessions
+# History file location:
+# - Linux:   $XDG_CONFIG_HOME/hey/history.txt or $HOME/.config/hey/history.txt
+# - macOS:   $HOME/Library/Application Support/hey/history.txt
+# - Windows: %APPDATA%/hey/history.txt
+reedline_history = true
+
+# Maximum number of inputs to store in history
+# Only applies when reedline_history is enabled
+# Default is 1000 entries
+history_max_size = 1000

@@ -45,6 +45,8 @@ const DEFAULT_EDIT_MODE: &str = "emacs";
 const DEFAULT_SYNTAX_HIGHLIGHTING: bool = true;
 const DEFAULT_THEME: &str = "ansi";
 const DEFAULT_WRAP_WIDTH: u32 = 100;
+const DEFAULT_REEDLINE_HISTORY: bool = true;
+const DEFAULT_HISTORY_MAX_SIZE: usize = 1000;
 
 pub struct Config {
     pub system_prompt: String,
@@ -61,6 +63,8 @@ pub struct Config {
     pub syntax_highlighting: bool,
     pub theme: String,
     pub wrap_width: u32,
+    pub reedline_history: bool,
+    pub history_max_size: usize,
 }
 
 impl Default for Config {
@@ -80,6 +84,8 @@ impl Default for Config {
             syntax_highlighting: DEFAULT_SYNTAX_HIGHLIGHTING,
             theme: String::from(DEFAULT_THEME),
             wrap_width: DEFAULT_WRAP_WIDTH,
+            reedline_history: DEFAULT_REEDLINE_HISTORY,
+            history_max_size: DEFAULT_HISTORY_MAX_SIZE,
         }
     }
 }
@@ -117,6 +123,12 @@ impl Config {
             .unwrap_or(DEFAULT_SYNTAX_HIGHLIGHTING);
         let theme = config_toml.theme.unwrap_or(String::from(DEFAULT_THEME));
         let wrap_width = config_toml.wrap_width.unwrap_or(DEFAULT_WRAP_WIDTH);
+        let reedline_history = config_toml
+            .reedline_history
+            .unwrap_or(DEFAULT_REEDLINE_HISTORY);
+        let history_max_size = config_toml
+            .history_max_size
+            .unwrap_or(DEFAULT_HISTORY_MAX_SIZE);
 
         Self {
             // api_key,
@@ -134,6 +146,8 @@ impl Config {
             syntax_highlighting,
             theme,
             wrap_width,
+            reedline_history,
+            history_max_size,
         }
     }
 }
@@ -155,6 +169,8 @@ pub struct ConfigToml {
     syntax_highlighting: Option<bool>,
     theme: Option<String>,
     wrap_width: Option<u32>,
+    reedline_history: Option<bool>,
+    history_max_size: Option<usize>,
 }
 
 impl ConfigToml {
@@ -187,4 +203,16 @@ pub fn get_config_toml() -> Option<ConfigToml> {
     } else {
         None
     }
+}
+
+pub fn get_history_file_path() -> Result<PathBuf> {
+    let history_path = config_dir()
+        .map(|path| path.join("hey").join("history.txt"))
+        .context("Failed to determine config path")?;
+
+    if let Some(parent) = history_path.parent() {
+        fs::create_dir_all(parent).context("Failed to create config directory")?;
+    }
+
+    Ok(history_path)
 }

@@ -8,7 +8,7 @@ A minimal command-line application for quickly interacting with OpenAI's chat mo
 
 - Streaming responses via [async-openai](https://github.com/64bit/async-openai)
 - Syntax highlighting via [syntect](https://github.com/trishume/syntect)
-- Rich input editor via [reedline](https://github.com/nushell/reedline) with Vi mode and multi-line paste
+- Rich input editor via [reedline](https://github.com/nushell/reedline) with Vi mode, multi-line paste, and persistent history
 - Conversation history - quickly save, load, and view past conversations
 - Customizable - Vi mode, themes, and more
 
@@ -93,6 +93,8 @@ animations = false                  # Typewriter effect
 # Editor
 edit_mode = "emacs"                 # or "vi"
 bracketed_paste = true
+reedline_history = true             # Save input history
+history_max_size = 1000             # Max number of inputs to save
 
 # Files
 conversations_folder = "~/.hey"     # Where to save conversations
@@ -114,6 +116,8 @@ conversations_folder = "~/.hey"     # Where to save conversations
 | `edit_mode` | `"emacs"` | Input editor mode ("emacs" or "vi") |
 | `bracketed_paste` | `true` | Multi-line paste support |
 | `conversations_folder` | `"./"` | Directory for saved conversations |
+| `reedline_history` | `true` | Persist input history across sessions |
+| `history_max_size` | `1000` | Maximum input history size |
 
 See [`defaults.toml`](./defaults.toml) for detailed documentation of all options.
 

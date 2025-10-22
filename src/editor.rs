@@ -3,12 +3,14 @@
 /* -------------------------------------------------------------------------- */
 
 use std::borrow::Cow;
+use std::path::PathBuf;
 
 use crossterm::cursor::SetCursorStyle;
 use nu_ansi_term::{Color as NuColor, Style};
 use reedline::{
-    Color, CursorConfig, EditMode, Emacs, Highlighter, Prompt, PromptEditMode, PromptHistorySearch,
-    Reedline, Signal, StyledText, ValidationResult, Validator, Vi,
+    Color, CursorConfig, DefaultHinter, EditMode, Emacs, FileBackedHistory, Highlighter, Prompt,
+    PromptEditMode, PromptHistorySearch, Reedline, Signal, StyledText, ValidationResult, Validator,
+    Vi,
 };
 
 use crate::{
@@ -32,6 +34,8 @@ pub struct EditorConfig {
     use_kitty_keyboard_enhancement: bool,
     use_bracketed_paste: bool,
     ansi_colors: bool,
+    history_file_path: Option<PathBuf>,
+    history_max_size: usize,
 }
 
 impl EditorConfig {
@@ -47,11 +51,20 @@ impl EditorConfig {
                 ReedlineEditMode::Emacs
             }
         };
+
+        let history_file_path = if config.reedline_history {
+            crate::config::get_history_file_path().ok()
+        } else {
+            None
+        };
+
         EditorConfig {
             edit_mode,
             use_kitty_keyboard_enhancement: true,
             use_bracketed_paste: config.bracketed_paste,
             ansi_colors: config.ansi_colors,
+            history_file_path,
+            history_max_size: config.history_max_size,
         }
     }
 }
@@ -68,7 +81,7 @@ impl Editor {
             ReedlineEditMode::Emacs => Box::new(Emacs::default()),
         };
 
-        let line_editor = Reedline::create()
+        let mut line_editor = Reedline::create()
             .with_edit_mode(edit_mode)
             .with_highlighter(Box::new(PromptHighlighter::new()))
             .with_ansi_colors(editor_config.ansi_colors)
@@ -80,6 +93,28 @@ impl Editor {
             })
             .use_kitty_keyboard_enhancement(editor_config.use_kitty_keyboard_enhancement)
             .use_bracketed_paste(editor_config.use_bracketed_paste);
+
+        if let Some(history_path) = editor_config.history_file_path {
+            match FileBackedHistory::with_file(editor_config.history_max_size, history_path.clone())
+            {
+                Ok(history) => {
+                    line_editor =
+                        line_editor
+                            .with_history(Box::new(history))
+                            .with_hinter(Box::new(
+                                DefaultHinter::default()
+                                    .with_style(Style::new().fg(NuColor::DarkGray)),
+                            ));
+                }
+                Err(e) => {
+                    eprintln!(
+                        "Warning: Failed to load history file '{}': {}",
+                        history_path.display(),
+                        e
+                    );
+                }
+            }
+        }
 
         let prompt = EditorPrompt::new();
         Editor {
@@ -117,10 +152,6 @@ struct EditorPrompt {}
 
 impl EditorPrompt {
     pub fn new() -> Self {
-        // let prompt_indicator =
-        //     std::env::var("PROMPT_INDICATOR").unwrap_or_else(|_| "> ".to_string());
-        // let prompt_multiline_indicator =
-        //     std::env::var("PROMPT_MULTILINE_INDICATOR").unwrap_or_else(|_| "::: ".to_string());
         EditorPrompt {}
     }
 }
