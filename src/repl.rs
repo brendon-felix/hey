@@ -171,7 +171,17 @@ impl ReadEvalPrintLoop {
                 }
             }
             Command::Save => {
-                self.save_conversation().await?;
+                if self.conversation.messages.len() <= 1 {
+                    snailprint(
+                        &format!(
+                            "\n{} No conversation history to save.\n\n",
+                            "Info:".yellow()
+                        ),
+                        5000,
+                    );
+                } else {
+                    self.save_conversation().await?;
+                }
             }
             Command::Load => {
                 self.load_conversation()?;

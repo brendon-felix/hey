@@ -1,4 +1,3 @@
-// FIX: Prevent saving conversations with no history
 // FIX: Generate up-to-date syntax set
 
 // TODO: Generate up-to-date syntax highlighting assests (when needed)
