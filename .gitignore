@@ -3,6 +3,6 @@ run.nu
 api_key.txt
 system_prompt.txt
 test*
-config.toml
+hey.toml
 *.json
 .DS_Store

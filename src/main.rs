@@ -93,6 +93,12 @@ async fn main() -> Result<()> {
         yansi::disable();
     }
 
+    if config.animations {
+        render::enable_animations();
+    } else {
+        render::disable_animations();
+    }
+
     let api_key = std::env::var("OPENAI_API_KEY")
         .context("Please set the OPENAI_API_KEY environment variable to your OpenAI API key.")?;
 

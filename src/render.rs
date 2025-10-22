@@ -6,6 +6,7 @@ use ansi_parser::{AnsiParser, Output};
 use anyhow::{Context, Result};
 use std::io::{Write, stdout};
 use std::rc::Rc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread::sleep;
 use std::time::Duration;
 use unicode_segmentation::UnicodeSegmentation;
@@ -13,6 +14,24 @@ use unicode_segmentation::UnicodeSegmentation;
 use bat::assets::HighlightingAssets;
 use syntect::{dumps, easy::HighlightLines, parsing::SyntaxSet};
 use yansi::Paint;
+
+/* -------------------------------------------------------------------------- */
+/*                          Global Animation Control                          */
+/* -------------------------------------------------------------------------- */
+
+static ANIMATIONS_ENABLED: AtomicBool = AtomicBool::new(false);
+
+pub fn enable_animations() {
+    ANIMATIONS_ENABLED.store(true, Ordering::Relaxed);
+}
+
+pub fn disable_animations() {
+    ANIMATIONS_ENABLED.store(false, Ordering::Relaxed);
+}
+
+pub fn animations_enabled() -> bool {
+    ANIMATIONS_ENABLED.load(Ordering::Relaxed)
+}
 
 /* -------------------------------------------------------------------------- */
 
@@ -112,6 +131,13 @@ pub fn render_line_plain(line: &str, wrap_width: u32) -> Result<()> {
 }
 
 pub fn snailprint(text: &str, num_micros: u64) {
+    if !animations_enabled() {
+        print!("{}", text);
+        let _ = stdout().flush();
+        return;
+    }
+
+    // typwriter animation printing
     text.ansi_parse().for_each(|output| match output {
         Output::TextBlock(t) => {
             t.graphemes(true).for_each(|g| {
