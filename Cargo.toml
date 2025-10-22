@@ -1,6 +1,6 @@
 [package]
 name = "hey-rs"
-version = "0.2.0"
+version = "0.2.1"
 authors = ["Brendon Felix"]
 edition = "2024"
 license = "MIT"
@@ -8,7 +8,7 @@ description = "A minimal command-line copilot with streaming and syntax highligh
 homepage = "https://github.com/brendon-felix/hey"
 repository = "https://github.com/brendon-felix/hey"
 readme = "README.md"
-keywords = ["copilot", "openai", "chatgpt"]
+keywords = ["copilot", "openai", "chatgpt", "cli"]
 categories = ["command-line-utilities"]
 
 [workspace.dependencies]

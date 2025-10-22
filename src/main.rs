@@ -13,27 +13,6 @@
 // Use nushell $env to configure reedline
 // Support command tab completion for commands
 // Allow editor as prompt input as supported by reedline
-// Save and Load Reedline line editor history
-
-// Configuration options:
-// - API key path
-// - API key env var
-// - System prompt path
-// - Auto save/load conversations
-// - Conversations folder
-// - Configure reedline prompt
-//   - edit mode (emacs, vi)
-//   - command tab completion
-//   - input editor
-//   - highlighting
-//   - prompt style (color, indicator, etc)
-//   - history file path
-//   - history size
-// - Configure response rendering
-//   - disable syntax highlighting
-//   - disable ansi color
-//   - default theme
-//   - wrap width ('auto' or int)
 
 use anyhow::{Context, Result};
 use async_openai::{Client, config::OpenAIConfig};
