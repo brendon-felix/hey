@@ -31,6 +31,7 @@ use yansi::Paint;
 //   - default theme
 //   - wrap width (int, 0 to disable)
 
+const DEFAULT_CONVERSATIONS_FOLDER: &str = "./";
 const DEFAULT_ENTER_REPL: bool = false;
 // const DEFAULT_AUTO_SAVE: bool = false;
 // const DEFAULT_AUTO_LOAD: bool = false;
@@ -49,6 +50,7 @@ pub struct Config {
     pub system_prompt: String,
     pub model: String,
     pub max_tokens: u32,
+    pub conversations_folder: String,
     pub enter_repl: bool,
     // pub auto_save: bool,
     // pub auto_load: bool,
@@ -67,6 +69,7 @@ impl Default for Config {
             system_prompt: String::from(DEFAULT_SYSTEM_PROMPT),
             model: String::from(DEFAULT_MODEL),
             max_tokens: DEFAULT_MAX_TOKENS,
+            conversations_folder: String::from(DEFAULT_CONVERSATIONS_FOLDER),
             enter_repl: DEFAULT_ENTER_REPL,
             // auto_save: DEFAULT_AUTO_SAVE,
             // auto_load: DEFAULT_AUTO_LOAD,
@@ -95,6 +98,9 @@ impl Config {
         });
         let model = config_toml.model.unwrap_or(String::from(DEFAULT_MODEL));
         let max_tokens = config_toml.max_tokens.unwrap_or(DEFAULT_MAX_TOKENS);
+        let conversations_folder = config_toml
+            .conversations_folder
+            .unwrap_or(String::from(DEFAULT_CONVERSATIONS_FOLDER));
         let enter_repl = config_toml.enter_repl.unwrap_or(DEFAULT_ENTER_REPL);
         // let auto_save = config_toml.auto_save.unwrap_or(DEFAULT_AUTO_SAVE);
         // let auto_load = config_toml.auto_load.unwrap_or(DEFAULT_AUTO_LOAD);
@@ -117,6 +123,7 @@ impl Config {
             system_prompt,
             model,
             max_tokens,
+            conversations_folder,
             enter_repl,
             // auto_save,
             // auto_load,
@@ -137,6 +144,7 @@ pub struct ConfigToml {
     system_prompt: Option<String>,
     model: Option<String>,
     max_tokens: Option<u32>,
+    conversations_folder: Option<String>,
     enter_repl: Option<bool>,
     auto_save: Option<bool>,
     auto_load: Option<bool>,

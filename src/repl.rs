@@ -5,7 +5,7 @@
 use std::thread::sleep;
 use std::time::Duration;
 
-use anyhow::{Result, bail};
+use anyhow::{Context, Result, bail};
 use async_openai::Client;
 use async_openai::config::OpenAIConfig;
 use async_openai::types::ChatCompletionRequestMessage;
@@ -36,6 +36,7 @@ pub struct ReadEvalPrintLoop {
     syntax_highlighting: bool,
     history_file: Option<String>,
     wrap_width: u32,
+    conversations_folder: String,
 }
 
 impl ReadEvalPrintLoop {
@@ -48,6 +49,7 @@ impl ReadEvalPrintLoop {
         let syntax_highlighting = config.syntax_highlighting;
         let history_file = None;
         let wrap_width = config.wrap_width;
+        let conversations_folder = config.conversations_folder;
         Self {
             client,
             model,
@@ -57,6 +59,7 @@ impl ReadEvalPrintLoop {
             syntax_highlighting,
             history_file,
             wrap_width,
+            conversations_folder,
         }
     }
 
@@ -73,6 +76,7 @@ impl ReadEvalPrintLoop {
         let syntax_highlighting = config.syntax_highlighting;
         let history_file = None;
         let wrap_width = config.wrap_width;
+        let conversations_folder = config.conversations_folder;
         Self {
             client,
             model,
@@ -82,10 +86,13 @@ impl ReadEvalPrintLoop {
             syntax_highlighting,
             history_file,
             wrap_width,
+            conversations_folder,
         }
     }
 
     pub async fn run(&mut self) -> Result<()> {
+        self.check_conversations_folder_on_startup();
+
         match self.conversation.messages.last().unwrap() {
             ChatCompletionRequestMessage::User(_) => {
                 let response = match self.get_response().await {
@@ -218,6 +225,11 @@ impl ReadEvalPrintLoop {
     }
 
     async fn save_conversation(&self) -> Result<()> {
+        let conversations_folder = match self.get_conversations_folder_for_operation() {
+            Ok(folder) => folder,
+            Err(_) => return Ok(()),
+        };
+
         let filename = if let Some(filename) = &self.history_file {
             filename.clone()
         } else {
@@ -225,13 +237,22 @@ impl ReadEvalPrintLoop {
                 generate_title(&self.client, self.conversation.transcript()).await?;
             select_filename(generated_title)?
         };
-        let filepath = filename;
-        self.conversation.save_to_json_file(&filepath)?;
+
+        let filepath = std::path::Path::new(&conversations_folder).join(&filename);
+        let filepath_str = filepath.to_string_lossy().to_string();
+
+        // Ensure the conversations folder exists before saving
+        if let Some(parent) = filepath.parent() {
+            std::fs::create_dir_all(parent)
+                .with_context(|| "Failed to create conversations directory")?;
+        }
+
+        self.conversation.save_to_json_file(&filepath_str)?;
         snailprint(
             &format!(
                 "\n{} {}.\n\n",
                 "Conversation saved successfully to".green(),
-                filepath.blue()
+                filepath_str.blue()
             ),
             2000,
         );
@@ -239,9 +260,12 @@ impl ReadEvalPrintLoop {
     }
 
     fn load_conversation(&mut self) -> Result<()> {
-        let conversations_folder = "./";
+        let conversations_folder = match self.get_conversations_folder_for_operation() {
+            Ok(folder) => folder,
+            Err(_) => return Ok(()),
+        };
 
-        let filename = match select_json_file(conversations_folder) {
+        let filename = match select_json_file(&conversations_folder) {
             Ok(None) => {
                 bail!("Load cancelled.");
             }
@@ -250,10 +274,96 @@ impl ReadEvalPrintLoop {
                 return Err(e);
             }
         };
-        let filepath = filename; // need to add config setting for conversations folder
-        self.history_file = Some(filepath.clone());
-        self.conversation = Conversation::from_json_file(&filepath)?;
+        self.history_file = Some(filename.clone());
+        self.conversation = Conversation::from_json_file(&filename)?;
         Ok(())
+    }
+
+    fn check_conversations_folder_on_startup(&self) {
+        use std::path::Path;
+
+        let folder_path = match self.expand_path(&self.conversations_folder) {
+            Ok(path) => path,
+            Err(_) => self.conversations_folder.clone(),
+        };
+        if !Path::new(&folder_path).exists() {
+            snailprint(
+                &format!(
+                    "\n{} The configured conversations folder '{}' does not exist.\n",
+                    "Warning:".yellow(),
+                    folder_path.yellow()
+                ),
+                2000,
+            );
+            snailprint(
+                &format!(
+                    "{} When saving or loading conversations, you'll be prompted to use the current directory.\n\n",
+                    "Note:".blue()
+                ),
+                2000,
+            );
+        }
+    }
+
+    fn get_conversations_folder_for_operation(&self) -> Result<String> {
+        use dialoguer::Confirm;
+        use std::path::Path;
+
+        let folder_path = self.expand_path(&self.conversations_folder)?;
+
+        if Path::new(&folder_path).exists() {
+            Ok(folder_path)
+        } else {
+            snailprint(
+                &format!(
+                    "\n{} The configured conversations folder '{}' does not exist.\n",
+                    "Warning:".yellow(),
+                    folder_path.yellow()
+                ),
+                2000,
+            );
+
+            let use_current_dir = Confirm::new()
+                .with_prompt("Would you like to use the current working directory instead?")
+                .default(true)
+                .interact()?;
+
+            if use_current_dir {
+                println!();
+                Ok(String::from("./"))
+            } else {
+                snailprint(
+                    &format!("\n{} Operation cancelled.\n\n", "Info:".blue()),
+                    2000,
+                );
+                bail!("Operation cancelled by user");
+            }
+        }
+    }
+
+    fn expand_path(&self, path: &str) -> Result<String> {
+        use std::path::Path;
+
+        let path = path.trim();
+
+        // Use shellexpand for robust cross-platform path expansion
+        let expanded =
+            shellexpand::full(path).map_err(|e| anyhow::anyhow!("Path expansion failed: {}", e))?;
+
+        // Normalize the path to handle both forward and back slashes
+        let path_buf = Path::new(expanded.as_ref()).to_path_buf();
+
+        // Convert to absolute path if it's relative
+        let normalized = if path_buf.is_absolute() {
+            path_buf
+        } else {
+            std::env::current_dir()
+                .with_context(|| "Failed to get current directory")?
+                .join(path_buf)
+        };
+
+        // Convert to string with proper path separators for the platform
+        Ok(normalized.to_string_lossy().to_string())
     }
 
     fn print_conversation(&self) {

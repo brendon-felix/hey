@@ -1,31 +1,22 @@
-// FIX: Generate up-to-date syntax set
-
-// TODO: Generate up-to-date syntax highlighting assests (when needed)
-// TODO: Support deserialized TOML configuration file
 // TODO: Add load flag to load a conversation in comand line (--load, -l)
-// TODO: Add a context flag to load a file as context (--context, -c)
+// TODO: Add file referencing for current working directory (/context, /c)
+//   TODO: Add a context flag to load a file as context (--context, -c)
 // TODO: Implement auto saving and loading (default off)
 // TODO: Support models like o3 and gpt-5
-// TODO: Add file referencing for current working directory (/context, /c)
 // TODO: Add config setting for conversations folder
-// TODO: Try using function calling
 // TODO: Save and Load Reedline line editor history
 // TODO: Allow editor as prompt input as supported by reedline
 // TODO: Support command tab completion for commands
-// TODO: Experiment with ratatui based UI
-// TODO: Allow for user to change edit mode (emacs)
-// TODO: Use nushell $env to configure reedline
+
+// Experiments
+// Experiment with ratatui based UI
+// Use nushell $env to configure reedline
 
 // Configuration options:
 // - API key path
 // - API key env var
-// - System prompt
 // - System prompt path
-// - Model
-// - Max tokens
-// - Single message or REPL for args message
 // - Auto save/load conversations
-// - Disable snail print
 // - Conversations folder
 // - Configure reedline prompt
 //   - edit mode (emacs, vi)
