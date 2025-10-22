@@ -1,4 +1,3 @@
-// FIX: Highlight "Hey!" according to the set theme
 // FIX: Prevent saving conversations with no history
 // FIX: Generate up-to-date syntax set
 

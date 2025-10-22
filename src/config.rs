@@ -32,8 +32,8 @@ use yansi::Paint;
 //   - wrap width (int, 0 to disable)
 
 const DEFAULT_ENTER_REPL: bool = false;
-const DEFAULT_AUTO_SAVE: bool = false;
-const DEFAULT_AUTO_LOAD: bool = false;
+// const DEFAULT_AUTO_SAVE: bool = false;
+// const DEFAULT_AUTO_LOAD: bool = false;
 const DEFAULT_ANIMATIONS: bool = false;
 const DEFAULT_SYSTEM_PROMPT: &str = "You are a helpful assistant.";
 const DEFAULT_MODEL: &str = "gpt-4o";
@@ -50,8 +50,8 @@ pub struct Config {
     pub model: String,
     pub max_tokens: u32,
     pub enter_repl: bool,
-    pub auto_save: bool,
-    pub auto_load: bool,
+    // pub auto_save: bool,
+    // pub auto_load: bool,
     pub animations: bool, // snail print
     pub bracketed_paste: bool,
     pub ansi_colors: bool,
@@ -68,8 +68,8 @@ impl Default for Config {
             model: String::from(DEFAULT_MODEL),
             max_tokens: DEFAULT_MAX_TOKENS,
             enter_repl: DEFAULT_ENTER_REPL,
-            auto_save: DEFAULT_AUTO_SAVE,
-            auto_load: DEFAULT_AUTO_LOAD,
+            // auto_save: DEFAULT_AUTO_SAVE,
+            // auto_load: DEFAULT_AUTO_LOAD,
             animations: DEFAULT_ANIMATIONS,
             bracketed_paste: DEFAULT_BRACKETED_PASTE,
             ansi_colors: DEFAULT_ANSI_COLORS,
@@ -96,8 +96,8 @@ impl Config {
         let model = config_toml.model.unwrap_or(String::from(DEFAULT_MODEL));
         let max_tokens = config_toml.max_tokens.unwrap_or(DEFAULT_MAX_TOKENS);
         let enter_repl = config_toml.enter_repl.unwrap_or(DEFAULT_ENTER_REPL);
-        let auto_save = config_toml.auto_save.unwrap_or(DEFAULT_AUTO_SAVE);
-        let auto_load = config_toml.auto_load.unwrap_or(DEFAULT_AUTO_LOAD);
+        // let auto_save = config_toml.auto_save.unwrap_or(DEFAULT_AUTO_SAVE);
+        // let auto_load = config_toml.auto_load.unwrap_or(DEFAULT_AUTO_LOAD);
         let animations = config_toml.animations.unwrap_or(DEFAULT_ANIMATIONS);
         let bracketed_paste = config_toml
             .bracketed_paste
@@ -118,8 +118,8 @@ impl Config {
             model,
             max_tokens,
             enter_repl,
-            auto_save,
-            auto_load,
+            // auto_save,
+            // auto_load,
             animations,
             bracketed_paste,
             ansi_colors,

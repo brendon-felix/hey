@@ -98,7 +98,18 @@ impl ReadEvalPrintLoop {
                 self.conversation.add_assistant_message(response);
             }
             _ => {
-                snailprint("\nHey!\n\n", 10000);
+                let mut highlighter = if self.syntax_highlighting {
+                    Highlighter::new(&self.theme).ok()
+                } else {
+                    None
+                };
+
+                if let Some(ref mut h) = highlighter {
+                    let highlighted = h.highlight_line("Hey!\n");
+                    snailprint(&format!("\n{}\n", highlighted), 10000);
+                } else {
+                    snailprint("\nHey!\n\n", 10000);
+                }
             }
         }
         loop {
