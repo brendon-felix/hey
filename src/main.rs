@@ -46,7 +46,7 @@
 use anyhow::{Context, Result};
 use async_openai::{Client, config::OpenAIConfig};
 use clap::Parser;
-use yansi::Paint;
+use yansi::{self, Paint};
 
 mod commands;
 mod config;
@@ -86,6 +86,12 @@ async fn main() -> Result<()> {
     } else {
         Config::default()
     };
+
+    if config.ansi_colors {
+        yansi::enable();
+    } else {
+        yansi::disable();
+    }
 
     let api_key = std::env::var("OPENAI_API_KEY")
         .context("Please set the OPENAI_API_KEY environment variable to your OpenAI API key.")?;

@@ -31,6 +31,7 @@ pub struct EditorConfig {
     edit_mode: ReedlineEditMode,
     use_kitty_keyboard_enhancement: bool,
     use_bracketed_paste: bool,
+    ansi_colors: bool,
 }
 
 impl EditorConfig {
@@ -50,6 +51,7 @@ impl EditorConfig {
             edit_mode,
             use_kitty_keyboard_enhancement: true,
             use_bracketed_paste: config.bracketed_paste,
+            ansi_colors: config.ansi_colors,
         }
     }
 }
@@ -68,7 +70,7 @@ impl Editor {
 
         let line_editor = Reedline::create()
             .with_edit_mode(edit_mode)
-            .with_highlighter(Box::new(PromptHighlighter::new()))
+            .with_highlighter(Box::new(PromptHighlighter::new(editor_config.ansi_colors)))
             .with_validator(Box::new(PromptValidator::new()))
             .with_cursor_config(CursorConfig {
                 vi_insert: Some(SetCursorStyle::BlinkingBar),
@@ -78,7 +80,7 @@ impl Editor {
             .use_kitty_keyboard_enhancement(editor_config.use_kitty_keyboard_enhancement)
             .use_bracketed_paste(editor_config.use_bracketed_paste);
 
-        let prompt = EditorPrompt::new();
+        let prompt = EditorPrompt::new(editor_config.ansi_colors);
         Editor {
             line_editor,
             prompt,
@@ -110,15 +112,17 @@ impl Editor {
     }
 }
 
-struct EditorPrompt {}
+struct EditorPrompt {
+    ansi_colors: bool,
+}
 
 impl EditorPrompt {
-    pub fn new() -> Self {
+    pub fn new(ansi_colors: bool) -> Self {
         // let prompt_indicator =
         //     std::env::var("PROMPT_INDICATOR").unwrap_or_else(|_| "> ".to_string());
         // let prompt_multiline_indicator =
         //     std::env::var("PROMPT_MULTILINE_INDICATOR").unwrap_or_else(|_| "::: ".to_string());
-        EditorPrompt {}
+        EditorPrompt { ansi_colors }
     }
 }
 
@@ -147,16 +151,24 @@ impl Prompt for EditorPrompt {
     }
 
     fn get_prompt_color(&self) -> Color {
-        Color::Green
+        if self.ansi_colors {
+            Color::Green
+        } else {
+            Color::Reset
+        }
     }
 
     fn get_indicator_color(&self) -> Color {
-        Color::Magenta
+        if self.ansi_colors {
+            Color::Magenta
+        } else {
+            Color::Reset
+        }
     }
 }
 
 struct PromptHighlighter {
-    // commands: Vec<String>,
+    ansi_colors: bool,
 }
 
 enum ParseState {
@@ -168,8 +180,8 @@ enum ParseState {
 }
 
 impl PromptHighlighter {
-    pub fn new() -> Self {
-        PromptHighlighter {}
+    pub fn new(ansi_colors: bool) -> Self {
+        PromptHighlighter { ansi_colors }
     }
 
     pub fn parse_line(&self, line: &str) -> Vec<(InputPart, String)> {
@@ -233,7 +245,7 @@ impl Highlighter for PromptHighlighter {
         let ranges = &self.parse_line(line);
         let mut styled_text = StyledText::new();
         for r in ranges {
-            let style = r.0.style();
+            let style = r.0.style(self.ansi_colors);
             let text = r.1.clone();
             styled_text.push((style, text));
         }
@@ -253,7 +265,10 @@ enum InputPart {
 }
 
 impl InputPart {
-    fn style(&self) -> Style {
+    fn style(&self, ansi_colors: bool) -> Style {
+        if !ansi_colors {
+            return Style::default();
+        }
         match self {
             InputPart::Whitespace => Style::default(),
             InputPart::Slash => Style::default(),
