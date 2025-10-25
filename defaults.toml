@@ -18,6 +18,9 @@ max_tokens = 2048
 # Enter REPL mode even when a message is provided via command line
 enter_repl = false
 
+# Display greeting messages ("Hey!" when starting, "Bye!" when exiting)
+greetings = true
+
 # Folder path for storing and loading conversation files
 # Set to a valid directory path to store conversations there
 # If the path doesn't exist when saving/loading, you'll be prompted to use the current directory

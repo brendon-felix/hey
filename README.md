@@ -44,7 +44,7 @@ hey
 ### Single Message
 
 ```bash
-hey who was the first US president
+hey who was Ada Lovelace?
 ```
 
 ### With Custom Prompt File
@@ -89,6 +89,7 @@ theme = "ansi"                      # Run /theme to see all options
 wrap_width = 100                    # 0 to disable wrapping
 ansi_colors = true
 animations = true                   # Typewriter effect
+greetings = true                  # Show "Hey!" and "Bye!" messages
 
 # Editor
 edit_mode = "emacs"                 # or "vi"
@@ -113,6 +114,7 @@ conversations_folder = "~/.hey"     # Where to save conversations
 | `theme` | `"ansi"` | Highlighting color scheme |
 | `ansi_colors` | `true` | Colored terminal output |
 | `animations` | `true` | Typewriter text effect |
+| `greetings` | `true` | Show greeting messages ("Hey!" and "Bye!") |
 | `edit_mode` | `"emacs"` | Input editor mode ("emacs" or "vi") |
 | `bracketed_paste` | `true` | Multi-line paste support |
 | `conversations_folder` | `"./"` | Directory for saved conversations |

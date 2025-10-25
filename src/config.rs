@@ -33,6 +33,7 @@ use yansi::Paint;
 
 const DEFAULT_CONVERSATIONS_FOLDER: &str = "./";
 const DEFAULT_ENTER_REPL: bool = false;
+const DEFAULT_GREETINGS: bool = true;
 // const DEFAULT_AUTO_SAVE: bool = false;
 // const DEFAULT_AUTO_LOAD: bool = false;
 const DEFAULT_ANIMATIONS: bool = true;
@@ -54,6 +55,7 @@ pub struct Config {
     pub max_tokens: u32,
     pub conversations_folder: String,
     pub enter_repl: bool,
+    pub greetings: bool,
     // pub auto_save: bool,
     // pub auto_load: bool,
     pub animations: bool, // snail print
@@ -75,6 +77,7 @@ impl Default for Config {
             max_tokens: DEFAULT_MAX_TOKENS,
             conversations_folder: String::from(DEFAULT_CONVERSATIONS_FOLDER),
             enter_repl: DEFAULT_ENTER_REPL,
+            greetings: DEFAULT_GREETINGS,
             // auto_save: DEFAULT_AUTO_SAVE,
             // auto_load: DEFAULT_AUTO_LOAD,
             animations: DEFAULT_ANIMATIONS,
@@ -108,6 +111,7 @@ impl Config {
             .conversations_folder
             .unwrap_or(String::from(DEFAULT_CONVERSATIONS_FOLDER));
         let enter_repl = config_toml.enter_repl.unwrap_or(DEFAULT_ENTER_REPL);
+        let greetings = config_toml.greetings.unwrap_or(DEFAULT_GREETINGS);
         // let auto_save = config_toml.auto_save.unwrap_or(DEFAULT_AUTO_SAVE);
         // let auto_load = config_toml.auto_load.unwrap_or(DEFAULT_AUTO_LOAD);
         let animations = config_toml.animations.unwrap_or(DEFAULT_ANIMATIONS);
@@ -137,6 +141,7 @@ impl Config {
             max_tokens,
             conversations_folder,
             enter_repl,
+            greetings,
             // auto_save,
             // auto_load,
             animations,
@@ -160,6 +165,7 @@ pub struct ConfigToml {
     max_tokens: Option<u32>,
     conversations_folder: Option<String>,
     enter_repl: Option<bool>,
+    greetings: Option<bool>,
     auto_save: Option<bool>,
     auto_load: Option<bool>,
     animations: Option<bool>, // snail print

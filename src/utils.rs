@@ -27,7 +27,7 @@ pub fn clear_console() {
 }
 
 pub fn print_help() {
-    snailprint(&format!("\n{}\n", "Available commands:".blue()), 1000);
+    snailprint(&format!("\n{}\n", "Available commands:".bold()), 1000);
     // snailprint("TODO\n", 10000);
     enum_iterator::all::<Command>().for_each(|command| {
         snailprint(

@@ -36,6 +36,7 @@ pub struct ReadEvalPrintLoop {
     theme: String,
     syntax_highlighting: bool,
     history_file: Option<String>,
+    greetings: bool,
     wrap_width: u32,
     conversations_folder: String,
 }
@@ -50,6 +51,7 @@ impl ReadEvalPrintLoop {
         let theme = config.theme;
         let syntax_highlighting = config.syntax_highlighting;
         let history_file = None;
+        let greetings = config.greetings;
         let wrap_width = config.wrap_width;
         let conversations_folder = config.conversations_folder;
         Self {
@@ -61,6 +63,7 @@ impl ReadEvalPrintLoop {
             theme,
             syntax_highlighting,
             history_file,
+            greetings,
             wrap_width,
             conversations_folder,
         }
@@ -79,6 +82,7 @@ impl ReadEvalPrintLoop {
         let theme = config.theme;
         let syntax_highlighting = config.syntax_highlighting;
         let history_file = None;
+        let greetings = config.greetings;
         let wrap_width = config.wrap_width;
         let conversations_folder = config.conversations_folder;
         Self {
@@ -90,6 +94,7 @@ impl ReadEvalPrintLoop {
             theme,
             syntax_highlighting,
             history_file,
+            greetings,
             wrap_width,
             conversations_folder,
         }
@@ -115,17 +120,10 @@ impl ReadEvalPrintLoop {
                 self.conversation.add_assistant_message(response);
             }
             _ => {
-                let mut highlighter = if self.syntax_highlighting {
-                    Highlighter::new(&self.theme).ok()
-                } else {
-                    None
-                };
-
-                if let Some(ref mut h) = highlighter {
-                    let highlighted = h.highlight_line("Hey!\n");
-                    snailprint(&format!("\n{}\n", highlighted), 10000);
-                } else {
+                if self.greetings {
                     snailprint("\nHey!\n\n", 10000);
+                } else {
+                    println!();
                 }
             }
         }
@@ -161,23 +159,23 @@ impl ReadEvalPrintLoop {
     async fn handle_command(&mut self, command: Command) -> Result<LoopControl> {
         match command {
             Command::Exit => {
-                snailprint(&format!("\n{}\n\n", "Exiting...".red()), 5000);
-                sleep(Duration::from_millis(250));
+                if self.greetings {
+                    snailprint(&format!("\n{}\n\n", "Bye!"), 10000);
+                } else {
+                    println!();
+                }
                 return Ok(LoopControl::Exit);
             }
             Command::Clear => {
-                snailprint(&format!("\n{}\n\n", "Clearing...".yellow()), 5000);
+                snailprint(&format!("\n{}\n\n", "Clearing...".bold()), 5000);
                 sleep(Duration::from_millis(250));
                 clear_console();
             }
             Command::Reset => {
                 snailprint(
-                    &format!("\n{}\n", "Resetting conversation...".yellow()),
+                    &format!("\n{}\n\n", "Resetting conversation...".bold()),
                     5000,
                 );
-                println!();
-                print_separator();
-                println!();
                 sleep(Duration::from_millis(500));
                 self.conversation.reset();
             }
