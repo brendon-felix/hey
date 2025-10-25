@@ -27,7 +27,7 @@ bat = { workspace = true }
 yansi = "1.0"
 textwrap = "0.16"
 term_size = "0.3"
-reedline = "0.41"
+reedline = "0.43"
 nu-ansi-term = "0.50"
 crossterm = "0.28"
 enum-iterator = "2.3"

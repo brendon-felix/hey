@@ -8,13 +8,15 @@ use std::path::PathBuf;
 use crossterm::cursor::SetCursorStyle;
 use nu_ansi_term::{Color as NuColor, Style};
 use reedline::{
-    Color, CursorConfig, DefaultHinter, EditMode, Emacs, FileBackedHistory, Highlighter, Prompt,
-    PromptEditMode, PromptHistorySearch, Reedline, Signal, StyledText, ValidationResult, Validator,
-    Vi,
+    Color, ColumnarMenu, Completer, CursorConfig, DefaultHinter, EditCommand, EditMode, Emacs,
+    FileBackedHistory, Highlighter, KeyCode, KeyModifiers, MenuBuilder, Prompt, PromptEditMode,
+    PromptHistorySearch, Reedline, ReedlineEvent, ReedlineMenu, Signal, Span, StyledText,
+    Suggestion, ValidationResult, Validator, Vi, default_emacs_keybindings,
+    default_vi_insert_keybindings, default_vi_normal_keybindings,
 };
 
 use crate::{
-    commands::{Command, parse_command},
+    commands::{Command, get_completion_strings, parse_command},
     config::Config,
 };
 
@@ -69,6 +71,36 @@ impl EditorConfig {
     }
 }
 
+#[derive(Clone)]
+struct CommandCompleter {
+    commands: Vec<String>,
+}
+
+impl CommandCompleter {
+    pub fn new(commands: Vec<String>) -> Self {
+        CommandCompleter { commands }
+    }
+}
+
+impl Completer for CommandCompleter {
+    fn complete(&mut self, line: &str, pos: usize) -> Vec<Suggestion> {
+        let line = &line[..pos.min(line.len())];
+        if !line.starts_with('/') {
+            return Vec::new();
+        }
+        let start = pos - line.len();
+        self.commands
+            .iter()
+            .filter(|cmd| cmd.starts_with(line))
+            .map(|cmd| Suggestion {
+                value: cmd.clone(),
+                span: Span::new(start, pos),
+                ..Default::default()
+            })
+            .collect()
+    }
+}
+
 pub struct Editor {
     line_editor: Reedline,
     prompt: EditorPrompt,
@@ -76,13 +108,51 @@ pub struct Editor {
 
 impl Editor {
     pub fn new(editor_config: EditorConfig) -> Self {
+        let cmd_completer = Box::new(CommandCompleter::new(get_completion_strings()));
+        let cmd_completion_menu = Box::new(
+            ColumnarMenu::default()
+                .with_name("completion_menu")
+                .with_columns(1),
+        );
+        let slash_binding = ReedlineEvent::Multiple(vec![
+            ReedlineEvent::Edit(vec![EditCommand::InsertChar('/')]),
+            ReedlineEvent::Menu("completion_menu".to_string()),
+        ]);
+        let tab_binding = ReedlineEvent::UntilFound(vec![
+            ReedlineEvent::HistoryHintComplete,
+            ReedlineEvent::MenuNext,
+        ]);
+        let shift_tab_binding = ReedlineEvent::MenuPrevious;
+        let history_binding = ReedlineEvent::SearchHistory;
+
         let edit_mode: Box<dyn EditMode> = match editor_config.edit_mode {
-            ReedlineEditMode::Vi => Box::new(Vi::default()),
-            ReedlineEditMode::Emacs => Box::new(Emacs::default()),
+            ReedlineEditMode::Vi => {
+                let mut insert = default_vi_insert_keybindings();
+                let mut normal = default_vi_normal_keybindings();
+                insert.add_binding(KeyModifiers::NONE, KeyCode::Tab, tab_binding.clone());
+                insert.add_binding(KeyModifiers::SHIFT, KeyCode::Tab, shift_tab_binding.clone());
+                insert.add_binding(KeyModifiers::NONE, KeyCode::Char('/'), slash_binding);
+                insert.add_binding(KeyModifiers::CONTROL, KeyCode::Char('r'), history_binding);
+                normal.add_binding(KeyModifiers::NONE, KeyCode::Tab, tab_binding);
+                normal.add_binding(KeyModifiers::SHIFT, KeyCode::Tab, shift_tab_binding);
+                Box::new(Vi::new(insert, normal))
+            }
+            ReedlineEditMode::Emacs => {
+                let mut keybindings = default_emacs_keybindings();
+                keybindings.add_binding(KeyModifiers::NONE, KeyCode::Tab, tab_binding);
+                keybindings.add_binding(KeyModifiers::SHIFT, KeyCode::Tab, shift_tab_binding);
+                keybindings.add_binding(KeyModifiers::NONE, KeyCode::Char('/'), slash_binding);
+                keybindings.add_binding(KeyModifiers::CONTROL, KeyCode::Char('r'), history_binding);
+                Box::new(Emacs::new(keybindings))
+            }
         };
 
         let mut line_editor = Reedline::create()
             .with_edit_mode(edit_mode)
+            .with_menu(ReedlineMenu::WithCompleter {
+                menu: cmd_completion_menu,
+                completer: cmd_completer,
+            })
             .with_highlighter(Box::new(PromptHighlighter::new()))
             .with_ansi_colors(editor_config.ansi_colors)
             .with_validator(Box::new(PromptValidator::new()))

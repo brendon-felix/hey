@@ -35,6 +35,22 @@ impl Command {
     }
 }
 
+pub fn get_completion_strings() -> Vec<String> {
+    let mut result = Vec::new();
+    for cmd in enum_iterator::all::<Command>() {
+        if cmd != Command::Invalid {
+            for s in cmd.strings() {
+                if s.len() > 1 {
+                    let mut cmd_str = s.to_string();
+                    cmd_str.insert(0, '/');
+                    result.push(cmd_str);
+                }
+            }
+        }
+    }
+    result
+}
+
 pub fn parse_command(input: &str) -> Option<Command> {
     let input = input.trim();
     if input.starts_with('/') {

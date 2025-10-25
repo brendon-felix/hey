@@ -9,6 +9,8 @@ A minimal command-line application for quickly interacting with OpenAI's chat mo
 - Streaming responses via [async-openai](https://github.com/64bit/async-openai)
 - Syntax highlighting via [syntect](https://github.com/trishume/syntect)
 - Rich input editor via [reedline](https://github.com/nushell/reedline) with Vi mode, multi-line paste, and persistent history
+- Command completions - tab completion for all commands (e.g., `/h` + Tab → `/help`)
+- History search - use Ctrl+R to search through your input history
 - Conversation history - quickly save, load, and view past conversations
 - Customizable - Vi mode, themes, and more
 
@@ -55,6 +57,8 @@ hey -p ~/path/to/prompt.txt
 
 ## Commands
 
+All commands support tab completion - just type `/` and press Tab to see available commands, or start typing a command (e.g., `/h`) and press Tab to complete it.
+
 | Command | Description |
 | --- | --- |
 | `/exit`, `/quit`, `/q`, `/x` | Exit the REPL |
@@ -66,6 +70,10 @@ hey -p ~/path/to/prompt.txt
 | `/load`, `/l` | Load conversation |
 | `/history` | View conversation history |
 | `/help`, `/h` | Show help |
+
+### History Search
+
+Press **Ctrl+R** to search through your input history. Start typing to filter previous inputs, and press Enter to use the selected command. Press Ctrl+R again to cycle through matching results.
 
 ## Configuration
 
