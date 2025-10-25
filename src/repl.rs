@@ -8,7 +8,7 @@ use std::time::Duration;
 use anyhow::{Context, Result, bail};
 use async_openai::Client;
 use async_openai::config::OpenAIConfig;
-use async_openai::types::ChatCompletionRequestMessage;
+use async_openai::types::{ChatCompletionRequestMessage, CreateChatCompletionRequest};
 use yansi::Paint;
 
 #[derive(Debug, PartialEq)]
@@ -30,6 +30,7 @@ use crate::utils::{
 pub struct ReadEvalPrintLoop {
     client: Client<OpenAIConfig>,
     model: String,
+    max_tokens: u32,
     conversation: Conversation,
     editor: Editor,
     theme: String,
@@ -44,6 +45,7 @@ impl ReadEvalPrintLoop {
         let editor_config = EditorConfig::from_config(&config);
         let editor = Editor::new(editor_config);
         let model = config.model;
+        let max_tokens = config.max_tokens;
         let conversation = Conversation::new(config.system_prompt);
         let theme = config.theme;
         let syntax_highlighting = config.syntax_highlighting;
@@ -53,6 +55,7 @@ impl ReadEvalPrintLoop {
         Self {
             client,
             model,
+            max_tokens,
             conversation,
             editor,
             theme,
@@ -72,6 +75,7 @@ impl ReadEvalPrintLoop {
         let editor_config = EditorConfig::from_config(&config);
         let editor = Editor::new(editor_config);
         let model = config.model;
+        let max_tokens = config.max_tokens;
         let theme = config.theme;
         let syntax_highlighting = config.syntax_highlighting;
         let history_file = None;
@@ -80,6 +84,7 @@ impl ReadEvalPrintLoop {
         Self {
             client,
             model,
+            max_tokens,
             conversation,
             editor,
             theme,
@@ -95,7 +100,12 @@ impl ReadEvalPrintLoop {
 
         match self.conversation.messages.last().unwrap() {
             ChatCompletionRequestMessage::User(_) => {
-                let response = match self.get_response().await {
+                let request = create_request(
+                    &self.model,
+                    self.max_tokens,
+                    self.conversation.messages.clone(),
+                )?;
+                let response = match self.get_response(request).await {
                     Err(e) => {
                         snailprint(&format!("\n{} {}\n\n", "Error:".red(), e), 5000);
                         String::new()
@@ -124,7 +134,12 @@ impl ReadEvalPrintLoop {
             match input {
                 Input::Message(message) => {
                     self.conversation.add_user_message(message);
-                    let response = match self.get_response().await {
+                    let request = create_request(
+                        &self.model,
+                        self.max_tokens,
+                        self.conversation.messages.clone(),
+                    )?;
+                    let response = match self.get_response(request).await {
                         Err(e) => {
                             snailprint(&format!("\n{} {}\n\n", "Error:".red(), e), 5000);
                             continue;
@@ -214,8 +229,7 @@ impl ReadEvalPrintLoop {
         Ok(LoopControl::Continue)
     }
 
-    pub async fn get_response(&mut self) -> Result<String> {
-        let request = create_request(&self.model, 2048u32, self.conversation.messages.clone())?;
+    pub async fn get_response(&mut self, request: CreateChatCompletionRequest) -> Result<String> {
         let mut highlighter = if self.syntax_highlighting {
             Some(Highlighter::new(&self.theme)?)
         } else {
