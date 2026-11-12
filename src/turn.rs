@@ -47,15 +47,24 @@ pub fn request(prompt: String, options: RunOptions) -> RunRequest {
 
 /// Starts answering `request` in `thread` and follows the run to its end.
 pub async fn run(backend: &Backend, thread: &SessionId, request: RunRequest, style: &Style) -> Turn {
-    match backend.start(thread, request).await {
+    let start = backend.start(thread, request);
+    tokio::pin!(start);
+    // Abandoning a remote start could leave its run going unseen, so Ctrl+C
+    // while starting lets the run start, then stops it at once.
+    let (started, interrupted) = tokio::select! {
+        started = &mut start => (started, false),
+        Ok(()) = tokio::signal::ctrl_c() => (start.await, true),
+    };
+    match started {
+        Ok(events) if interrupted => {
+            let mut seen = Seen::default();
+            let outcome = stop(backend, thread, events, &mut seen).await;
+            end(backend, thread, outcome, seen).await
+        }
         Ok(events) => follow(backend, thread, events, style).await,
         Err(error) => {
             render::error(&format!("{error:#}"));
-            println!();
-            Turn {
-                outcome: Outcome::Failed,
-                context: None,
-            }
+            end(backend, thread, Outcome::Failed, Seen::default()).await
         }
     }
 }
@@ -74,18 +83,19 @@ pub async fn follow(backend: &Backend, thread: &SessionId, mut events: Events, s
     stream.settle();
     let outcome = match shown {
         Some(outcome) => outcome,
-        None => {
-            println!();
-            stop(backend, thread, events, &mut seen).await
-        }
+        None => stop(backend, thread, events, &mut seen).await,
     };
+    print!("{}", cursor::Show);
+    end(backend, thread, outcome, seen).await
+}
+
+async fn end(backend: &Backend, thread: &SessionId, outcome: Outcome, seen: Seen) -> Turn {
     if let Outcome::Interrupted = outcome {
         render::notice("interrupted");
     }
     if seen.ended {
         viewed(backend, thread).await;
     }
-    print!("{}", cursor::Show);
     println!();
     Turn {
         outcome,
@@ -194,6 +204,8 @@ async fn report(backend: &Backend, thread: &SessionId, event: Event) -> Option<O
 /// Stops the run, then waits for its end without drawing the rest, so the
 /// thread is free for the next message.
 async fn stop(backend: &Backend, thread: &SessionId, mut events: Events, seen: &mut Seen) -> Outcome {
+    // Moves past the `^C` the terminal echoed.
+    println!();
     if let Err(error) = backend.stop(thread).await {
         render::error(&format!("{error:#}"));
         return Outcome::Interrupted;

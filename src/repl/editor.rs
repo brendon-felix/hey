@@ -58,7 +58,6 @@ pub type SharedStatus = Arc<Mutex<Status>>;
 
 pub enum Read {
     Line(String),
-    Cancelled,
     Exit,
 }
 
@@ -126,8 +125,7 @@ impl Editor {
     pub fn read(&mut self) -> Read {
         match self.line_editor.read_line(&self.prompt) {
             Ok(Signal::Success(line)) => Read::Line(line),
-            Ok(Signal::CtrlD) => Read::Exit,
-            Ok(_) => Read::Cancelled,
+            Ok(_) => Read::Exit,
             Err(error) => {
                 render::error(&error);
                 Read::Exit

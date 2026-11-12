@@ -99,7 +99,7 @@ work in one-shot messages too: `hey review @src/main.rs`.
 | Ctrl+R | Search input history |
 | Ctrl+O | Write the message in `$EDITOR` |
 | Alt+Enter | Insert a newline |
-| Ctrl+C | Clear the line, or stop a running answer |
+| Ctrl+C | Stop a running answer, or exit |
 | Ctrl+D | Exit |
 
 ### Conversations

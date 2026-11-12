@@ -102,7 +102,6 @@ impl Repl {
             self.refresh_index().await;
             let line = match self.editor.read() {
                 Read::Line(line) => line,
-                Read::Cancelled => continue,
                 Read::Exit => break,
             };
             match commands::parse(&line) {
@@ -407,7 +406,7 @@ fn help() {
         ("Ctrl+R", "search input history"),
         ("Ctrl+O", "write the message in $EDITOR"),
         ("Alt+Enter", "insert a newline"),
-        ("Ctrl+C", "clear the line, or stop a running answer"),
+        ("Ctrl+C", "stop a running answer, or exit"),
         ("Ctrl+D", "exit"),
     ] {
         println!("  {:<24} {about}", palette.name.paint(keys));
