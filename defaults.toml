@@ -70,7 +70,7 @@ history_size = 1000
 allow_all = false
 
 # Permission for any tool without a rule below: "allow", "confirm" or "deny".
-# "confirm" asks before each call and offers to allow the tool for the session.
+# "confirm" asks before each call and offers to allow the tool for the conversation.
 default = "confirm"
 
 # Rules by tool. Built-in tools: read, list, search, write, edit, move, delete,
@@ -96,3 +96,24 @@ search = "allow"
 # [mcp_servers.docs]
 # url = "https://example.com/mcp"
 # headers = { Authorization = "Bearer ${DOCS_TOKEN}" }
+
+# Remote hosts, keyed by name: machines running `hey --serve`. With a remote,
+# the agent runs there, with that machine's model keys, tools, MCP servers,
+# permissions and working directory, and the conversations are kept there, so
+# every machine using it sees the same ones. This file still sets the display
+# and editor. `remote` picks one for every run; `hey --remote NAME` for one
+# run, and `hey --local` ignores it.
+# remote = "fermi"
+#
+# [remotes.fermi]
+# url = "http://fermi:7700"
+# token = "${HEY_TOKEN}"
+
+# How `hey --serve` hosts the agent for remote clients. It runs tools on this
+# machine for anyone holding the token, so it requires one. There is no TLS:
+# reach it over a private network (Tailscale, WireGuard, an SSH tunnel) or put
+# an HTTPS reverse proxy in front of it.
+[server]
+# Address to listen on; "0.0.0.0:7700" for every interface.
+listen = "127.0.0.1:7700"
+# token = "${HEY_TOKEN}"

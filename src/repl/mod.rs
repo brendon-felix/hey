@@ -10,27 +10,22 @@ use std::sync::{Arc, Mutex, PoisonError};
 use anyhow::Result;
 use yansi::Paint;
 
-use crate::agent::{self, Assistant, Model};
-use crate::config::{Providers, Thinking};
+use crate::backend::Backend;
+use crate::config::Thinking;
 use crate::permissions::Permission;
+use crate::protocol::{ModelInfo, RunOptions, RunRequest, Snapshot};
 use crate::render::{self, Highlighter, Reply, Style, snailprint};
-use crate::sessions::{SessionId, Sessions};
-use crate::{turn, ui};
+use crate::sessions::SessionId;
+use crate::turn::{self, Turn};
+use crate::ui;
 use commands::{COMMANDS, Command, Input};
 use editor::{Choices, Editor, Read, SharedStatus, Status};
 
-/// How an MCP server's connection went, for `/tools`.
-pub struct ServerReport {
-    pub name: String,
-    pub tools: Result<usize, String>,
-}
-
 pub struct Repl {
-    assistant: Assistant,
-    sessions: Sessions,
-    session: SessionId,
-    providers: Providers,
-    servers: Vec<ServerReport>,
+    backend: Backend,
+    thread: SessionId,
+    options: RunOptions,
+    window: Option<u32>,
     style: Style,
     greetings: bool,
     editor: Editor,
@@ -38,11 +33,11 @@ pub struct Repl {
 }
 
 pub struct Setup {
-    pub assistant: Assistant,
-    pub sessions: Sessions,
-    pub session: SessionId,
-    pub providers: Providers,
-    pub servers: Vec<ServerReport>,
+    pub backend: Backend,
+    pub thread: SessionId,
+    pub model: ModelInfo,
+    pub thinking: Option<Thinking>,
+    pub system_prompt: Option<String>,
     pub style: Style,
     pub greetings: bool,
     pub editor: crate::config::Editor,
@@ -50,26 +45,33 @@ pub struct Setup {
 }
 
 impl Repl {
-    pub fn new(setup: Setup) -> Self {
+    pub async fn new(setup: Setup) -> Self {
         let status = Arc::new(Mutex::new(Status::default()));
+        let models = setup.backend.models().await.unwrap_or_else(|error| {
+            render::notice(&format!("no model completions: {error:#}"));
+            Vec::new()
+        });
         let choices = Choices {
-            models: agent::available_models(),
+            models,
             thinking: thinking_choices(),
             themes: render::themes(),
         };
         let editor = Editor::new(&setup.editor, setup.colors, status.clone(), choices);
         let repl = Self {
-            assistant: setup.assistant,
-            sessions: setup.sessions,
-            session: setup.session,
-            providers: setup.providers,
-            servers: setup.servers,
+            backend: setup.backend,
+            thread: setup.thread,
+            options: RunOptions {
+                model: setup.model.reference,
+                thinking: setup.thinking,
+                system_prompt: setup.system_prompt,
+            },
+            window: setup.model.context_window,
             style: setup.style,
             greetings: setup.greetings,
             editor,
             status,
         };
-        repl.show_model(None);
+        repl.show_status(None);
         repl
     }
 
@@ -79,10 +81,10 @@ impl Repl {
         if self.greetings {
             snailprint("\nHey!\n", 10000);
         }
-        self.print_history(false);
+        self.show_thread(false).await;
         if let Some(prompt) = first {
             render::user_message(&prompt);
-            self.answer(&prompt).await;
+            self.answer(prompt).await;
         } else {
             println!();
         }
@@ -94,12 +96,12 @@ impl Repl {
             };
             match commands::parse(&line) {
                 Input::Empty => {}
-                Input::Message(message) => self.answer(&message).await,
+                Input::Message(message) => self.answer(message).await,
                 Input::Invalid(why) => println!("{}\n", why.yellow()),
                 Input::Command(Command::Exit) => break,
                 Input::Command(command) => {
-                    if let Err(error) = self.execute(command) {
-                        render::error(&error);
+                    if let Err(error) = self.execute(command).await {
+                        render::error(&format!("{error:#}"));
                         println!();
                     }
                 }
@@ -111,35 +113,37 @@ impl Repl {
         Ok(())
     }
 
-    async fn answer(&mut self, prompt: &str) {
-        let turn = turn::run(&self.assistant, prompt, &self.session, &self.style).await;
-        if turn.context.is_some() {
-            self.show_model(turn.context);
-        }
+    async fn answer(&mut self, prompt: String) {
+        let request = RunRequest {
+            prompt,
+            options: self.options.clone(),
+        };
+        let turn = turn::run(&self.backend, &self.thread, request, &self.style).await;
+        self.update_context(&turn);
     }
 
-    fn execute(&mut self, command: Command) -> Result<()> {
+    async fn execute(&mut self, command: Command) -> Result<()> {
         match command {
             Command::Help => help(),
             Command::New => {
-                self.session = SessionId::new();
-                self.show_model(None);
+                self.thread = SessionId::new();
+                self.show_status(None);
                 println!("{}\n", "Started a new conversation.".bold());
             }
-            Command::Resume => self.resume()?,
-            Command::History => self.print_history(true),
-            Command::Model(reference) => self.switch_model(reference)?,
+            Command::Resume => self.resume().await?,
+            Command::History => self.show_thread(true).await,
+            Command::Model(reference) => self.switch_model(reference).await?,
             Command::Think(level) => self.set_thinking(level)?,
             Command::Theme(theme) => self.switch_theme(theme)?,
-            Command::Tools => self.list_tools(),
+            Command::Tools => self.list_tools().await?,
             Command::Clear => self.editor.clear_screen(),
             Command::Exit => {}
         }
         Ok(())
     }
 
-    fn resume(&mut self) -> Result<()> {
-        let summaries = self.sessions.list()?;
+    async fn resume(&mut self) -> Result<()> {
+        let summaries = self.backend.threads().await?;
         if summaries.is_empty() {
             println!("{}\n", "No saved conversations yet.".bold());
             return Ok(());
@@ -148,36 +152,44 @@ impl Repl {
         if let Some(index) = ui::pick("Resume a conversation", &items, 0)?
             && let Some(summary) = summaries.into_iter().nth(index)
         {
-            self.session = summary.id;
-            self.show_model(None);
-            self.print_history(true);
+            self.thread = summary.id;
+            self.show_status(None);
+            self.show_thread(true).await;
         }
         Ok(())
     }
 
-    /// Prints the conversation so far; `announce_empty` says so when there is none.
-    fn print_history(&self, announce_empty: bool) {
-        match self.sessions.messages(&self.session) {
-            Ok(messages) if messages.is_empty() => {
-                if announce_empty {
-                    println!("\n{}\n", "Nothing said yet.".bold());
-                }
-            }
-            Ok(messages) => render::conversation(&messages, &self.style),
-            Err(error) => render::error(&error),
+    /// Prints the conversation so far, then follows its run if one is in
+    /// progress, perhaps started on another machine. `announce_empty` says
+    /// so when there is nothing.
+    async fn show_thread(&mut self, announce_empty: bool) {
+        let opened = match self.backend.open(&self.thread).await {
+            Ok(opened) => opened,
+            Err(error) => return render::error(&format!("{error:#}")),
+        };
+        let Snapshot { messages, running } = opened.snapshot;
+        if !messages.is_empty() {
+            render::conversation(&messages, &self.style);
+        } else if running.is_none() && announce_empty {
+            println!("\n{}\n", "Nothing said yet.".bold());
+        }
+        if let (Some(running), Some(events)) = (running, opened.events) {
+            render::user_message(&running.prompt);
+            let turn = turn::follow(&self.backend, &self.thread, events, &self.style).await;
+            self.update_context(&turn);
         }
     }
 
-    fn switch_model(&mut self, reference: Option<String>) -> Result<()> {
+    async fn switch_model(&mut self, reference: Option<String>) -> Result<()> {
         let reference = match reference {
             Some(reference) => reference,
             None => {
-                let models = agent::available_models();
+                let models = self.backend.models().await?;
                 if models.is_empty() {
                     println!("{}\n", "No vendor has an API key set.".bold());
                     return Ok(());
                 }
-                let current = self.assistant.model().reference();
+                let current = &self.options.model;
                 let index = models.iter().position(|model| model == current).unwrap_or(0);
                 match ui::pick("Select a model", &models, index)? {
                     Some(index) => models.into_iter().nth(index).unwrap_or_default(),
@@ -185,9 +197,10 @@ impl Repl {
                 }
             }
         };
-        let model = Model::connect(&reference, &self.providers)?;
-        self.assistant.set_model(model);
-        self.show_model(None);
+        let model = self.backend.model(&reference).await?;
+        self.options.model = model.reference;
+        self.window = model.context_window;
+        self.show_status(None);
         println!("{} {}\n", "Using".bold(), reference.cyan());
         Ok(())
     }
@@ -197,7 +210,7 @@ impl Repl {
             Some(level) => level,
             None => {
                 let choices = thinking_choices();
-                let current = self.assistant.thinking().map_or(DEFAULT_THINKING, Thinking::as_str);
+                let current = self.options.thinking.map_or(DEFAULT_THINKING, Thinking::as_str);
                 let index = choices.iter().position(|choice| choice == current).unwrap_or(0);
                 match ui::pick("Thinking", &choices, index)? {
                     Some(index) => choices.into_iter().nth(index).unwrap_or_default(),
@@ -209,7 +222,7 @@ impl Repl {
             DEFAULT_THINKING => None,
             level => Some(level.parse::<Thinking>().map_err(anyhow::Error::msg)?),
         };
-        self.assistant.set_thinking(thinking);
+        self.options.thinking = thinking;
         self.status.lock().unwrap_or_else(PoisonError::into_inner).thinking = thinking;
         let described = thinking.map_or("the model's default", Thinking::as_str);
         println!("{} {}\n", "Thinking:".bold(), described.cyan());
@@ -238,9 +251,10 @@ impl Repl {
         Ok(())
     }
 
-    fn list_tools(&self) {
+    async fn list_tools(&self) -> Result<()> {
+        let tools = self.backend.tools(&self.thread).await?;
         println!();
-        for (tool, permission) in self.assistant.permissions() {
+        for (tool, permission) in tools.permissions {
             let permission = match permission {
                 Permission::Allow => "allow".green(),
                 Permission::Confirm => "confirm".yellow(),
@@ -248,9 +262,9 @@ impl Repl {
             };
             println!("  {permission:<8} {tool}");
         }
-        if !self.servers.is_empty() {
+        if !tools.servers.is_empty() {
             println!("\n{}", "MCP servers".bold());
-            for server in &self.servers {
+            for server in &tools.servers {
                 match &server.tools {
                     Ok(count) => println!("  {} {} ({count} tools)", "●".green(), server.name),
                     Err(error) => println!("  {} {}: {error}", "●".red(), server.name),
@@ -258,16 +272,23 @@ impl Repl {
             }
         }
         println!();
+        Ok(())
     }
 
-    fn show_model(&self, context: Option<u64>) {
-        let model = self.assistant.model();
+    fn update_context(&self, turn: &Turn) {
+        if turn.context.is_some() {
+            self.show_status(turn.context);
+        }
+    }
+
+    fn show_status(&self, context: Option<u64>) {
         let mut status = self.status.lock().unwrap_or_else(PoisonError::into_inner);
         *status = Status {
-            model: model.reference().to_owned(),
-            thinking: self.assistant.thinking(),
+            remote: self.backend.remote().map(str::to_owned),
+            model: self.options.model.clone(),
+            thinking: self.options.thinking,
             context,
-            window: model.context_window(),
+            window: self.window,
         };
     }
 }

@@ -16,6 +16,7 @@ categories = ["command-line-utilities"]
 [dependencies]
 ansi-parser = "0.9"
 anyhow = "1"
+axum = "0.8"
 bat = { version = "0.26", default-features = false }
 chrono = "0.4"
 clap = { version = "4.6", features = ["derive"] }
@@ -26,6 +27,7 @@ futures = "0.3"
 http = "1"
 nu-ansi-term = "0.50"
 reedline = "0.53"
+reqwest = { version = "0.13", default-features = false, features = ["http2", "json", "query", "rustls", "stream"] }
 rig-agent = "0.46"
 rig-core = { version = "0.46", features = ["reqwest"] }
 rig-memory = { version = "0.46", features = ["fs"] }
@@ -42,6 +44,7 @@ shellexpand = "3"
 syntect = "5.3"
 textwrap = "0.16"
 tokio = { version = "1", features = ["full"] }
+tokio-util = { version = "0.7", features = ["codec", "io"] }
 toml = "1"
 unicode-segmentation = "1"
 yansi = "1"

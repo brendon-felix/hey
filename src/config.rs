@@ -4,10 +4,11 @@
 
 use std::collections::BTreeMap;
 use std::fs;
+use std::net::{Ipv4Addr, SocketAddr};
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
-use serde::{Deserialize, Deserializer};
+use serde::{Deserialize, Deserializer, Serialize};
 
 use crate::permissions::{self, Permission};
 
@@ -26,6 +27,9 @@ pub struct Config {
     pub sessions: Sessions,
     pub tools: Tools,
     pub mcp_servers: BTreeMap<String, McpServer>,
+    pub remote: Option<String>,
+    pub remotes: BTreeMap<String, Remote>,
+    pub server: Server,
 }
 
 impl Default for Config {
@@ -43,6 +47,9 @@ impl Default for Config {
             sessions: Sessions::default(),
             tools: Tools::default(),
             mcp_servers: BTreeMap::new(),
+            remote: None,
+            remotes: BTreeMap::new(),
+            server: Server::default(),
         }
     }
 }
@@ -65,7 +72,7 @@ impl Config {
 
 /// How much the model reasons before answering. Unset leaves it to the
 /// model's default.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Thinking {
     Off,
@@ -312,6 +319,45 @@ impl TryFrom<RawMcpServer> for McpServer {
     }
 }
 
+/// A host that runs the agent and keeps its threads, reached by `hey --remote`.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Remote {
+    pub url: String,
+    pub token: String,
+}
+
+/// How `hey --serve` hosts the agent for remote clients.
+#[derive(Debug, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct Server {
+    pub listen: SocketAddr,
+    token: Option<String>,
+}
+
+impl Default for Server {
+    fn default() -> Self {
+        Self {
+            listen: (Ipv4Addr::LOCALHOST, 7700).into(),
+            token: None,
+        }
+    }
+}
+
+impl Server {
+    /// The token clients must present. There is no default: a host runs
+    /// tools on its machine for whoever reaches it.
+    pub fn token(&self) -> Result<String> {
+        let token = self
+            .token
+            .as_deref()
+            .context("set `server.token`, e.g. token = \"${HEY_TOKEN}\"")?;
+        let token = expand(token)?;
+        anyhow::ensure!(!token.trim().is_empty(), "`server.token` is empty");
+        Ok(token)
+    }
+}
+
 pub fn config_dir() -> Option<PathBuf> {
     dirs::config_dir().map(|dir| dir.join("hey"))
 }
@@ -382,6 +428,7 @@ mod tests {
         assert_eq!(documented.tools.allow_all, built_in.tools.allow_all);
         assert_eq!(documented.tools.default, built_in.tools.default);
         assert_eq!(documented.tools.permissions, built_in.tools.permissions);
+        assert_eq!(documented.server.listen, built_in.server.listen);
     }
 
     #[test]

@@ -6,11 +6,12 @@ use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex, PoisonError};
 
 use rig_agent::agent::{AgentHook, DispatchAction, DispatchEvent, HookContext};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
-use crate::{render, ui};
+use crate::host::Run;
+use crate::protocol::{Decision, Event};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Permission {
     Allow,
@@ -43,7 +44,7 @@ impl Origin {
 }
 
 /// The permission of every tool the agent offers, by the name the model
-/// calls it. Shared between the approval hook and the REPL.
+/// calls it. Each thread has its own, as "always allow" applies to one thread.
 #[derive(Debug, Default)]
 pub struct Permissions(Mutex<BTreeMap<String, Permission>>);
 
@@ -78,6 +79,10 @@ impl Permissions {
         self.lock().clone()
     }
 
+    pub fn fork(&self) -> Self {
+        Self(Mutex::new(self.snapshot()))
+    }
+
     fn allow(&self, tool: &str) {
         self.lock().insert(tool.to_owned(), Permission::Allow);
     }
@@ -87,31 +92,38 @@ impl Permissions {
     }
 }
 
-/// Shows every tool call and gates it on its permission.
-pub struct Approval(pub Arc<Permissions>);
+/// Reports every tool call to the run and gates it on its permission,
+/// asking the run's clients when it needs confirming.
+pub struct Approval {
+    pub permissions: Arc<Permissions>,
+    pub run: Arc<Run>,
+}
 
 impl AgentHook for Approval {
     async fn on_dispatch(&self, _ctx: &HookContext, event: DispatchEvent<'_>) -> DispatchAction {
         let Some(name) = event.tool_name() else {
             return DispatchAction::proceed();
         };
-        render::tool_call(name, event.tool_args().unwrap_or_default());
-        match self.0.get(name) {
+        self.run.emit(Event::ToolCall {
+            name: name.to_owned(),
+            args: event.tool_args().unwrap_or_default().to_owned(),
+        });
+        match self.permissions.get(name) {
             Permission::Allow => DispatchAction::proceed(),
             Permission::Deny => {
-                render::notice("denied by config");
+                self.run.emit(Event::Notice {
+                    text: "denied by config".into(),
+                });
                 DispatchAction::skip(format!("The user's configuration does not allow `{name}`."))
             }
-            Permission::Confirm => match ui::confirm_tool(name.to_owned()).await {
-                ui::Approval::Once => DispatchAction::proceed(),
-                ui::Approval::Always => {
-                    self.0.allow(name);
+            Permission::Confirm => match self.run.ask(name).await {
+                Decision::Once => DispatchAction::proceed(),
+                Decision::Always => {
+                    self.permissions.allow(name);
                     DispatchAction::proceed()
                 }
-                ui::Approval::Decline => {
-                    DispatchAction::skip("The user declined this tool call.")
-                }
-                ui::Approval::Stop => DispatchAction::stop("The user stopped the run."),
+                Decision::Decline => DispatchAction::skip("The user declined this tool call."),
+                Decision::Stop => DispatchAction::stop("The user stopped the run."),
             },
         }
     }

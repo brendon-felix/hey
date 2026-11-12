@@ -5,28 +5,23 @@
 use anyhow::Result;
 use dialoguer::{FuzzySelect, Select, theme::ColorfulTheme};
 
-pub enum Approval {
-    Once,
-    Always,
-    Decline,
-    Stop,
-}
+use crate::protocol::Decision;
 
 /// Asks whether to run `tool`. Esc declines the call; Ctrl+C stops the run.
-pub async fn confirm_tool(tool: String) -> Approval {
+pub async fn confirm_tool(tool: String) -> Decision {
     let ask = move || {
         Select::with_theme(&ColorfulTheme::default())
             .with_prompt(format!("Run `{tool}`?"))
-            .items(["Yes", &format!("Always allow `{tool}` this session"), "No"])
+            .items(["Yes", &format!("Always allow `{tool}` in this conversation"), "No"])
             .default(0)
             .report(false)
             .interact_opt()
     };
     match tokio::task::spawn_blocking(ask).await {
-        Ok(Ok(Some(0))) => Approval::Once,
-        Ok(Ok(Some(1))) => Approval::Always,
-        Ok(Ok(_)) => Approval::Decline,
-        _ => Approval::Stop,
+        Ok(Ok(Some(0))) => Decision::Once,
+        Ok(Ok(Some(1))) => Decision::Always,
+        Ok(Ok(_)) => Decision::Decline,
+        _ => Decision::Stop,
     }
 }
 

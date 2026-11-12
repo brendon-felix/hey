@@ -2,31 +2,24 @@
 /*                                  agent.rs                                  */
 /* -------------------------------------------------------------------------- */
 
-use std::collections::BTreeMap;
-use std::sync::Arc;
-
 use anyhow::{Context, Result};
-use rig_agent::agent::{Agent, AgentBuilder, StreamingResult};
+use rig_agent::agent::AgentBuilder;
 use rig_core::DynModel;
 use rig_core::catalog::Catalog;
-use rig_core::completion::GenerationOptions;
 use rig_core::operation::Completion;
 use rig_core::providers::registry::ConnectOptions;
 use rig_core::tool::Tool;
 use rig_tools::{Delete, Edit, List, Live, Move, Read, Search, Seen, Shell, Spill, Write};
 
-use crate::config::{self, Config, Providers, Thinking};
-use crate::mcp;
-use crate::permissions::{Approval, Origin, Permission, Permissions};
-use crate::render;
-use crate::sessions::{SessionId, Sessions};
+use crate::config::{self, Providers};
+use crate::protocol::ModelInfo;
 
 pub const DEFAULT_SYSTEM_PROMPT: &str = "You are hey, an assistant in the user's terminal. \
 Use your tools to read, search and edit files and to run commands whenever the answer depends \
 on the user's machine or project, rather than guessing. Keep answers short: they are read in a \
 terminal and rendered as Markdown.";
 
-const BUILTIN_TOOLS: [&str; 8] = [
+pub const BUILTIN_TOOLS: [&str; 8] = [
     Read::NAME,
     List::NAME,
     Search::NAME,
@@ -62,12 +55,11 @@ impl Model {
         })
     }
 
-    pub fn reference(&self) -> &str {
-        &self.reference
-    }
-
-    pub fn context_window(&self) -> Option<u32> {
-        self.inner.spec().and_then(|spec| spec.context_window)
+    pub fn info(&self) -> ModelInfo {
+        ModelInfo {
+            reference: self.reference.clone(),
+            context_window: self.inner.spec().and_then(|spec| spec.context_window),
+        }
     }
 }
 
@@ -86,91 +78,16 @@ pub fn available_models() -> Vec<String> {
         .collect()
 }
 
-pub struct Assistant {
-    agent: Agent,
-    model: Model,
-    thinking: Option<Thinking>,
-    permissions: Arc<Permissions>,
-}
-
-impl Assistant {
-    pub fn new(
-        config: &Config,
-        model: Model,
-        system_prompt: &str,
-        sessions: &Sessions,
-        mcp_tools: Vec<mcp::Tool>,
-    ) -> Self {
-        let builtin = BUILTIN_TOOLS.map(|name| (name, &Origin::Builtin));
-        let external = mcp_tools.iter().map(|tool| (tool.name.as_str(), &tool.origin));
-        let permissions = Arc::new(Permissions::resolve(
-            builtin.into_iter().chain(external),
-            &config.tools,
-        ));
-
-        let mut builder = with_builtin_tools(AgentBuilder::new(model.inner.clone()))
-            .dynamic_tools(mcp_tools.into_iter().map(|tool| tool.tool).collect())
-            .name("hey")
-            .preamble(system_prompt)
-            .append_preamble(&environment())
-            .default_max_turns(config.max_turns)
-            .memory(sessions.store())
-            .add_hook(Approval(permissions.clone()));
-        if let Some(max_tokens) = config.max_tokens {
-            builder = builder.max_tokens(max_tokens);
-        }
-        Self {
-            agent: builder.build(),
-            model,
-            thinking: config.thinking,
-            permissions,
-        }
-    }
-
-    pub fn model(&self) -> &Model {
-        &self.model
-    }
-
-    pub fn set_model(&mut self, model: Model) {
-        self.agent.set_model(model.inner.clone());
-        self.model = model;
-    }
-
-    pub fn thinking(&self) -> Option<Thinking> {
-        self.thinking
-    }
-
-    /// `None` leaves reasoning to the model's default.
-    pub fn set_thinking(&mut self, thinking: Option<Thinking>) {
-        self.thinking = thinking;
-    }
-
-    pub fn permissions(&self) -> BTreeMap<String, Permission> {
-        self.permissions.snapshot()
-    }
-
-    /// Answers `prompt` in `session`, whose log the run reads before its first
-    /// model call and appends to once it finishes.
-    pub fn run(&self, prompt: &str, session: &SessionId) -> StreamingResult {
-        let runner = self.agent.prompt(prompt).conversation(session.as_str());
-        match self.thinking {
-            Some(thinking) => runner.options(GenerationOptions::default().reasoning(thinking)),
-            None => runner,
-        }
-        .stream()
-    }
-}
-
-fn with_builtin_tools(builder: AgentBuilder) -> AgentBuilder {
-    // `edit` and `write` refuse to clobber a file changed since `read` saw it,
-    // which takes all three sharing what was seen.
-    let seen = Seen::default();
+/// An agent on `model` with the built-in tools. `edit` and `write` refuse to
+/// clobber a file changed since `read` saw it, which takes all three sharing
+/// what was `seen`; `live` receives a running command's output.
+pub fn builder(model: &Model, seen: &Seen, live: Live) -> AgentBuilder {
     let shell = Shell {
-        live: Some(Live::new(render::live_output)),
+        live: Some(live),
         spill: config::cache_dir().map(|dir| Spill(dir.join("spill"))),
         ..Shell::default()
     };
-    builder
+    AgentBuilder::new(model.inner.clone())
         .tool(Read {
             seen: seen.clone(),
             ..Read::default()
@@ -180,7 +97,7 @@ fn with_builtin_tools(builder: AgentBuilder) -> AgentBuilder {
             ..Write::default()
         })
         .tool(Edit {
-            seen,
+            seen: seen.clone(),
             ..Edit::default()
         })
         .tool(List::default())
@@ -190,7 +107,7 @@ fn with_builtin_tools(builder: AgentBuilder) -> AgentBuilder {
         .tool(shell)
 }
 
-fn environment() -> String {
+pub fn environment() -> String {
     let cwd = std::env::current_dir()
         .map(|dir| dir.display().to_string())
         .unwrap_or_else(|_| "unknown".into());

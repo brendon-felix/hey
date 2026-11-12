@@ -26,6 +26,8 @@ const MENU: &str = "completion_menu";
 /// What the status line shows when the line is not a command.
 #[derive(Debug, Default)]
 pub struct Status {
+    /// The remote host, when the agent runs on one.
+    pub remote: Option<String>,
     pub model: String,
     pub thinking: Option<Thinking>,
     pub context: Option<u64>,
@@ -302,7 +304,11 @@ impl StatusBar {
             (Some(used), None) => Some(format!("{} tokens", compact(used))),
             (None, _) => None,
         };
-        std::iter::once(status.model.clone())
+        status
+            .remote
+            .iter()
+            .cloned()
+            .chain(std::iter::once(status.model.clone()))
             .chain(thinking)
             .chain(context)
             .collect::<Vec<_>>()
