@@ -6,6 +6,7 @@ use std::io;
 use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
+use futures::stream::BoxStream;
 use futures::{Stream, StreamExt, TryStreamExt};
 use reqwest::{RequestBuilder, Response, StatusCode, Url};
 use serde::de::DeserializeOwned;
@@ -15,12 +16,14 @@ use tokio_util::io::StreamReader;
 use crate::backend::{Events, Opened};
 use crate::config::{self, Remote};
 use crate::protocol::{
-    ApprovalId, Decision, Defaults, Event, ModelInfo, RunRequest, Snapshot, ThreadInfo, Tools,
+    Activities, ApprovalId, Decision, Defaults, ModelInfo, RunRequest, Snapshot, ThreadInfo,
+    Tools,
 };
 use crate::sessions::SessionId;
 use crate::{render, token, ui};
 
 /// A host served by `hey --serve` on another machine.
+#[derive(Clone)]
 pub struct Client {
     name: String,
     base: Url,
@@ -134,6 +137,11 @@ impl Client {
     pub async fn delete(&self, id: &SessionId) -> Result<()> {
         let path = format!("v1/threads/{}", id.as_str());
         self.ok(self.http.delete(self.url(&path)?)).await.map(drop)
+    }
+
+    pub async fn activity(&self) -> Result<BoxStream<'static, Result<Activities>>> {
+        let response = self.ok(self.get("v1/activity")?).await?;
+        Ok(parse(lines(response)))
     }
 
     pub async fn shared(&self) -> Result<Vec<String>> {
@@ -255,10 +263,14 @@ fn lines(response: Response) -> impl Stream<Item = Result<String>> + Send + Unpi
 }
 
 fn events(lines: impl Stream<Item = Result<String>> + Send + 'static) -> Events {
+    parse(lines)
+}
+
+/// Each line of `lines` as a `T`.
+fn parse<T: DeserializeOwned + Send + 'static>(
+    lines: impl Stream<Item = Result<String>> + Send + 'static,
+) -> BoxStream<'static, Result<T>> {
     lines
-        .map(|line| {
-            let line = line?;
-            serde_json::from_str::<Event>(&line).context("the host sent an unreadable event")
-        })
+        .map(|line| serde_json::from_str::<T>(&line?).context("the host sent something unreadable"))
         .boxed()
 }

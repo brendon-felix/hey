@@ -11,11 +11,16 @@ use futures::stream::BoxStream;
 use crate::client::Client;
 use crate::host::{self, Host};
 use crate::protocol::{
-    ApprovalId, Decision, Defaults, Event, ModelInfo, RunRequest, Snapshot, ThreadInfo, Tools,
+    Activities, ApprovalId, Decision, Defaults, Event, ModelInfo, RunRequest, Snapshot,
+    ThreadInfo, Tools,
 };
 use crate::sessions::SessionId;
 
 pub type Events = BoxStream<'static, Result<Event>>;
+
+/// What the host's threads are doing, then each change, and a repeat at
+/// least every `host::HEARTBEAT` while the host is reachable.
+pub type ActivityStream = BoxStream<'static, Result<Activities>>;
 
 /// A thread as saved, and the events of its run in progress.
 pub struct Opened {
@@ -25,6 +30,7 @@ pub struct Opened {
 
 /// Where the agent runs and threads are kept: in this process, or on a
 /// remote host.
+#[derive(Clone)]
 pub enum Backend {
     Local(Arc<Host>),
     Remote(Client),
@@ -97,6 +103,14 @@ impl Backend {
         match self {
             Backend::Local(host) => Ok(host.delete(id)?),
             Backend::Remote(client) => client.delete(id).await,
+        }
+    }
+
+    /// What the host's threads are doing, then each change.
+    pub async fn activity(&self) -> Result<ActivityStream> {
+        match self {
+            Backend::Local(host) => Ok(host.activity().map(Ok).boxed()),
+            Backend::Remote(client) => client.activity().await,
         }
     }
 

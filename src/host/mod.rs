@@ -9,13 +9,15 @@ use std::collections::HashMap;
 use std::fmt;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+use std::time::Duration;
 
 use anyhow::{Context, Result};
-use futures::StreamExt;
 use futures::stream::BoxStream;
+use futures::{Stream, StreamExt, stream};
 use rig_agent::agent::{Agent, StreamingResult};
 use rig_core::completion::GenerationOptions;
 use rig_tools::{Live, Seen};
+use tokio::sync::watch;
 use tokio_util::task::TaskTracker;
 
 use crate::agent::{self, BUILTIN_TOOLS, Model};
@@ -24,15 +26,19 @@ use crate::mcp;
 use crate::memory::{self, Memory, Recalled};
 use crate::permissions::{Approval, Origin, Permissions};
 use crate::protocol::{
-    ApprovalId, Decision, Defaults, Ending, Event, ModelInfo, RunOptions, RunRequest, ServerReport,
-    Snapshot, ThreadInfo, ThreadStatus, Tools,
+    Activities, Activity, ApprovalId, Decision, Defaults, Ending, Event, ModelInfo, RunId,
+    RunOptions, RunRequest, ServerReport, Snapshot, ThreadInfo, ThreadStatus, Tools,
 };
 use crate::render;
-use crate::sessions::{SessionId, Sessions, Summary};
+use crate::sessions::{Mark, SessionId, Sessions, Summary};
 
 pub use run::Run;
 
 pub type Events = BoxStream<'static, Event>;
+
+/// How often the activity stream repeats itself when nothing changes, so a
+/// client can tell a quiet host from a lost connection.
+pub const HEARTBEAT: Duration = Duration::from_secs(30);
 
 /// Runs the agent and keeps its threads: in-process for a local `hey`, or
 /// behind `hey --serve` for clients on other machines. Runs belong to the
@@ -53,6 +59,8 @@ pub struct Host {
     servers: Vec<ServerReport>,
     permissions: Permissions,
     threads: Mutex<HashMap<SessionId, Thread>>,
+    /// What the threads are doing, published at every change.
+    activity: watch::Sender<Activities>,
     /// Runs and what they leave to do once answered, such as learning.
     tasks: TaskTracker,
 }
@@ -65,6 +73,19 @@ struct Thread {
     /// the same and the provider's prompt cache keeps working.
     memories: Vec<String>,
     run: Option<Arc<Run>>,
+    /// The latest run, going or not.
+    last: Option<RunId>,
+}
+
+/// What a thread is doing: its run's state while it has one, else what
+/// its mark says.
+fn status(run: Option<&Run>, mark: Mark) -> ThreadStatus {
+    match run {
+        Some(run) if run.asking() => ThreadStatus::Asking,
+        Some(_) => ThreadStatus::Running,
+        None if mark.unseen => ThreadStatus::Unseen,
+        None => ThreadStatus::Idle,
+    }
 }
 
 /// A thread as saved, and the events of its run in progress.
@@ -118,6 +139,7 @@ impl Host {
             servers,
             permissions,
             threads: Mutex::default(),
+            activity: watch::Sender::default(),
             tasks: TaskTracker::new(),
         })
     }
@@ -155,29 +177,43 @@ impl Host {
             .into_iter()
             .map(|summary| {
                 let mark = marks.get(&summary.id).copied().unwrap_or_default();
-                let run = threads.get(&summary.id).and_then(|thread| thread.run.as_ref());
-                let status = match run {
-                    Some(run) if run.asking() => ThreadStatus::Asking,
-                    Some(_) => ThreadStatus::Running,
-                    None if mark.unseen => ThreadStatus::Unseen,
-                    None => ThreadStatus::Idle,
-                };
+                let run = threads.get(&summary.id).and_then(|thread| thread.run.as_deref());
                 ThreadInfo {
                     summary,
-                    status,
+                    status: status(run, mark),
                     archived: mark.archived,
                 }
             })
             .collect())
     }
 
+    /// What the threads are doing now, then again each time that changes.
+    pub fn activity(&self) -> impl Stream<Item = Activities> + Send + 'static {
+        self.publish(&self.lock());
+        let activity = self.activity.subscribe();
+        stream::unfold((activity, true), |(mut activity, first)| async move {
+            if !first {
+                tokio::select! {
+                    changed = activity.changed() => changed.ok()?,
+                    () = tokio::time::sleep(HEARTBEAT) => {}
+                }
+            }
+            let now = activity.borrow_and_update().clone();
+            Some((now, (activity, false)))
+        })
+    }
+
     /// A client showed the thread up to its latest answer.
     pub fn viewed(&self, id: &SessionId) -> Result<()> {
-        self.sessions.mark(id, |mark| mark.unseen = false)
+        self.sessions.mark(id, |mark| mark.unseen = false)?;
+        self.publish(&self.lock());
+        Ok(())
     }
 
     pub fn archive(&self, id: &SessionId, archived: bool) -> Result<()> {
-        self.sessions.mark(id, |mark| mark.archived = archived)
+        self.sessions.mark(id, |mark| mark.archived = archived)?;
+        self.publish(&self.lock());
+        Ok(())
     }
 
     /// Starts a new thread as a copy of what `id` saved, returning its id.
@@ -193,6 +229,7 @@ impl Host {
         }
         threads.remove(id);
         self.sessions.delete(id).map_err(ThreadError::Other)?;
+        self.publish(&threads);
         Ok(())
     }
 
@@ -233,6 +270,7 @@ impl Host {
             permissions: Arc::new(self.permissions.fork()),
             memories,
             run: None,
+            last: None,
         });
         if thread.run.is_some() {
             return Err(ThreadError::Busy);
@@ -242,13 +280,22 @@ impl Host {
             .messages(&id)
             .map_err(ThreadError::Other)?
             .len();
-        let run = Arc::new(Run::new(request.prompt.clone(), history));
+        // Whether a tool call waits shows in the activity, as it changes.
+        let host = Arc::downgrade(self);
+        let asking = move || {
+            if let Some(host) = host.upgrade() {
+                host.publish(&host.lock());
+            }
+        };
+        let run = Arc::new(Run::new(request.prompt.clone(), history, asking));
         if let Some(failure) = self.take_memory_failure() {
             run.emit(Event::Notice { text: failure });
         }
         let agent = self.agent(thread, &model, &request.options, &run);
         let events = run.events().boxed();
         thread.run = Some(run.clone());
+        thread.last = Some(run.id());
+        self.publish(&threads);
         drop(threads);
         self.tasks
             .spawn(self.clone().drive(id, run, agent, model, request));
@@ -350,6 +397,10 @@ impl Host {
             () = run.stopped() => Ending::Interrupted,
         };
         let answered = matches!(ending, Ending::Answered);
+        let saved = self
+            .sessions
+            .messages(&id)
+            .map_or(run.history(), |messages| messages.len());
         {
             // Under the lock, so `open` sees either the run or all it saved,
             // and the thread is marked before any client hears it ended.
@@ -359,10 +410,11 @@ impl Host {
                     text: format!("not marked as new: {error:#}"),
                 });
             }
-            run.emit(Event::End { ending });
+            run.emit(Event::End { ending, saved });
             if let Some(thread) = threads.get_mut(&id) {
                 thread.run = None;
             }
+            self.publish(&threads);
         }
         if answered && let Err(error) = self.learn(&id, run.history(), &model).await {
             *self.lock_memory_failure() = Some(format!("memory not updated: {error:#}"));
@@ -461,6 +513,38 @@ impl Host {
 
     fn run(&self, id: &SessionId) -> Option<Arc<Run>> {
         self.lock().get(id).and_then(|thread| thread.run.clone())
+    }
+
+    /// Tells clients what `threads` are doing now, if that changed: those
+    /// that ran since the host started, and those with something new.
+    fn publish(&self, threads: &HashMap<SessionId, Thread>) {
+        let marks = self.sessions.marks().unwrap_or_default();
+        let mark = |id: &SessionId| marks.get(id).copied().unwrap_or_default();
+        let ran = threads.iter().map(|(id, thread)| {
+            let activity = Activity {
+                run: thread.last,
+                status: status(thread.run.as_deref(), mark(id)),
+                archived: mark(id).archived,
+            };
+            (id.clone(), activity)
+        });
+        let unseen = marks
+            .iter()
+            .filter(|(id, mark)| mark.unseen && !threads.contains_key(*id))
+            .map(|(id, mark)| {
+                let activity = Activity {
+                    run: None,
+                    status: ThreadStatus::Unseen,
+                    archived: mark.archived,
+                };
+                (id.clone(), activity)
+            });
+        let now: Activities = ran.chain(unseen).collect();
+        self.activity.send_if_modified(|activity| {
+            let changed = *activity != now;
+            *activity = now;
+            changed
+        });
     }
 
     fn lock(&self) -> MutexGuard<'_, HashMap<SessionId, Thread>> {

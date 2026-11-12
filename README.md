@@ -228,6 +228,12 @@ Start a conversation on your laptop, close it, and continue it from your desktop
 carries on without a client. Opening the conversation elsewhere replays the answer so far, then
 follows it live. Tool calls that need confirming wait until any client answers them.
 
+Every terminal showing a conversation shows each answer in it as it streams, whichever terminal
+asked; what you were typing waits until the answer ends. Several conversations can answer at
+once. The status at the right of the prompt counts the others: a spinner for those answering, and
+a blue dot for those that finished while no terminal was showing them. `/threads` marks them the
+same way.
+
 On the server, set the address and run `hey --serve` in the directory the agent should work in:
 
 ```toml

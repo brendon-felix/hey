@@ -12,12 +12,13 @@ use rig_core::completion::Usage;
 use rig_core::streaming::{Item, StreamEvent};
 use tokio::sync::{Notify, oneshot, watch};
 
-use crate::protocol::{ApprovalId, Decision, Event, Running};
+use crate::protocol::{ApprovalId, Decision, Event, RunId, Running};
 
 /// A run in progress on a thread. The host owns it, not a client: clients
 /// come and go, replaying and following its events and answering its
 /// approvals, while it carries on.
 pub struct Run {
+    id: RunId,
     prompt: String,
     /// How many messages the thread held when the run began.
     history: usize,
@@ -25,18 +26,32 @@ pub struct Run {
     approvals: Mutex<HashMap<ApprovalId, oneshot::Sender<Decision>>>,
     next_approval: AtomicU64,
     stop: Notify,
+    /// Called when whether a tool call waits for a decision changes.
+    asking_changed: Box<dyn Fn() + Send + Sync>,
 }
 
 impl Run {
-    pub fn new(prompt: String, history: usize) -> Self {
+    pub fn new(prompt: String, history: usize, asking_changed: impl Fn() + Send + Sync + 'static) -> Self {
+        // Random rather than counted, so a restarted host cannot reuse the
+        // id of a run a client has already shown.
+        let id = RunId(getrandom::u64().unwrap_or_else(|_| {
+            let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH);
+            now.map_or(0, |since| since.as_nanos() as u64)
+        }));
         Self {
+            id,
             prompt,
             history,
-            log: watch::Sender::new(Vec::new()),
+            log: watch::Sender::new(vec![Event::Began { run: id }]),
             approvals: Mutex::default(),
             next_approval: AtomicU64::new(0),
             stop: Notify::new(),
+            asking_changed: Box::new(asking_changed),
         }
+    }
+
+    pub fn id(&self) -> RunId {
+        self.id
     }
 
     pub fn running(&self) -> Running {
@@ -67,6 +82,7 @@ impl Run {
         let id = ApprovalId(self.next_approval.fetch_add(1, Ordering::Relaxed));
         let (decide, decision) = oneshot::channel();
         self.lock_approvals().insert(id, decide);
+        (self.asking_changed)();
         self.emit(Event::Approval {
             id,
             tool: tool.to_owned(),
@@ -79,6 +95,7 @@ impl Run {
         let Some(decide) = self.lock_approvals().remove(&id) else {
             return false;
         };
+        (self.asking_changed)();
         self.emit(Event::Decided { id });
         decide.send(decision).is_ok()
     }
@@ -182,6 +199,7 @@ mod tests {
         events
             .iter()
             .map(|event| match event {
+                Event::Began { .. } => "began".into(),
                 Event::Text { text } => text.clone(),
                 Event::Approval { tool, .. } => format!("ask {tool}"),
                 Event::Decided { .. } => "decided".into(),
@@ -193,7 +211,7 @@ mod tests {
 
     #[tokio::test]
     async fn late_clients_replay_the_run_without_decided_approvals() {
-        let run = std::sync::Arc::new(Run::new("hi".into(), 0));
+        let run = std::sync::Arc::new(Run::new("hi".into(), 0, || {}));
         let mut early = Box::pin(run.events());
         run.emit(Event::Text { text: "a".into() });
         let asking = tokio::spawn({
@@ -201,14 +219,15 @@ mod tests {
             async move { run.ask("shell").await }
         });
         let mut asked = Vec::new();
-        while asked.len() < 2 {
+        while asked.len() < 3 {
             asked.extend(early.next().await);
         }
-        assert_eq!(names(&asked), ["a", "ask shell"]);
-        let joined: Vec<Event> = run.events().take(2).collect().await;
+        assert_eq!(names(&asked), ["began", "a", "ask shell"]);
+        assert!(matches!(asked[0], Event::Began { run: id } if id == run.id()));
+        let joined: Vec<Event> = run.events().take(3).collect().await;
         assert_eq!(
             names(&joined),
-            ["a", "ask shell"],
+            ["began", "a", "ask shell"],
             "a pending approval replays"
         );
 
@@ -220,11 +239,12 @@ mod tests {
         assert_eq!(asking.await.unwrap(), Decision::Once);
         run.emit(Event::End {
             ending: Ending::Answered,
+            saved: 2,
         });
 
         let rest: Vec<Event> = early.collect().await;
         assert_eq!(names(&rest), ["decided", "end"]);
         let late: Vec<Event> = run.events().collect().await;
-        assert_eq!(names(&late), ["a", "decided", "end"]);
+        assert_eq!(names(&late), ["began", "a", "decided", "end"]);
     }
 }

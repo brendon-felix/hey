@@ -30,6 +30,7 @@ pub async fn serve(host: Arc<Host>, config: &config::Server) -> Result<()> {
         .route("/v1/models", get(models))
         .route("/v1/model", get(model))
         .route("/v1/threads", get(threads))
+        .route("/v1/activity", get(activity))
         .route("/v1/shared", get(shared))
         .route("/v1/threads/{id}", get(open).delete(delete))
         .route("/v1/threads/{id}/run", post(start).delete(stop))
@@ -109,6 +110,12 @@ async fn model(
 
 async fn threads(State(host): State<Arc<Host>>) -> Reply<impl IntoResponse> {
     Ok(Json(host.threads()?))
+}
+
+/// What every thread is doing, a line each time that changes, and every
+/// `HEARTBEAT` regardless.
+async fn activity(State(host): State<Arc<Host>>) -> Response {
+    ndjson_response(ndjson(host.activity()))
 }
 
 async fn shared(State(host): State<Arc<Host>>) -> impl IntoResponse {

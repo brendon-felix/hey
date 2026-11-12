@@ -3,22 +3,27 @@
 /* -------------------------------------------------------------------------- */
 
 use std::borrow::Cow;
+use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex, PoisonError};
 
-use crossterm::cursor::SetCursorStyle;
+use crossterm::cursor::{MoveToColumn, SetCursorStyle};
+use crossterm::execute;
+use crossterm::terminal::{Clear, ClearType};
 use nu_ansi_term::{Color, Style};
 use reedline::{
     ColumnarMenu, Completer, CompletionResult, CursorConfig, DefaultHinter, EditCommand,
     EditMode, Emacs, FileBackedHistory, Helix, Highlighter, KeyCode, KeyModifiers,
     Keybindings, MenuBuilder, Prompt, PromptEditMode, PromptHistorySearch,
     PromptHistorySearchStatus, PromptHelixMode, PromptViMode, Reedline, ReedlineEvent,
-    ReedlineMenu, Signal, Span, StatusLine, StyledText, Suggestion, Vi, default_emacs_keybindings,
+    ReedlineMenu, RepaintSignal, Signal, Span, StatusLine, StyledText, Suggestion, Vi,
+    default_emacs_keybindings,
     default_helix_insert_keybindings, default_helix_normal_keybindings,
     default_vi_insert_keybindings, default_vi_normal_keybindings, default_vi_visual_keybindings,
 };
 
 use super::commands::{self, Arg, COMMANDS};
 use super::mentions::{self as host, Index, Mentions};
+use super::watch::{self, Watch};
 use crate::config::{self, EditMode as Mode, Thinking};
 use crate::mention::{self, Mention, Reference};
 use crate::render::{self, Palette, palette};
@@ -58,6 +63,9 @@ pub type SharedStatus = Arc<Mutex<Status>>;
 
 pub enum Read {
     Line(String),
+    /// A run started on this terminal's thread elsewhere. What was typed
+    /// stays, for the next read.
+    Woken,
     Exit,
 }
 
@@ -73,6 +81,8 @@ impl Editor {
         status: SharedStatus,
         choices: Choices,
         index: &Index,
+        watch: Watch,
+        wake: Arc<AtomicBool>,
     ) -> Self {
         let completer = InputCompleter {
             choices,
@@ -96,7 +106,8 @@ impl Editor {
                 ..CursorConfig::default()
             })
             .use_kitty_keyboard_enhancement(true)
-            .use_bracketed_paste(config.bracketed_paste);
+            .use_bracketed_paste(config.bracketed_paste)
+            .with_break_signal(wake);
 
         if config.history
             && let Some(path) = config::config_dir().map(|dir| dir.join("history.txt"))
@@ -111,7 +122,11 @@ impl Editor {
         }
         Self {
             line_editor: styled(line_editor, palette()),
-            prompt: HeyPrompt::Editing(status),
+            prompt: HeyPrompt::Editing {
+                status,
+                watch,
+                colors,
+            },
         }
     }
 
@@ -122,9 +137,23 @@ impl Editor {
         self.line_editor = styled(line_editor, palette());
     }
 
+    /// Redraws the prompt in place while a line is being read.
+    pub fn repaint_signal(&mut self) -> RepaintSignal {
+        self.line_editor.repaint_signal()
+    }
+
     pub fn read(&mut self) -> Read {
         match self.line_editor.read_line(&self.prompt) {
             Ok(Signal::Success(line)) => Read::Line(line),
+            Ok(Signal::ExternalBreak(_)) => {
+                // The prompt is redrawn below whatever is shown next.
+                let _ = execute!(
+                    std::io::stdout(),
+                    MoveToColumn(0),
+                    Clear(ClearType::FromCursorDown)
+                );
+                Read::Woken
+            }
             Ok(_) => Read::Exit,
             Err(error) => {
                 render::error(&error);
@@ -413,11 +442,42 @@ const LEFT: &str = "\x1b[0m";
 
 /// A bare indicator on the left and, while editing, the status on the right
 /// edge, as in nushell; reedline drops the right side once the input reaches
-/// it.
+/// it. The status starts with the other threads that are answering or
+/// answered unseen.
 enum HeyPrompt {
-    Editing(SharedStatus),
+    Editing {
+        status: SharedStatus,
+        watch: Watch,
+        colors: bool,
+    },
     /// How a submitted line stays in the scrollback: without the status.
     Submitted,
+}
+
+/// The editing status: a spinner and a blue dot counting the other threads
+/// answering and answered unseen, then the model and its context.
+fn status_line(status: &SharedStatus, watch: &Watch, colors: bool) -> String {
+    let paint = |color: Color, text: &str| match colors {
+        true => color.paint(text).to_string(),
+        false => text.to_owned(),
+    };
+    let muted = |text: &str| paint(palette().muted.into(), text);
+    let elsewhere = watch.elsewhere();
+    let running = (elsewhere.running > 0).then(|| {
+        let spinner = paint(palette().accent.into(), watch::spinner());
+        format!("{spinner}{}", muted(&format!(" {} running", elsewhere.running)))
+    });
+    let unseen = (elsewhere.unseen > 0).then(|| {
+        let dot = paint(Color::Blue, "●");
+        format!("{dot}{}", muted(&format!(" {} new", elsewhere.unseen)))
+    });
+    let summary = status.lock().unwrap_or_else(PoisonError::into_inner).summary();
+    running
+        .into_iter()
+        .chain(unseen)
+        .chain(std::iter::once(muted(&summary)))
+        .collect::<Vec<_>>()
+        .join(&muted(" · "))
 }
 
 impl Prompt for HeyPrompt {
@@ -427,10 +487,11 @@ impl Prompt for HeyPrompt {
 
     fn render_prompt_right(&self) -> Cow<'_, str> {
         match self {
-            Self::Editing(status) => {
-                let status = status.lock().unwrap_or_else(PoisonError::into_inner);
-                Cow::Owned(status.summary())
-            }
+            Self::Editing {
+                status,
+                watch,
+                colors,
+            } => Cow::Owned(status_line(status, watch, *colors)),
             Self::Submitted => Cow::Borrowed(""),
         }
     }

@@ -8,7 +8,7 @@ use tokio::time::MissedTickBehavior;
 
 use crate::backend::{Backend, Events};
 use crate::mention;
-use crate::protocol::{Attachment, Ending, Event, RunOptions, RunRequest};
+use crate::protocol::{Attachment, Ending, Event, RunId, RunOptions, RunRequest};
 use crate::render::{self, Stream, Style};
 use crate::sessions::SessionId;
 use crate::ui;
@@ -24,6 +24,10 @@ pub struct Turn {
     /// Tokens the last model call took in and gave back: how full the
     /// context is.
     pub context: Option<u64>,
+    /// The run shown, once its first event arrived.
+    pub run: Option<RunId>,
+    /// How many messages the thread held once the run ended.
+    pub saved: Option<usize>,
 }
 
 /// A request to answer `prompt`, with the files and directories it mentions
@@ -93,13 +97,15 @@ async fn end(backend: &Backend, thread: &SessionId, outcome: Outcome, seen: Seen
     if let Outcome::Interrupted = outcome {
         render::notice("interrupted");
     }
-    if seen.ended {
+    if seen.saved.is_some() {
         viewed(backend, thread).await;
     }
     println!();
     Turn {
         outcome,
         context: seen.context,
+        run: seen.run,
+        saved: seen.saved,
     }
 }
 
@@ -114,8 +120,10 @@ pub async fn viewed(backend: &Backend, thread: &SessionId) {
 #[derive(Default)]
 struct Seen {
     context: Option<u64>,
-    /// Whether the run's end arrived, rather than its events stopping.
-    ended: bool,
+    run: Option<RunId>,
+    /// How many messages the thread held as the run ended, once its end
+    /// arrived rather than its events stopping.
+    saved: Option<usize>,
 }
 
 async fn show(
@@ -149,6 +157,7 @@ async fn show(
             }
         };
         match event {
+            Event::Began { run } => seen.run = Some(run),
             Event::Text { text } => stream.text(text),
             Event::Reasoning { text } => stream.reasoning(text),
             Event::PartEnd => stream.end_part(),
@@ -156,8 +165,10 @@ async fn show(
             Event::Context { tokens } => seen.context = Some(tokens),
             event => {
                 stream.settle();
+                if let Event::End { saved, .. } = event {
+                    seen.saved = Some(saved);
+                }
                 if let Some(outcome) = report(backend, thread, event).await {
-                    seen.ended = true;
                     return outcome;
                 }
             }
@@ -182,7 +193,7 @@ async fn report(backend: &Backend, thread: &SessionId, event: Event) -> Option<O
                 Err(error) => render::error(&format!("{error:#}")),
             }
         }
-        Event::End { ending } => {
+        Event::End { ending, .. } => {
             return Some(match ending {
                 Ending::Answered => Outcome::Answered,
                 Ending::Interrupted => Outcome::Interrupted,
@@ -192,7 +203,8 @@ async fn report(backend: &Backend, thread: &SessionId, event: Event) -> Option<O
                 }
             });
         }
-        Event::Text { .. }
+        Event::Began { .. }
+        | Event::Text { .. }
         | Event::Reasoning { .. }
         | Event::PartEnd
         | Event::Decided { .. }
@@ -211,9 +223,13 @@ async fn stop(backend: &Backend, thread: &SessionId, mut events: Events, seen: &
         return Outcome::Interrupted;
     }
     while let Some(Ok(event)) = events.next().await {
-        if let Event::End { .. } = event {
-            seen.ended = true;
-            break;
+        match event {
+            Event::Began { run } => seen.run = Some(run),
+            Event::End { saved, .. } => {
+                seen.saved = Some(saved);
+                break;
+            }
+            _ => {}
         }
     }
     Outcome::Interrupted

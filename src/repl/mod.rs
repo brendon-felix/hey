@@ -5,18 +5,20 @@
 mod commands;
 mod editor;
 mod mentions;
+mod watch;
 
+use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Instant;
 
 use anyhow::Result;
 use yansi::Paint;
 
-use crate::backend::Backend;
+use crate::backend::{Backend, Events};
 use crate::browser;
 use crate::config::Thinking;
 use crate::permissions::Permission;
-use crate::protocol::{ModelInfo, RunOptions, Snapshot};
+use crate::protocol::{ModelInfo, RunId, RunOptions, Snapshot};
 use crate::render::{self, Reply, Style, Theme, palette, snailprint};
 use crate::sessions::SessionId;
 use crate::turn::{self, Turn};
@@ -24,6 +26,7 @@ use crate::ui;
 use commands::{COMMANDS, Command, Input};
 use editor::{Choices, Editor, Read, SharedStatus, Status};
 use mentions::{Index, STALE_AFTER};
+use watch::Watch;
 
 pub struct Repl {
     backend: Backend,
@@ -34,6 +37,13 @@ pub struct Repl {
     greetings: bool,
     editor: Editor,
     status: SharedStatus,
+    /// What the host's threads are doing.
+    watch: Watch,
+    /// The latest run of this thread this terminal knows of, so it shows
+    /// each run once.
+    shown: Option<RunId>,
+    /// How many of this thread's saved messages are on screen.
+    displayed: usize,
     /// What the host offers to mention, and when it was fetched.
     index: Index,
     indexed: Option<Instant>,
@@ -64,7 +74,18 @@ impl Repl {
             themes: render::themes(),
         };
         let index = Index::default();
-        let editor = Editor::new(&setup.editor, setup.colors, status.clone(), choices, &index);
+        let wake = Arc::new(AtomicBool::new(false));
+        let watch = Watch::new(setup.thread.clone(), wake.clone());
+        let mut editor = Editor::new(
+            &setup.editor,
+            setup.colors,
+            status.clone(),
+            choices,
+            &index,
+            watch.clone(),
+            wake,
+        );
+        watch.start(setup.backend.clone(), editor.repaint_signal());
         let repl = Self {
             backend: setup.backend,
             thread: setup.thread,
@@ -78,6 +99,9 @@ impl Repl {
             greetings: setup.greetings,
             editor,
             status,
+            watch,
+            shown: None,
+            displayed: 0,
             index,
             indexed: None,
         };
@@ -100,8 +124,10 @@ impl Repl {
         }
         loop {
             self.refresh_index().await;
+            self.catch_up().await;
             let line = match self.editor.read() {
                 Read::Line(line) => line,
+                Read::Woken => continue,
                 Read::Exit => break,
             };
             match commands::parse(&line) {
@@ -127,7 +153,67 @@ impl Repl {
     async fn answer(&mut self, prompt: String) {
         let request = turn::request(prompt, self.options.clone());
         let turn = turn::run(&self.backend, &self.thread, request, &self.style).await;
-        self.update_context(&turn);
+        self.record(&turn);
+    }
+
+    /// Shows a run of this thread this terminal has not, such as one
+    /// started in another terminal or on another machine.
+    async fn catch_up(&mut self) {
+        self.watch.rest();
+        let Some(run) = self.watch.activity(&self.thread).and_then(|activity| activity.run) else {
+            return;
+        };
+        if self.shown == Some(run) {
+            return;
+        }
+        // Once per run, even when showing it fails, rather than retried.
+        self.shown = Some(run);
+        self.sync(false).await;
+    }
+
+    /// Prints what this thread saved that is not on screen, then follows
+    /// its run in progress, if any; either way the thread is then seen.
+    /// `announce_empty` says so when there is nothing at all.
+    async fn sync(&mut self, announce_empty: bool) {
+        let opened = match self.backend.open(&self.thread).await {
+            Ok(opened) => opened,
+            Err(error) => return render::error(&format!("{error:#}")),
+        };
+        let Snapshot { messages, running } = opened.snapshot;
+        let new = messages.get(self.displayed..).unwrap_or_default();
+        if !new.is_empty() {
+            render::conversation(new, &self.style);
+        } else if messages.is_empty() && running.is_none() && announce_empty {
+            println!("\n{}\n", "Nothing said yet.".bold());
+        }
+        self.displayed = messages.len();
+        match (running, opened.events) {
+            (Some(running), Some(events)) => self.follow(&running.prompt, events).await,
+            _ => turn::viewed(&self.backend, &self.thread).await,
+        }
+    }
+
+    async fn follow(&mut self, prompt: &str, events: Events) {
+        render::user_message(prompt);
+        let turn = turn::follow(&self.backend, &self.thread, events, &self.style).await;
+        self.record(&turn);
+    }
+
+    fn record(&mut self, turn: &Turn) {
+        self.shown = turn.run.or(self.shown);
+        self.displayed = turn.saved.unwrap_or(self.displayed);
+        if turn.context.is_some() {
+            self.show_status(turn.context);
+        }
+    }
+
+    /// Shows `thread` from here on; nothing of it is on screen yet.
+    fn set_thread(&mut self, thread: SessionId) {
+        self.watch.set_current(thread.clone());
+        self.shown = self.watch.activity(&thread).and_then(|activity| activity.run);
+        self.displayed = 0;
+        self.thread = thread;
+        self.show_status(None);
     }
 
     /// Fetches the host's conversations and shared files for completion,
@@ -153,8 +239,7 @@ impl Repl {
         match command {
             Command::Help => help(),
             Command::New => {
-                self.thread = SessionId::new();
-                self.show_status(None);
+                self.set_thread(SessionId::new());
                 println!("{}\n", "Started a new conversation.".bold());
             }
             Command::Threads => self.browse().await?,
@@ -178,13 +263,11 @@ impl Repl {
         let browsed = browser::browse(&self.backend, Some(&self.thread)).await?;
         match browsed.open {
             Some(thread) => {
-                self.thread = thread;
-                self.show_status(None);
+                self.set_thread(thread);
                 self.show_thread(true).await;
             }
             None if browsed.deleted.contains(&self.thread) => {
-                self.thread = SessionId::new();
-                self.show_status(None);
+                self.set_thread(SessionId::new());
                 println!("{}\n", "Deleted this conversation; started a new one.".bold());
             }
             None => {}
@@ -195,8 +278,11 @@ impl Repl {
 
     /// Goes on in a copy of this conversation, leaving the original as it is.
     async fn fork(&mut self) -> Result<()> {
-        self.thread = self.backend.fork(&self.thread).await?;
-        self.show_status(None);
+        let copy = self.backend.fork(&self.thread).await?;
+        // The copy holds what is on screen, so nothing of it is printed again.
+        let displayed = self.displayed;
+        self.set_thread(copy);
+        self.displayed = displayed;
         self.indexed = None;
         println!(
             "{}\n",
@@ -205,27 +291,11 @@ impl Repl {
         Ok(())
     }
 
-    /// Prints the conversation so far, then follows its run if one is in
-    /// progress, perhaps started on another machine. `announce_empty` says
-    /// so when there is nothing.
+    /// Prints the whole conversation, then follows its run if one is in
+    /// progress. `announce_empty` says so when there is nothing.
     async fn show_thread(&mut self, announce_empty: bool) {
-        let opened = match self.backend.open(&self.thread).await {
-            Ok(opened) => opened,
-            Err(error) => return render::error(&format!("{error:#}")),
-        };
-        let Snapshot { messages, running } = opened.snapshot;
-        if !messages.is_empty() {
-            render::conversation(&messages, &self.style);
-        } else if running.is_none() && announce_empty {
-            println!("\n{}\n", "Nothing said yet.".bold());
-        }
-        if let (Some(running), Some(events)) = (running, opened.events) {
-            render::user_message(&running.prompt);
-            let turn = turn::follow(&self.backend, &self.thread, events, &self.style).await;
-            self.update_context(&turn);
-        } else {
-            turn::viewed(&self.backend, &self.thread).await;
-        }
+        self.displayed = 0;
+        self.sync(announce_empty).await;
     }
 
     async fn switch_model(&mut self, reference: Option<String>) -> Result<()> {
@@ -353,12 +423,6 @@ impl Repl {
             }
         }
         Ok(())
-    }
-
-    fn update_context(&self, turn: &Turn) {
-        if turn.context.is_some() {
-            self.show_status(turn.context);
-        }
     }
 
     fn show_status(&self, context: Option<u64>) {

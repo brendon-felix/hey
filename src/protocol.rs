@@ -10,13 +10,17 @@ use serde::{Deserialize, Serialize};
 
 use crate::config::Thinking;
 use crate::permissions::Permission;
-use crate::sessions::Summary;
+use crate::sessions::{SessionId, Summary};
 
 /// What happens during a run, in order. Every client following a thread
 /// draws the same events, whichever of them started the run.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "event", rename_all = "snake_case")]
 pub enum Event {
+    /// The first event of every run.
+    Began {
+        run: RunId,
+    },
     Text {
         text: String,
     },
@@ -58,6 +62,8 @@ pub enum Event {
     },
     End {
         ending: Ending,
+        /// How many messages the thread holds now, its answer saved.
+        saved: usize,
     },
 }
 
@@ -72,6 +78,25 @@ pub enum Ending {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct ApprovalId(pub u64);
+
+/// One run, distinct from every other on the host, even across restarts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct RunId(pub u64);
+
+/// What a thread is doing, as the activity stream tells it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Activity {
+    /// Its latest run since the host started; a client that sees this
+    /// change knows a run happened, however briefly.
+    pub run: Option<RunId>,
+    pub status: ThreadStatus,
+    #[serde(default)]
+    pub archived: bool,
+}
+
+/// The threads that ran since the host started or have something new.
+pub type Activities = BTreeMap<SessionId, Activity>;
 
 impl fmt::Display for ApprovalId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
