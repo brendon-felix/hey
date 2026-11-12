@@ -8,8 +8,8 @@ use std::sync::{Arc, Mutex, PoisonError};
 use crossterm::cursor::SetCursorStyle;
 use nu_ansi_term::{Color, Style};
 use reedline::{
-    Completer, CompletionResult, CursorConfig, DefaultHinter, DescriptionMode, EditCommand,
-    EditMode, Emacs, FileBackedHistory, Helix, Highlighter, IdeMenu, KeyCode, KeyModifiers,
+    ColumnarMenu, Completer, CompletionResult, CursorConfig, DefaultHinter, EditCommand,
+    EditMode, Emacs, FileBackedHistory, Helix, Highlighter, KeyCode, KeyModifiers,
     Keybindings, MenuBuilder, Prompt, PromptEditMode, PromptHistorySearch,
     PromptHistorySearchStatus, PromptHelixMode, PromptViMode, Reedline, ReedlineEvent,
     ReedlineMenu, Signal, Span, StatusLine, StyledText, Suggestion, Vi, default_emacs_keybindings,
@@ -51,14 +51,10 @@ impl Editor {
         status: SharedStatus,
         choices: Choices,
     ) -> Self {
-        let menu = IdeMenu::default()
-            .with_name(MENU)
-            .with_default_border()
-            .with_description_mode(DescriptionMode::PreferRight);
         let mut line_editor = Reedline::create()
             .with_edit_mode(edit_mode(config.mode))
             .with_completer(Box::new(choices))
-            .with_menu(ReedlineMenu::EngineCompleter(Box::new(menu)))
+            .with_menu(ReedlineMenu::EngineCompleter(Box::new(completion_menu())))
             .with_highlighter(Box::new(InputHighlighter))
             .with_status_line(Box::new(StatusBar(status)))
             .with_buffer_editor(buffer_editor(), std::env::temp_dir().join("hey-prompt.md"))
@@ -111,6 +107,21 @@ impl Editor {
             render::error(&error);
         }
     }
+}
+
+/// Nushell's default completion menu: plain columns, or one suggestion per row
+/// with its description alongside.
+fn completion_menu() -> ColumnarMenu {
+    ColumnarMenu::default()
+        .with_name(MENU)
+        .with_columns(4)
+        .with_column_width(Some(20))
+        .with_column_padding(2)
+        .with_text_style(Color::Green.normal())
+        .with_selected_text_style(Style::new().reverse())
+        .with_description_text_style(Color::Yellow.normal())
+        .with_match_text_style(Style::new().underline())
+        .with_selected_match_text_style(Style::new().underline().reverse())
 }
 
 fn edit_mode(mode: Mode) -> Box<dyn EditMode> {
