@@ -5,6 +5,7 @@
 mod commands;
 mod editor;
 mod mentions;
+mod theme_picker;
 mod watch;
 
 use std::sync::atomic::AtomicBool;
@@ -350,21 +351,16 @@ impl Repl {
     fn switch_theme(&mut self, theme: Option<String>) -> Result<()> {
         let theme = match theme {
             Some(theme) => theme,
-            None => {
-                let themes = render::themes();
-                let current = render::theme_name();
-                let index = themes.iter().position(|theme| *theme == current).unwrap_or(0);
-                match ui::pick("Select a theme", &themes, index)? {
-                    Some(index) => themes.into_iter().nth(index).unwrap_or_default(),
-                    None => return Ok(()),
-                }
-            }
+            None => match theme_picker::pick()? {
+                Some(theme) => theme,
+                None => return Ok(()),
+            },
         };
         render::set_theme(Theme::load(&theme)?);
         self.editor.restyle();
         self.style.highlight = true;
         let mut sample = Reply::new(&self.style);
-        sample.text(SAMPLE);
+        sample.text(theme_picker::SAMPLE);
         sample.finish();
         println!();
         Ok(())
@@ -477,21 +473,3 @@ fn help() {
     }
     println!();
 }
-
-const SAMPLE: &str = r#"# Sample text with code:
-
-- Rust **function** for computing _factorial_:
-
-    ```rust
-    fn factorial(n: u32) -> u32 {
-        if n == 0 { 1 } else { n * factorial(n - 1) }
-    }
-    ```
-- Python **class** for an _API client_:
-
-    ```python
-    class APIClient:
-        def __init__(self, api_key):
-            self.api_key = api_key
-    ```
-"#;

@@ -2,18 +2,22 @@
 /*                                   ui.rs                                    */
 /* -------------------------------------------------------------------------- */
 
-use std::io::{ErrorKind, IsTerminal};
+use std::io::{ErrorKind, IsTerminal, stdout};
 
 use anyhow::{Result, bail};
+use crossterm::{cursor, execute, terminal};
 use dialoguer::console::{self, Style};
 use dialoguer::{FuzzySelect, Password, Select, theme::ColorfulTheme};
 
 use crate::protocol::Decision;
-use crate::render::{self, palette};
+use crate::render::{self, Palette, palette};
 
-/// dialoguer's colourful theme in the current theme's colours.
 fn theme() -> ColorfulTheme {
-    let palette = palette();
+    theme_in(palette())
+}
+
+/// dialoguer's colourful theme in `palette`'s colours.
+pub fn theme_in(palette: Palette) -> ColorfulTheme {
     let style = |color| tint(Style::new().for_stderr(), color);
     let mark = |text: &str, color| style(color).apply_to(text.to_owned());
     ColorfulTheme {
@@ -89,5 +93,24 @@ pub fn pick(prompt: &str, items: &[String], current: usize) -> Result<Option<usi
     match picked {
         Err(dialoguer::Error::IO(error)) if error.kind() == ErrorKind::Interrupted => Ok(None),
         picked => Ok(picked?),
+    }
+}
+
+/// The alternate screen in raw mode, left however its user ends.
+pub struct Screen;
+
+impl Screen {
+    pub fn enter() -> Result<Self> {
+        terminal::enable_raw_mode()?;
+        let screen = Self;
+        execute!(stdout(), terminal::EnterAlternateScreen, cursor::Hide)?;
+        Ok(screen)
+    }
+}
+
+impl Drop for Screen {
+    fn drop(&mut self) {
+        _ = execute!(stdout(), cursor::Show, terminal::LeaveAlternateScreen);
+        _ = terminal::disable_raw_mode();
     }
 }

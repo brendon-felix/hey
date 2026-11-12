@@ -9,6 +9,7 @@ mod theme;
 mod wrap;
 
 use std::io::{Write, stdout};
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread::sleep;
 use std::time::Duration;
@@ -20,7 +21,7 @@ use yansi::Paint;
 use crate::config::Display;
 use crate::mention;
 
-pub use reply::Reply;
+pub use reply::{Reply, rows as reply_rows};
 pub use stream::{FRAME, Stream};
 pub use theme::{Color, Palette, Theme, palette, themes};
 
@@ -48,8 +49,8 @@ pub fn set_theme(theme: Theme) {
     theme::set(theme);
 }
 
-pub fn theme_name() -> String {
-    theme::current().name.clone()
+pub fn current_theme() -> Arc<Theme> {
+    theme::current()
 }
 
 /// How replies are drawn; the colours come from the current [`Theme`].
@@ -77,8 +78,11 @@ impl Style {
 }
 
 pub fn user_message(text: &str) {
-    let palette = palette();
-    println!("\n{}{}", palette.accent.paint("> "), palette.input.paint(text));
+    println!("\n{}", user_line(text, palette()));
+}
+
+pub fn user_line(text: &str, palette: Palette) -> String {
+    format!("{}{}", palette.accent.paint("> "), palette.input.paint(text))
 }
 
 pub fn tool_call(name: &str, args: &str) {

@@ -4,11 +4,13 @@
 
 use std::borrow::Cow;
 use std::ops::Range;
+use std::sync::Arc;
 
 use crossterm::terminal::{Clear, ClearType};
 use yansi::Paint;
 
 use super::highlight::Highlighter;
+use super::theme::Theme;
 use super::{Style, notice, show, theme, wrap};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -144,6 +146,21 @@ impl Reply {
         };
         show(out);
     }
+}
+
+/// A whole reply highlighted with `theme`, as the rows [`Reply`] would print.
+pub fn rows(text: &str, theme: Arc<Theme>, width: usize) -> Vec<String> {
+    let mut highlighter = Highlighter::new(theme).ok();
+    text.lines()
+        .flat_map(|line| {
+            let line = format!("{}\n", line.replace('\t', "    "));
+            let segments = segments(Part::Text, highlighter.as_mut(), &line, Stage::Complete);
+            wrap::rows(line.trim_end_matches('\n'), width)
+                .iter()
+                .map(|row| paint(&line, &segments, &wrap::trimmed(&line, row)))
+                .collect::<Vec<_>>()
+        })
+        .collect()
 }
 
 fn segments(

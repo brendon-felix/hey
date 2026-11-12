@@ -13,7 +13,7 @@ use chrono::{Datelike, Local};
 use crossterm::event::{Event as Input, EventStream, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use crossterm::style::Print;
 use crossterm::terminal::{self, BeginSynchronizedUpdate, Clear, ClearType, EndSynchronizedUpdate};
-use crossterm::{cursor, execute, queue};
+use crossterm::{cursor, queue};
 use futures::StreamExt;
 use tokio::time::{Instant, MissedTickBehavior, interval, interval_at};
 use yansi::{Paint, Painted};
@@ -22,6 +22,7 @@ use crate::backend::Backend;
 use crate::protocol::{ThreadInfo, ThreadStatus};
 use crate::render::palette;
 use crate::sessions::SessionId;
+use crate::ui::Screen;
 
 const SPINNER: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 const FRAME: Duration = Duration::from_millis(80);
@@ -458,25 +459,6 @@ fn visible(text: &str) -> usize {
         }
     }
     width
-}
-
-/// The alternate screen in raw mode, left however the browser ends.
-struct Screen;
-
-impl Screen {
-    fn enter() -> Result<Self> {
-        terminal::enable_raw_mode()?;
-        let screen = Self;
-        execute!(stdout(), terminal::EnterAlternateScreen, cursor::Hide)?;
-        Ok(screen)
-    }
-}
-
-impl Drop for Screen {
-    fn drop(&mut self) {
-        _ = execute!(stdout(), cursor::Show, terminal::LeaveAlternateScreen);
-        _ = terminal::disable_raw_mode();
-    }
 }
 
 #[cfg(test)]
