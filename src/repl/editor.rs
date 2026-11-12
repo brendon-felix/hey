@@ -23,7 +23,7 @@ use crate::render;
 
 const MENU: &str = "completion_menu";
 
-/// What the status line shows when the line is not a command.
+/// What the right prompt shows: where the agent runs and how full its context is.
 #[derive(Debug, Default)]
 pub struct Status {
     /// The remote host, when the agent runs on one.
@@ -32,6 +32,24 @@ pub struct Status {
     pub thinking: Option<Thinking>,
     pub context: Option<u64>,
     pub window: Option<u32>,
+}
+
+impl Status {
+    fn summary(&self) -> String {
+        let thinking = self.thinking.map(|level| format!("thinking {}", level.as_str()));
+        let context = self.context.map(|used| match self.window {
+            Some(window) => format!("{} / {} tokens", compact(used), compact(u64::from(window))),
+            None => format!("{} tokens", compact(used)),
+        });
+        self.remote
+            .iter()
+            .cloned()
+            .chain(std::iter::once(self.model.clone()))
+            .chain(thinking)
+            .chain(context)
+            .collect::<Vec<_>>()
+            .join(" · ")
+    }
 }
 
 pub type SharedStatus = Arc<Mutex<Status>>;
@@ -44,6 +62,7 @@ pub enum Read {
 
 pub struct Editor {
     line_editor: Reedline,
+    prompt: HeyPrompt,
 }
 
 impl Editor {
@@ -58,7 +77,7 @@ impl Editor {
             .with_completer(Box::new(choices))
             .with_menu(ReedlineMenu::EngineCompleter(Box::new(completion_menu())))
             .with_highlighter(Box::new(InputHighlighter))
-            .with_status_line(Box::new(StatusBar(status)))
+            .with_status_line(Box::new(CommandHelp))
             .with_buffer_editor(buffer_editor(), std::env::temp_dir().join("hey-prompt.md"))
             .with_history_exclusion_prefix(Some(" ".into()))
             .with_ansi_colors(colors)
@@ -89,11 +108,14 @@ impl Editor {
                 Err(error) => render::notice(&format!("input history disabled: {error}")),
             }
         }
-        Self { line_editor }
+        Self {
+            line_editor,
+            prompt: HeyPrompt(status),
+        }
     }
 
     pub fn read(&mut self) -> Read {
-        match self.line_editor.read_line(&HeyPrompt) {
+        match self.line_editor.read_line(&self.prompt) {
             Ok(Signal::Success(line)) => Read::Line(line),
             Ok(Signal::CtrlD) => Read::Exit,
             Ok(_) => Read::Cancelled,
@@ -268,51 +290,23 @@ impl Highlighter for InputHighlighter {
     }
 }
 
-/// Below the line: help for the command being typed, else the model and how
-/// full its context is.
-struct StatusBar(SharedStatus);
+/// Below the line while typing a slash command: its usage, or why it is unknown.
+struct CommandHelp;
 
-impl StatusLine for StatusBar {
+impl StatusLine for CommandHelp {
     fn status(&mut self, line: &str, _pos: usize, columns: u16, colors: bool) -> String {
+        let Some(typed) = line.trim_start().strip_prefix('/') else {
+            return String::new();
+        };
         let dim = Style::new().fg(Color::DarkGray);
-        let (style, text) = match line.trim_start().strip_prefix('/') {
-            Some(typed) => {
-                let word = typed.split_whitespace().next().unwrap_or_default();
-                match commands::find(word) {
-                    Some(spec) => (dim, format!("{}  {}", spec.usage(), spec.about)),
-                    None if word.is_empty() => (dim, "Tab for commands".into()),
-                    None => (Style::new().fg(Color::Yellow), format!("unknown command /{word}")),
-                }
-            }
-            None => (dim, self.describe()),
+        let word = typed.split_whitespace().next().unwrap_or_default();
+        let (style, text) = match commands::find(word) {
+            Some(spec) => (dim, format!("{}  {}", spec.usage(), spec.about)),
+            None if word.is_empty() => (dim, "Tab for commands".into()),
+            None => (Style::new().fg(Color::Yellow), format!("unknown command /{word}")),
         };
         let text: String = text.chars().take(usize::from(columns)).collect();
         if colors { style.paint(text).to_string() } else { text }
-    }
-}
-
-impl StatusBar {
-    fn describe(&self) -> String {
-        let status = self.0.lock().unwrap_or_else(PoisonError::into_inner);
-        let thinking = status
-            .thinking
-            .map(|level| format!("thinking {}", level.as_str()));
-        let context = match (status.context, status.window) {
-            (Some(used), Some(window)) => {
-                Some(format!("{} / {} tokens", compact(used), compact(u64::from(window))))
-            }
-            (Some(used), None) => Some(format!("{} tokens", compact(used))),
-            (None, _) => None,
-        };
-        status
-            .remote
-            .iter()
-            .cloned()
-            .chain(std::iter::once(status.model.clone()))
-            .chain(thinking)
-            .chain(context)
-            .collect::<Vec<_>>()
-            .join(" · ")
     }
 }
 
@@ -324,7 +318,9 @@ fn compact(tokens: u64) -> String {
     }
 }
 
-struct HeyPrompt;
+/// A bare indicator on the left and the status on the right edge, as in
+/// nushell; reedline drops the right side once the input reaches it.
+struct HeyPrompt(SharedStatus);
 
 impl Prompt for HeyPrompt {
     fn render_prompt_left(&self) -> Cow<'_, str> {
@@ -332,7 +328,8 @@ impl Prompt for HeyPrompt {
     }
 
     fn render_prompt_right(&self) -> Cow<'_, str> {
-        Cow::Borrowed("")
+        let status = self.0.lock().unwrap_or_else(PoisonError::into_inner);
+        Cow::Owned(status.summary())
     }
 
     fn render_prompt_indicator(&self, mode: PromptEditMode) -> Cow<'_, str> {
@@ -365,5 +362,9 @@ impl Prompt for HeyPrompt {
 
     fn get_indicator_color(&self) -> reedline::Color {
         reedline::Color::Magenta
+    }
+
+    fn get_prompt_right_color(&self) -> reedline::Color {
+        reedline::Color::DarkGray
     }
 }
