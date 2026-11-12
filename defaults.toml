@@ -40,13 +40,15 @@ greetings = true
 [display]
 # Highlight Markdown and code in responses.
 syntax_highlighting = true
-# Highlighting theme; `/theme` lists and previews them.
+# Theme for responses, the prompt, input and menus; `/theme` lists and
+# previews them.
 theme = "ansi"
-# Wrap responses at this width, or the terminal's if narrower. 0 disables.
+# Wrap responses at this width, or the terminal's if narrower. 0 wraps at the
+# terminal's width.
 wrap_width = 100
 # Colored output.
 colors = true
-# Typewriter effect.
+# Ease streamed text in rather than showing each piece as it arrives.
 animations = true
 
 [editor]

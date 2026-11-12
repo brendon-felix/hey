@@ -3,13 +3,16 @@
 /* -------------------------------------------------------------------------- */
 
 mod highlight;
+mod reply;
+mod stream;
+mod theme;
+mod wrap;
 
 use std::io::{Write, stdout};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread::sleep;
 use std::time::Duration;
 
-use ansi_parser::{AnsiParser, Output};
 use rig_core::message::{AssistantContent, Message, ToolResult, UserContent};
 use unicode_segmentation::UnicodeSegmentation;
 use yansi::Paint;
@@ -17,7 +20,9 @@ use yansi::Paint;
 use crate::config::Display;
 use crate::mention;
 
-pub use highlight::{Highlighter, themes};
+pub use reply::Reply;
+pub use stream::{FRAME, Stream};
+pub use theme::{Color, Palette, Theme, palette, themes};
 
 static ANIMATIONS: AtomicBool = AtomicBool::new(false);
 
@@ -28,137 +33,62 @@ pub fn configure(display: &Display) {
         yansi::disable();
     }
     ANIMATIONS.store(display.animations, Ordering::Relaxed);
+    match Theme::load(&display.theme) {
+        Ok(theme) => theme::set(theme),
+        Err(error) => notice(&format!("{error:#}; using the terminal's colours")),
+    }
 }
 
-/// How replies are drawn; changed at runtime by `/theme`.
+fn animations() -> bool {
+    ANIMATIONS.load(Ordering::Relaxed)
+}
+
+/// Switches every colour hey draws, from replies to the prompt.
+pub fn set_theme(theme: Theme) {
+    theme::set(theme);
+}
+
+pub fn theme_name() -> String {
+    theme::current().name.clone()
+}
+
+/// How replies are drawn; the colours come from the current [`Theme`].
 #[derive(Debug, Clone)]
 pub struct Style {
-    pub theme: Option<String>,
+    pub highlight: bool,
+    /// Most columns a reply takes, when narrower than the terminal.
     pub wrap: Option<usize>,
 }
 
 impl From<&Display> for Style {
     fn from(display: &Display) -> Self {
         Self {
-            theme: display
-                .syntax_highlighting
-                .then(|| display.theme.clone()),
+            highlight: display.syntax_highlighting,
             wrap: (display.wrap_width > 0).then_some(display.wrap_width),
         }
     }
 }
 
 impl Style {
-    fn highlighter(&self) -> Option<Highlighter> {
-        let theme = self.theme.as_deref()?;
-        Highlighter::new(theme)
-            .inspect_err(|error| notice(&format!("highlighting disabled: {error}")))
-            .ok()
-    }
-
-    fn wrap(&self, line: &str) -> String {
-        let Some(width) = self.wrap else {
-            return line.to_owned();
-        };
-        textwrap::wrap(line, width.min(terminal_width())).join("\n")
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Part {
-    Text,
-    Reasoning,
-}
-
-/// A reply drawn as it streams in: complete lines are highlighted and
-/// wrapped, and the open line waits for its end.
-pub struct Reply {
-    style: Style,
-    animate: bool,
-    part: Option<Part>,
-    highlighter: Option<Highlighter>,
-    pending: String,
-}
-
-impl Reply {
-    pub fn new(style: &Style) -> Self {
-        Self {
-            style: style.clone(),
-            animate: true,
-            part: None,
-            highlighter: None,
-            pending: String::new(),
-        }
-    }
-
-    pub fn instant(style: &Style) -> Self {
-        Self {
-            animate: false,
-            ..Self::new(style)
-        }
-    }
-
-    pub async fn text(&mut self, fragment: &str) {
-        self.push(Part::Text, fragment).await;
-    }
-
-    pub async fn reasoning(&mut self, fragment: &str) {
-        self.push(Part::Reasoning, fragment).await;
-    }
-
-    /// Ends the open part, so whatever prints next starts on its own line.
-    pub async fn finish(&mut self) {
-        if let Some(part) = self.part.take()
-            && !self.pending.is_empty()
-        {
-            let mut line = std::mem::take(&mut self.pending);
-            line.push('\n');
-            self.print(part, &line).await;
-        }
-    }
-
-    async fn push(&mut self, part: Part, fragment: &str) {
-        if self.part != Some(part) {
-            self.finish().await;
-            self.part = Some(part);
-            self.highlighter = (part == Part::Text)
-                .then(|| self.style.highlighter())
-                .flatten();
-            println!();
-        }
-        self.pending.push_str(fragment);
-        while let Some(end) = self.pending.find('\n') {
-            let line: String = self.pending.drain(..=end).collect();
-            self.print(part, &line).await;
-        }
-    }
-
-    async fn print(&mut self, part: Part, line: &str) {
-        let painted = match (part, &mut self.highlighter) {
-            (Part::Text, Some(highlighter)) => highlighter.line(line),
-            (Part::Text, None) => line.to_owned(),
-            (Part::Reasoning, _) => line.dim().italic().to_string(),
-        };
-        let wrapped = self.style.wrap(&painted);
-        if self.animate {
-            animate(&wrapped, 5000).await;
-        } else {
-            print!("{wrapped}");
-        }
+    fn width(&self) -> usize {
+        let terminal = terminal_width();
+        self.wrap.map_or(terminal, |wrap| wrap.min(terminal))
     }
 }
 
 pub fn user_message(text: &str) {
-    println!("\n{}{}", "> ".magenta(), text.green());
+    let palette = palette();
+    println!("\n{}{}", palette.accent.paint("> "), palette.input.paint(text));
 }
 
 pub fn tool_call(name: &str, args: &str) {
+    let palette = palette();
     let room = terminal_width().saturating_sub(name.chars().count() + 3);
     println!(
         "\n{} {} {}",
-        "●".cyan(),
+        palette.name.paint("●"),
         name.bold(),
-        clip(&summarize_args(args), room).dim()
+        palette.muted.paint(&clip(&summarize_args(args), room))
     );
 }
 
@@ -180,29 +110,37 @@ pub fn tool_result(result: &ToolResult) {
         1 => text.trim().to_owned(),
         lines => format!("{lines} lines"),
     };
-    println!("  {} {} {}", "↳".dim(), result.name.as_str().dim(), clip(&summary, room).dim());
+    let muted = palette().muted;
+    println!(
+        "  {} {} {}",
+        muted.paint("↳"),
+        muted.paint(result.name.as_str()),
+        muted.paint(&clip(&summary, room))
+    );
 }
 
 /// One piece of a running command's output, as the shell tool reports it.
 pub fn live_output(text: &str) {
     let line = text.strip_suffix('\n').unwrap_or(text);
-    println!("  {} {}", "│".dim(), line.dim());
+    let muted = palette().muted;
+    println!("  {} {}", muted.paint("│"), muted.paint(line));
 }
 
 /// What a mention attached to the message being sent.
 pub fn attached(target: &dyn std::fmt::Display) {
-    println!("  {} {}", "@".cyan(), target.to_string().dim());
+    let palette = palette();
+    println!("  {} {}", palette.name.paint("@"), palette.muted.paint(&target.to_string()));
 }
 
 pub fn notice(text: &str) {
-    println!("  {}", text.dim());
+    println!("  {}", palette().muted.paint(text));
 }
 
 pub fn error(error: &dyn std::fmt::Display) {
-    snailprint(&format!("\n{} {error}\n", "Error:".red()), 2000);
+    println!("\n{} {error}", "Error:".red());
 }
 
-pub async fn conversation(messages: &[Message], style: &Style) {
+pub fn conversation(messages: &[Message], style: &Style) {
     for message in messages {
         match message {
             Message::System { .. } => {}
@@ -214,19 +152,19 @@ pub async fn conversation(messages: &[Message], style: &Style) {
                 _ => {}
             }),
             Message::Assistant(assistant) => {
-                let mut reply = Reply::instant(style);
+                let mut reply = Reply::new(style);
                 for content in &assistant.content {
                     match content {
-                        AssistantContent::Text(text) => reply.text(&text.text).await,
+                        AssistantContent::Text(text) => reply.text(&text.text),
                         AssistantContent::ToolCall(call) => {
-                            reply.finish().await;
+                            reply.finish();
                             let args = serde_json::Value::Object(call.function.arguments.clone());
                             tool_call(call.function.name.as_str(), &args.to_string());
                         }
                         _ => {}
                     }
                 }
-                reply.finish().await;
+                reply.finish();
             }
         }
     }
@@ -268,40 +206,15 @@ pub fn terminal_width() -> usize {
     crossterm::terminal::size().map_or(80, |(width, _)| usize::from(width))
 }
 
-/// Prints `text` a grapheme at a time when animations are on, leaving ANSI
-/// escapes whole.
+/// Prints `text` a grapheme at a time when animations are on.
 pub fn snailprint(text: &str, micros: u64) {
-    if !ANIMATIONS.load(Ordering::Relaxed) {
+    if !animations() {
         return show(text);
     }
-    for frame in frames(text) {
-        if let Output::TextBlock(_) = frame {
-            sleep(Duration::from_micros(micros));
-        }
-        show(frame);
+    for grapheme in text.graphemes(true) {
+        sleep(Duration::from_micros(micros));
+        show(grapheme);
     }
-}
-
-/// [`snailprint`] that waits on the runtime's timer, so whoever awaits it can
-/// stop it midway, as Ctrl+C does to a streaming reply.
-async fn animate(text: &str, micros: u64) {
-    if !ANIMATIONS.load(Ordering::Relaxed) {
-        return show(text);
-    }
-    for frame in frames(text) {
-        if let Output::TextBlock(_) = frame {
-            tokio::time::sleep(Duration::from_micros(micros)).await;
-        }
-        show(frame);
-    }
-}
-
-/// What an animation prints at each step: a grapheme, or an ANSI escape.
-fn frames(text: &str) -> impl Iterator<Item = Output<'_>> {
-    text.ansi_parse().flat_map(|output| match output {
-        Output::TextBlock(block) => block.graphemes(true).map(Output::TextBlock).collect(),
-        escape => vec![escape],
-    })
 }
 
 fn show(text: impl std::fmt::Display) {

@@ -61,7 +61,7 @@ Type `/` or press Tab to see commands; the status line describes the one you are
 | `/history` | Show this conversation |
 | `/model [vendor/model]`, `/m` | Switch model |
 | `/think [level]` | Set thinking: `off`, `minimal`…`max`, or `default` |
-| `/theme [theme]`, `/t` | Switch highlighting theme |
+| `/theme [theme]`, `/t` | Switch theme |
 | `/tools` | List tools, their permissions and MCP servers |
 | `/memories`, `/mem` | List what hey remembers across conversations |
 | `/forget` | Pick a memory to forget |

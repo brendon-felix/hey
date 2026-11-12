@@ -4,11 +4,12 @@
 
 use crossterm::cursor;
 use futures::StreamExt;
+use tokio::time::MissedTickBehavior;
 
 use crate::backend::{Backend, Events};
 use crate::mention;
 use crate::protocol::{Attachment, Ending, Event, RunOptions, RunRequest};
-use crate::render::{self, Reply, Style};
+use crate::render::{self, Stream, Style};
 use crate::sessions::SessionId;
 use crate::ui;
 
@@ -63,13 +64,13 @@ pub async fn run(backend: &Backend, thread: &SessionId, request: RunRequest, sty
 /// until it finishes, fails, or Ctrl+C stops it.
 pub async fn follow(backend: &Backend, thread: &SessionId, mut events: Events, style: &Style) -> Turn {
     let mut context = None;
+    let mut stream = Stream::new(style);
     print!("{}", cursor::Hide);
-    // Racing the whole drawing, rather than each wait for an event, lets
-    // Ctrl+C cut a reply that is still animating events received long ago.
     let shown = tokio::select! {
-        outcome = show(backend, thread, &mut events, style, &mut context) => Some(outcome),
+        outcome = show(backend, thread, &mut events, &mut stream, &mut context) => Some(outcome),
         Ok(()) = tokio::signal::ctrl_c() => None,
     };
+    stream.settle();
     let outcome = match shown {
         Some(outcome) => outcome,
         None => {
@@ -89,68 +90,82 @@ async fn show(
     backend: &Backend,
     thread: &SessionId,
     events: &mut Events,
-    style: &Style,
+    stream: &mut Stream,
     context: &mut Option<u64>,
 ) -> Outcome {
-    let mut reply = Reply::new(style);
-    let outcome = loop {
-        let event = match events.next().await {
+    let mut frames = tokio::time::interval(render::FRAME);
+    frames.set_missed_tick_behavior(MissedTickBehavior::Skip);
+    loop {
+        let event = tokio::select! {
+            event = events.next() => event,
+            _ = frames.tick() => {
+                stream.tick();
+                continue;
+            }
+        };
+        let event = match event {
             Some(Ok(event)) => event,
             Some(Err(error)) => {
-                reply.finish().await;
+                stream.settle();
                 render::error(&format!("{error:#}"));
-                break Outcome::Failed;
+                return Outcome::Failed;
             }
             None => {
-                reply.finish().await;
+                stream.settle();
                 render::error(&"the run's events stopped before it ended; `/resume` follows it again");
-                break Outcome::Failed;
+                return Outcome::Failed;
             }
         };
         match event {
-            Event::Text { text } => reply.text(&text).await,
-            Event::Reasoning { text } => reply.reasoning(&text).await,
-            Event::PartEnd => reply.finish().await,
-            Event::ToolCall { name, args } => {
-                reply.finish().await;
-                render::tool_call(&name, &args);
-            }
-            Event::Output { text } => render::live_output(&text),
-            Event::ToolResult { result } => render::tool_result(&result),
-            Event::Notice { text } => {
-                reply.finish().await;
-                render::notice(&text);
-            }
-            Event::Attached { name } => {
-                reply.finish().await;
-                render::attached(&name);
-            }
-            Event::Approval { id, tool } => {
-                reply.finish().await;
-                let decision = ui::confirm_tool(tool).await;
-                match backend.answer(thread, id, decision).await {
-                    Ok(true) => {}
-                    Ok(false) => render::notice("already decided elsewhere"),
-                    Err(error) => render::error(&format!("{error:#}")),
-                }
-            }
+            Event::Text { text } => stream.text(text),
+            Event::Reasoning { text } => stream.reasoning(text),
+            Event::PartEnd => stream.end_part(),
             Event::Decided { .. } => {}
             Event::Context { tokens } => *context = Some(tokens),
-            Event::End { ending } => {
-                break match ending {
-                    Ending::Answered => Outcome::Answered,
-                    Ending::Interrupted => Outcome::Interrupted,
-                    Ending::Failed { error } => {
-                        reply.finish().await;
-                        render::error(&error);
-                        Outcome::Failed
-                    }
-                };
+            event => {
+                stream.settle();
+                if let Some(outcome) = report(backend, thread, event).await {
+                    return outcome;
+                }
             }
         }
-    };
-    reply.finish().await;
-    outcome
+    }
+}
+
+/// Prints an event that is not part of the reply's text, and how the run
+/// ended if it did.
+async fn report(backend: &Backend, thread: &SessionId, event: Event) -> Option<Outcome> {
+    match event {
+        Event::ToolCall { name, args } => render::tool_call(&name, &args),
+        Event::Output { text } => render::live_output(&text),
+        Event::ToolResult { result } => render::tool_result(&result),
+        Event::Notice { text } => render::notice(&text),
+        Event::Attached { name } => render::attached(&name),
+        Event::Approval { id, tool } => {
+            let decision = ui::confirm_tool(tool).await;
+            match backend.answer(thread, id, decision).await {
+                Ok(true) => {}
+                Ok(false) => render::notice("already decided elsewhere"),
+                Err(error) => render::error(&format!("{error:#}")),
+            }
+        }
+        Event::End { ending } => {
+            return Some(match ending {
+                Ending::Answered => Outcome::Answered,
+                Ending::Interrupted => Outcome::Interrupted,
+                Ending::Failed { error } => {
+                    render::error(&error);
+                    Outcome::Failed
+                }
+            });
+        }
+        Event::Text { .. }
+        | Event::Reasoning { .. }
+        | Event::PartEnd
+        | Event::Decided { .. }
+        | Event::Context { .. } => {}
+    }
+    None
 }
 
 /// Stops the run, then waits for its end without drawing the rest, so the

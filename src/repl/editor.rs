@@ -21,7 +21,7 @@ use super::commands::{self, Arg, COMMANDS};
 use super::mentions::{self as host, Index, Mentions};
 use crate::config::{self, EditMode as Mode, Thinking};
 use crate::mention::{self, Mention, Reference};
-use crate::render;
+use crate::render::{self, Palette, palette};
 
 const MENU: &str = "completion_menu";
 
@@ -82,7 +82,6 @@ impl Editor {
         let mut line_editor = Reedline::create()
             .with_edit_mode(edit_mode(config.mode))
             .with_completer(Box::new(completer))
-            .with_menu(ReedlineMenu::EngineCompleter(Box::new(completion_menu())))
             .with_highlighter(Box::new(InputHighlighter(index.clone())))
             .with_status_line(Box::new(InputHelp(index.clone())))
             .with_buffer_editor(buffer_editor(), std::env::temp_dir().join("hey-prompt.md"))
@@ -106,19 +105,21 @@ impl Editor {
                 .map_err(reedline::ReedlineError::from)
                 .and_then(|()| FileBackedHistory::with_file(config.history_size, path));
             match history {
-                Ok(history) => {
-                    let hint = Style::new().fg(Color::DarkGray);
-                    line_editor = line_editor
-                        .with_history(Box::new(history))
-                        .with_hinter(Box::new(DefaultHinter::default().with_style(hint)));
-                }
+                Ok(history) => line_editor = line_editor.with_history(Box::new(history)),
                 Err(error) => render::notice(&format!("input history disabled: {error}")),
             }
         }
         Self {
-            line_editor,
+            line_editor: styled(line_editor, palette()),
             prompt: HeyPrompt(status),
         }
+    }
+
+    /// Redraws the menu and hints in the current theme's colours.
+    pub fn restyle(&mut self) {
+        // Reedline only takes these styles by value, as it is built.
+        let line_editor = std::mem::replace(&mut self.line_editor, Reedline::create());
+        self.line_editor = styled(line_editor, palette());
     }
 
     pub fn read(&mut self) -> Read {
@@ -140,19 +141,42 @@ impl Editor {
     }
 }
 
+/// The parts of `line_editor` that keep their colours: the completion menu,
+/// history hints and the selection.
+fn styled(line_editor: Reedline, palette: Palette) -> Reedline {
+    line_editor
+        .with_menu(ReedlineMenu::EngineCompleter(Box::new(completion_menu(palette))))
+        .with_hinter(Box::new(DefaultHinter::default().with_style(fg(palette.muted))))
+        .with_visual_selection_style(Style::new().reverse())
+}
+
 /// Nushell's default completion menu: plain columns, or one suggestion per row
 /// with its description alongside.
-fn completion_menu() -> ColumnarMenu {
+fn completion_menu(palette: Palette) -> ColumnarMenu {
     ColumnarMenu::default()
         .with_name(MENU)
         .with_columns(4)
         .with_column_width(Some(20))
         .with_column_padding(2)
-        .with_text_style(Color::Green.normal())
-        .with_selected_text_style(Style::new().reverse())
-        .with_description_text_style(Color::Yellow.normal())
-        .with_match_text_style(Style::new().underline())
-        .with_selected_match_text_style(Style::new().underline().reverse())
+        .with_text_style(fg(palette.name))
+        .with_selected_text_style(fg(palette.name).reverse())
+        .with_description_text_style(fg(palette.muted))
+        .with_match_text_style(fg(palette.name).underline())
+        .with_selected_match_text_style(fg(palette.name).underline().reverse())
+}
+
+fn fg(color: render::Color) -> Style {
+    Style::new().fg(color.into())
+}
+
+impl From<render::Color> for Color {
+    fn from(color: render::Color) -> Self {
+        match color {
+            render::Color::Default => Self::Default,
+            render::Color::Ansi(index) => Self::Fixed(index),
+            render::Color::Rgb(r, g, b) => Self::Rgb(r, g, b),
+        }
+    }
 }
 
 fn edit_mode(mode: Mode) -> Box<dyn EditMode> {
@@ -290,33 +314,37 @@ impl Completer for InputCompleter {
     }
 }
 
-/// Commands in cyan, and on a message, mentions that name something.
+/// Messages in the input colour with the mentions that name something picked
+/// out; commands and their arguments as their roles.
 struct InputHighlighter(Index);
 
 impl Highlighter for InputHighlighter {
     fn highlight(&self, line: &str, _cursor: usize) -> StyledText {
+        let palette = palette();
         let mut styled = StyledText::new();
         match line.strip_prefix('/') {
             None => {
-                let message = Style::new().fg(Color::Green);
+                let message = fg(palette.input);
                 let mut last = 0;
                 let index = host::lock(&self.0);
                 let known = mention::mentions(line)
                     .filter_map(|mention| mention.resolve(|reference| index.describe(reference)));
                 for (_, span) in known {
                     styled.push((message, line[last..span.start].to_owned()));
-                    styled.push((Style::new().fg(Color::Cyan), line[span.clone()].to_owned()));
+                    styled.push((fg(palette.name), line[span.clone()].to_owned()));
                     last = span.end;
                 }
                 styled.push((message, line[last..].to_owned()));
             }
             Some(rest) => {
                 let (word, arg) = rest.split_at(rest.find(char::is_whitespace).unwrap_or(rest.len()));
-                let known = commands::find(word).is_some();
-                let word_color = if known { Color::Cyan } else { Color::Yellow };
+                let word_style = match commands::find(word) {
+                    Some(_) => fg(palette.name),
+                    None => Color::Yellow.normal(),
+                };
                 styled.push((Style::default(), "/".into()));
-                styled.push((Style::new().fg(word_color), word.to_owned()));
-                styled.push((Style::new().fg(Color::Blue), arg.to_owned()));
+                styled.push((word_style, word.to_owned()));
+                styled.push((fg(palette.value), arg.to_owned()));
             }
         }
         styled
@@ -343,16 +371,16 @@ impl StatusLine for InputHelp {
 
 impl InputHelp {
     fn mention_help(&self, mention: &Mention) -> (Style, String) {
-        let dim = Style::new().fg(Color::DarkGray);
+        let muted = fg(palette().muted);
         let index = host::lock(&self.0);
         match mention.resolve(|reference| index.describe(reference)) {
-            Some((attached, _)) => (dim, format!("attaches {attached}")),
+            Some((attached, _)) => (muted, format!("attaches {attached}")),
             None => match mention.reference() {
-                Reference::Local("") => (dim, "Tab for files and directories".into()),
-                Reference::Shared("") => (dim, "Tab for the host's shared files".into()),
-                Reference::Thread("") => (dim, "Tab for saved conversations".into()),
+                Reference::Local("") => (muted, "Tab for files and directories".into()),
+                Reference::Shared("") => (muted, "Tab for the host's shared files".into()),
+                Reference::Thread("") => (muted, "Tab for saved conversations".into()),
                 _ => (
-                    Style::new().fg(Color::Yellow),
+                    Color::Yellow.normal(),
                     format!("nothing named {}; sent as typed", mention.text),
                 ),
             },
@@ -361,12 +389,12 @@ impl InputHelp {
 }
 
 fn command_help(typed: &str) -> (Style, String) {
-    let dim = Style::new().fg(Color::DarkGray);
+    let muted = fg(palette().muted);
     let word = typed.split_whitespace().next().unwrap_or_default();
     match commands::find(word) {
-        Some(spec) => (dim, format!("{}  {}", spec.usage(), spec.about)),
-        None if word.is_empty() => (dim, "Tab for commands".into()),
-        None => (Style::new().fg(Color::Yellow), format!("unknown command /{word}")),
+        Some(spec) => (muted, format!("{}  {}", spec.usage(), spec.about)),
+        None if word.is_empty() => (muted, "Tab for commands".into()),
+        None => (Color::Yellow.normal(), format!("unknown command /{word}")),
     }
 }
 
@@ -416,15 +444,15 @@ impl Prompt for HeyPrompt {
         }
     }
 
-    fn get_prompt_color(&self) -> reedline::Color {
-        reedline::Color::Green
+    fn get_prompt_color(&self) -> Color {
+        palette().accent.into()
     }
 
-    fn get_indicator_color(&self) -> reedline::Color {
-        reedline::Color::Magenta
+    fn get_indicator_color(&self) -> Color {
+        palette().accent.into()
     }
 
-    fn get_prompt_right_color(&self) -> reedline::Color {
-        reedline::Color::DarkGray
+    fn get_prompt_right_color(&self) -> Color {
+        palette().muted.into()
     }
 }

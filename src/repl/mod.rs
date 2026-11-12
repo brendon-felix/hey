@@ -16,7 +16,7 @@ use crate::backend::Backend;
 use crate::config::Thinking;
 use crate::permissions::Permission;
 use crate::protocol::{ModelInfo, RunOptions, Snapshot};
-use crate::render::{self, Highlighter, Reply, Style, snailprint};
+use crate::render::{self, Reply, Style, Theme, palette, snailprint};
 use crate::sessions::SessionId;
 use crate::turn::{self, Turn};
 use crate::ui;
@@ -161,7 +161,7 @@ impl Repl {
             Command::History => self.show_thread(true).await,
             Command::Model(reference) => self.switch_model(reference).await?,
             Command::Think(level) => self.set_thinking(level)?,
-            Command::Theme(theme) => self.switch_theme(theme).await?,
+            Command::Theme(theme) => self.switch_theme(theme)?,
             Command::Tools => self.list_tools().await?,
             Command::Memories => self.list_memories().await?,
             Command::Forget => self.forget().await?,
@@ -198,7 +198,7 @@ impl Repl {
         };
         let Snapshot { messages, running } = opened.snapshot;
         if !messages.is_empty() {
-            render::conversation(&messages, &self.style).await;
+            render::conversation(&messages, &self.style);
         } else if running.is_none() && announce_empty {
             println!("\n{}\n", "Nothing said yet.".bold());
         }
@@ -230,7 +230,7 @@ impl Repl {
         self.options.model = model.reference;
         self.window = model.context_window;
         self.show_status(None);
-        println!("{} {}\n", "Using".bold(), reference.cyan());
+        println!("{} {}\n", "Using".bold(), palette().name.paint(&reference));
         Ok(())
     }
 
@@ -254,28 +254,29 @@ impl Repl {
         self.options.thinking = thinking;
         self.status.lock().unwrap_or_else(PoisonError::into_inner).thinking = thinking;
         let described = thinking.map_or("the model's default", Thinking::as_str);
-        println!("{} {}\n", "Thinking:".bold(), described.cyan());
+        println!("{} {}\n", "Thinking:".bold(), palette().name.paint(described));
         Ok(())
     }
 
-    async fn switch_theme(&mut self, theme: Option<String>) -> Result<()> {
+    fn switch_theme(&mut self, theme: Option<String>) -> Result<()> {
         let theme = match theme {
             Some(theme) => theme,
             None => {
                 let themes = render::themes();
-                let current = self.style.theme.as_deref().unwrap_or_default();
-                let index = themes.iter().position(|theme| theme == current).unwrap_or(0);
+                let current = render::theme_name();
+                let index = themes.iter().position(|theme| *theme == current).unwrap_or(0);
                 match ui::pick("Select a theme", &themes, index)? {
                     Some(index) => themes.into_iter().nth(index).unwrap_or_default(),
                     None => return Ok(()),
                 }
             }
         };
-        Highlighter::new(&theme)?;
-        self.style.theme = Some(theme);
-        let mut sample = Reply::instant(&self.style);
-        sample.text(SAMPLE).await;
-        sample.finish().await;
+        render::set_theme(Theme::load(&theme)?);
+        self.editor.restyle();
+        self.style.highlight = true;
+        let mut sample = Reply::new(&self.style);
+        sample.text(SAMPLE);
+        sample.finish();
         println!();
         Ok(())
     }
@@ -312,7 +313,7 @@ impl Repl {
         }
         println!();
         for memory in memories {
-            println!("  {} {memory}", "•".cyan());
+            println!("  {} {memory}", palette().name.paint("•"));
         }
         println!();
         Ok(())
@@ -328,7 +329,7 @@ impl Repl {
             && let Some(memory) = memories.get(index)
         {
             match self.backend.forget(memory).await? {
-                true => println!("{} {}\n", "Forgot".bold(), memory.dim()),
+                true => println!("{} {}\n", "Forgot".bold(), palette().muted.paint(memory)),
                 false => println!("{}\n", "Already forgotten.".bold()),
             }
         }
@@ -364,6 +365,7 @@ fn thinking_choices() -> Vec<String> {
 }
 
 fn help() {
+    let palette = palette();
     println!("\n{}", "Commands".bold());
     for spec in COMMANDS {
         let aliases = spec
@@ -372,7 +374,12 @@ fn help() {
             .map(|alias| format!("/{alias}"))
             .collect::<Vec<_>>()
             .join(", ");
-        println!("  {:<24} {} {}", spec.usage().cyan(), spec.about, aliases.dim());
+        println!(
+            "  {:<24} {} {}",
+            palette.name.paint(&spec.usage()),
+            spec.about,
+            palette.muted.paint(&aliases)
+        );
     }
     println!("\n{}", "Keys".bold());
     for (keys, about) in [
@@ -383,7 +390,7 @@ fn help() {
         ("Ctrl+C", "clear the line, or stop a running answer"),
         ("Ctrl+D", "exit"),
     ] {
-        println!("  {:<24} {about}", keys.cyan());
+        println!("  {:<24} {about}", palette.name.paint(keys));
     }
     println!();
 }

@@ -5,14 +5,45 @@
 use std::io::{ErrorKind, IsTerminal};
 
 use anyhow::{Result, bail};
+use dialoguer::console::{self, Style};
 use dialoguer::{FuzzySelect, Password, Select, theme::ColorfulTheme};
 
 use crate::protocol::Decision;
+use crate::render::{self, palette};
+
+/// dialoguer's colourful theme in the current theme's colours.
+fn theme() -> ColorfulTheme {
+    let palette = palette();
+    let style = |color| tint(Style::new().for_stderr(), color);
+    let mark = |text: &str, color| style(color).apply_to(text.to_owned());
+    ColorfulTheme {
+        defaults_style: style(palette.value),
+        prompt_prefix: mark("?", palette.accent),
+        prompt_suffix: mark("›", palette.muted),
+        success_prefix: mark("✔", palette.input),
+        success_suffix: mark("·", palette.muted),
+        hint_style: style(palette.muted),
+        values_style: style(palette.input),
+        active_item_style: style(palette.name),
+        active_item_prefix: mark("❯", palette.accent),
+        picked_item_prefix: mark("❯", palette.accent),
+        fuzzy_match_highlight_style: style(palette.name).bold(),
+        ..ColorfulTheme::default()
+    }
+}
+
+fn tint(style: Style, color: render::Color) -> Style {
+    match color {
+        render::Color::Default => style,
+        render::Color::Ansi(index) => style.fg(console::Color::Color256(index)),
+        render::Color::Rgb(r, g, b) => style.true_color(r, g, b),
+    }
+}
 
 /// Asks whether to run `tool`. Esc declines the call; Ctrl+C stops the run.
 pub async fn confirm_tool(tool: String) -> Decision {
     let ask = move || {
-        Select::with_theme(&ColorfulTheme::default())
+        Select::with_theme(&theme())
             .with_prompt(format!("Run `{tool}`?"))
             .items(["Yes", &format!("Always allow `{tool}` in this conversation"), "No"])
             .default(0)
@@ -33,7 +64,7 @@ pub fn secret(prompt: &str, why_needed: &str) -> Result<Option<String>> {
     if !std::io::stdin().is_terminal() {
         bail!("{why_needed}");
     }
-    let secret = Password::with_theme(&ColorfulTheme::default())
+    let secret = Password::with_theme(&theme())
         .with_prompt(prompt)
         .allow_empty_password(true)
         .interact()?;
@@ -48,7 +79,7 @@ pub fn pick(prompt: &str, items: &[String], current: usize) -> Result<Option<usi
     #[cfg(unix)]
     let _listening = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt())?;
     println!();
-    let picked = FuzzySelect::with_theme(&ColorfulTheme::default())
+    let picked = FuzzySelect::with_theme(&theme())
         .with_prompt(prompt)
         .items(items)
         .default(current)
