@@ -11,7 +11,7 @@ use anyhow::Result;
 use yansi::Paint;
 
 use crate::agent::{self, Assistant, Model};
-use crate::config::Providers;
+use crate::config::{Providers, Thinking};
 use crate::permissions::Permission;
 use crate::render::{self, Highlighter, Reply, Style, snailprint};
 use crate::sessions::{SessionId, Sessions};
@@ -54,6 +54,7 @@ impl Repl {
         let status = Arc::new(Mutex::new(Status::default()));
         let choices = Choices {
             models: agent::available_models(),
+            thinking: thinking_choices(),
             themes: render::themes(),
         };
         let editor = Editor::new(&setup.editor, setup.colors, status.clone(), choices);
@@ -128,6 +129,7 @@ impl Repl {
             Command::Resume => self.resume()?,
             Command::History => self.print_history(true),
             Command::Model(reference) => self.switch_model(reference)?,
+            Command::Think(level) => self.set_thinking(level)?,
             Command::Theme(theme) => self.switch_theme(theme)?,
             Command::Tools => self.list_tools(),
             Command::Clear => self.editor.clear_screen(),
@@ -190,6 +192,30 @@ impl Repl {
         Ok(())
     }
 
+    fn set_thinking(&mut self, level: Option<String>) -> Result<()> {
+        let level = match level {
+            Some(level) => level,
+            None => {
+                let choices = thinking_choices();
+                let current = self.assistant.thinking().map_or(DEFAULT_THINKING, Thinking::as_str);
+                let index = choices.iter().position(|choice| choice == current).unwrap_or(0);
+                match ui::pick("Thinking", &choices, index)? {
+                    Some(index) => choices.into_iter().nth(index).unwrap_or_default(),
+                    None => return Ok(()),
+                }
+            }
+        };
+        let thinking = match level.as_str() {
+            DEFAULT_THINKING => None,
+            level => Some(level.parse::<Thinking>().map_err(anyhow::Error::msg)?),
+        };
+        self.assistant.set_thinking(thinking);
+        self.status.lock().unwrap_or_else(PoisonError::into_inner).thinking = thinking;
+        let described = thinking.map_or("the model's default", Thinking::as_str);
+        println!("{} {}\n", "Thinking:".bold(), described.cyan());
+        Ok(())
+    }
+
     fn switch_theme(&mut self, theme: Option<String>) -> Result<()> {
         let theme = match theme {
             Some(theme) => theme,
@@ -239,10 +265,21 @@ impl Repl {
         let mut status = self.status.lock().unwrap_or_else(PoisonError::into_inner);
         *status = Status {
             model: model.reference().to_owned(),
+            thinking: self.assistant.thinking(),
             context,
             window: model.context_window(),
         };
     }
+}
+
+/// Leaves reasoning to the model, as an unset `thinking` does.
+const DEFAULT_THINKING: &str = "default";
+
+fn thinking_choices() -> Vec<String> {
+    std::iter::once(DEFAULT_THINKING)
+        .chain(Thinking::ALL.map(Thinking::as_str))
+        .map(str::to_owned)
+        .collect()
 }
 
 fn help() {

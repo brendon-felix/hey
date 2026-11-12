@@ -36,6 +36,10 @@ struct Args {
     #[arg(long, short)]
     model: Option<String>,
 
+    /// Thinking level: off, minimal, low, medium, high, xhigh or max
+    #[arg(long, short)]
+    think: Option<config::Thinking>,
+
     /// Read this config file instead of the default one
     #[arg(long)]
     config: Option<PathBuf>,
@@ -65,7 +69,10 @@ async fn main() -> ExitCode {
 }
 
 async fn run(args: Args) -> Result<ExitCode> {
-    let config = Config::load(args.config.as_deref())?;
+    let mut config = Config::load(args.config.as_deref())?;
+    if args.think.is_some() {
+        config.thinking = args.think;
+    }
     render::configure(&config.display);
 
     let system_prompt = match &args.prompt_path {
@@ -129,15 +136,11 @@ async fn connect_mcp(config: &Config) -> (Vec<mcp::Tool>, Vec<ServerReport>) {
             count
         });
         if let Err(error) = &outcome {
-            render::notice(&format!(
-                "MCP server `{}` unavailable: {}",
-                server.name,
-                error.root_cause()
-            ));
+            render::notice(&format!("MCP server `{}` unavailable: {error:#}", server.name));
         }
         reports.push(ServerReport {
             name: server.name,
-            tools: outcome.map_err(|error| error.root_cause().to_string()),
+            tools: outcome.map_err(|error| format!("{error:#}")),
         });
     }
     (tools, reports)

@@ -15,6 +15,7 @@ use crate::permissions::{self, Permission};
 #[serde(default, deny_unknown_fields)]
 pub struct Config {
     pub model: String,
+    pub thinking: Option<Thinking>,
     pub system_prompt: Option<String>,
     pub max_tokens: Option<u64>,
     pub max_turns: usize,
@@ -31,6 +32,7 @@ impl Default for Config {
     fn default() -> Self {
         Self {
             model: "openai/gpt-5.5".into(),
+            thinking: None,
             system_prompt: None,
             max_tokens: None,
             max_turns: 50,
@@ -58,6 +60,73 @@ impl Config {
         let text = fs::read_to_string(&path)
             .with_context(|| format!("failed to read config {}", path.display()))?;
         toml::from_str(&text).with_context(|| format!("invalid config {}", path.display()))
+    }
+}
+
+/// How much the model reasons before answering. Unset leaves it to the
+/// model's default.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Thinking {
+    Off,
+    Minimal,
+    Low,
+    Medium,
+    High,
+    Xhigh,
+    Max,
+}
+
+impl Thinking {
+    pub const ALL: [Thinking; 7] = [
+        Thinking::Off,
+        Thinking::Minimal,
+        Thinking::Low,
+        Thinking::Medium,
+        Thinking::High,
+        Thinking::Xhigh,
+        Thinking::Max,
+    ];
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Thinking::Off => "off",
+            Thinking::Minimal => "minimal",
+            Thinking::Low => "low",
+            Thinking::Medium => "medium",
+            Thinking::High => "high",
+            Thinking::Xhigh => "xhigh",
+            Thinking::Max => "max",
+        }
+    }
+}
+
+impl std::str::FromStr for Thinking {
+    type Err = String;
+
+    fn from_str(text: &str) -> Result<Self, Self::Err> {
+        Self::ALL
+            .into_iter()
+            .find(|level| level.as_str().eq_ignore_ascii_case(text))
+            .ok_or_else(|| {
+                let levels = Self::ALL.map(Thinking::as_str).join(", ");
+                format!("unknown thinking level `{text}`; use one of {levels}")
+            })
+    }
+}
+
+impl From<Thinking> for rig_core::completion::Reasoning {
+    fn from(thinking: Thinking) -> Self {
+        use rig_core::completion::{Effort, Reasoning};
+        match thinking {
+            Thinking::Off => Reasoning::Off,
+            Thinking::Minimal => Reasoning::Effort(Effort::Minimal),
+            Thinking::Low => Reasoning::Effort(Effort::Low),
+            Thinking::Medium => Reasoning::Effort(Effort::Medium),
+            Thinking::High => Reasoning::Effort(Effort::High),
+            Thinking::Xhigh => Reasoning::Effort(Effort::XHigh),
+            Thinking::Max => Reasoning::Effort(Effort::Max),
+        }
     }
 }
 
@@ -140,6 +209,8 @@ impl Sessions {
 #[derive(Debug, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Tools {
+    /// Run every tool without asking, whatever `default` and `permissions` say.
+    pub allow_all: bool,
     pub default: Permission,
     #[serde(deserialize_with = "over_default_rules")]
     pub permissions: BTreeMap<String, Permission>,
@@ -148,6 +219,7 @@ pub struct Tools {
 impl Default for Tools {
     fn default() -> Self {
         Self {
+            allow_all: false,
             default: Permission::Confirm,
             permissions: permissions::default_rules(),
         }
@@ -269,6 +341,7 @@ mod tests {
         let config: Config = toml::from_str(
             r#"
             model = "anthropic/claude-opus-5-5"
+            thinking = "high"
 
             [tools.permissions]
             shell = "allow"
@@ -287,6 +360,7 @@ mod tests {
         .unwrap();
 
         assert_eq!(config.tools.default, Permission::Confirm);
+        assert_eq!(config.thinking, Some(Thinking::High));
         assert_eq!(config.tools.permissions["read"], Permission::Allow);
         assert_eq!(config.tools.permissions["shell"], Permission::Allow);
         assert_eq!(config.tools.permissions["mcp:github"], Permission::Deny);
@@ -305,6 +379,7 @@ mod tests {
         assert_eq!(documented.display.wrap_width, built_in.display.wrap_width);
         assert_eq!(documented.editor.mode, built_in.editor.mode);
         assert_eq!(documented.editor.history_size, built_in.editor.history_size);
+        assert_eq!(documented.tools.allow_all, built_in.tools.allow_all);
         assert_eq!(documented.tools.default, built_in.tools.default);
         assert_eq!(documented.tools.permissions, built_in.tools.permissions);
     }
@@ -317,5 +392,6 @@ mod tests {
         assert!(error("[mcp_servers.x]\ntype = \"http\"\ncommand = \"c\"").contains("not a `command`"));
         assert!(error("wrap_width = 80").contains("unknown field"));
         assert!(error("[tools]\ndefault = \"maybe\"").contains("unknown variant"));
+        assert!(error("thinking = \"huge\"").contains("unknown variant"));
     }
 }

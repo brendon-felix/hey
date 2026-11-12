@@ -38,6 +38,7 @@ hey who was Ada Lovelace?             # one answer, then exit
 hey -i explain this repo              # answer, then stay in the REPL
 hey -r what did we decide?            # continue the most recent conversation
 hey -m anthropic/claude-opus-5-5 hi   # use another model
+hey -t high prove it                  # set the thinking level (off, minimal…max)
 hey -p ~/prompts/reviewer.txt         # system prompt from a file
 ```
 
@@ -52,6 +53,7 @@ Type `/` or press Tab to see commands; the status line describes the one you are
 | `/resume`, `/load`, `/l` | Continue a saved conversation |
 | `/history` | Show this conversation |
 | `/model [vendor/model]`, `/m` | Switch model |
+| `/think [level]` | Set thinking: `off`, `minimal`…`max`, or `default` |
 | `/theme [theme]`, `/t` | Switch highlighting theme |
 | `/tools` | List tools, their permissions and MCP servers |
 | `/clear`, `/c` | Clear the screen |
@@ -80,6 +82,7 @@ Every option, with its default, is documented in [`defaults.toml`](./defaults.to
 
 ```toml
 model = "ollama/qwen3.8:latest"
+thinking = "low"
 
 [providers.ollama]
 base_url = "https://ollama.example.com/v1"
@@ -108,6 +111,13 @@ Each tool call is shown as it happens. Whether it runs depends on its permission
 `read`, `list` and `search` are allowed by default; everything else asks. Rules are keyed by tool
 name, or `mcp:<server>:<tool>` and `mcp:<server>` for MCP tools, which the model sees as
 `mcp__<server>__<tool>`.
+
+To run every tool without asking, ignoring all rules:
+
+```toml
+[tools]
+allow_all = true
+```
 
 ### MCP servers
 

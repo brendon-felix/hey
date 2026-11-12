@@ -18,7 +18,7 @@ use reedline::{
 };
 
 use super::commands::{self, Arg, COMMANDS};
-use crate::config::{self, EditMode as Mode};
+use crate::config::{self, EditMode as Mode, Thinking};
 use crate::render;
 
 const MENU: &str = "completion_menu";
@@ -27,6 +27,7 @@ const MENU: &str = "completion_menu";
 #[derive(Debug, Default)]
 pub struct Status {
     pub model: String,
+    pub thinking: Option<Thinking>,
     pub context: Option<u64>,
     pub window: Option<u32>,
 }
@@ -186,6 +187,7 @@ fn buffer_editor() -> std::process::Command {
 /// What slash commands and their arguments complete to.
 pub struct Choices {
     pub models: Vec<String>,
+    pub thinking: Vec<String>,
     pub themes: Vec<String>,
 }
 
@@ -209,6 +211,7 @@ impl Choices {
         };
         let values = match commands::find(word).and_then(|spec| spec.arg) {
             Some(Arg::Model) => &self.models,
+            Some(Arg::Thinking) => &self.thinking,
             Some(Arg::Theme) => &self.themes,
             None => return Vec::new(),
         };
@@ -278,16 +281,21 @@ impl StatusLine for StatusBar {
 impl StatusBar {
     fn describe(&self) -> String {
         let status = self.0.lock().unwrap_or_else(PoisonError::into_inner);
-        match (status.context, status.window) {
-            (Some(used), Some(window)) => format!(
-                "{} · {} / {} tokens",
-                status.model,
-                compact(used),
-                compact(u64::from(window))
-            ),
-            (Some(used), None) => format!("{} · {} tokens", status.model, compact(used)),
-            (None, _) => status.model.clone(),
-        }
+        let thinking = status
+            .thinking
+            .map(|level| format!("thinking {}", level.as_str()));
+        let context = match (status.context, status.window) {
+            (Some(used), Some(window)) => {
+                Some(format!("{} / {} tokens", compact(used), compact(u64::from(window))))
+            }
+            (Some(used), None) => Some(format!("{} tokens", compact(used))),
+            (None, _) => None,
+        };
+        std::iter::once(status.model.clone())
+            .chain(thinking)
+            .chain(context)
+            .collect::<Vec<_>>()
+            .join(" · ")
     }
 }
 

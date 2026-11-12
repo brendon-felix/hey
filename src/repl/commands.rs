@@ -9,6 +9,7 @@ pub enum Command {
     Resume,
     History,
     Model(Option<String>),
+    Think(Option<String>),
     Theme(Option<String>),
     Tools,
     Clear,
@@ -19,6 +20,7 @@ pub enum Command {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Arg {
     Model,
+    Thinking,
     Theme,
 }
 
@@ -26,6 +28,7 @@ impl Arg {
     pub fn placeholder(self) -> &'static str {
         match self {
             Arg::Model => "vendor/model",
+            Arg::Thinking => "level",
             Arg::Theme => "theme",
         }
     }
@@ -83,6 +86,13 @@ pub const COMMANDS: &[Spec] = &[
         arg: Some(Arg::Model),
         about: "Switch model",
         build: Command::Model,
+    },
+    Spec {
+        name: "think",
+        aliases: &[],
+        arg: Some(Arg::Thinking),
+        about: "Set thinking: off, minimal…max, or default",
+        build: Command::Think,
     },
     Spec {
         name: "theme",

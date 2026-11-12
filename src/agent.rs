@@ -9,12 +9,13 @@ use anyhow::{Context, Result};
 use rig_agent::agent::{Agent, AgentBuilder, StreamingResult};
 use rig_core::DynModel;
 use rig_core::catalog::Catalog;
+use rig_core::completion::GenerationOptions;
 use rig_core::operation::Completion;
 use rig_core::providers::registry::ConnectOptions;
 use rig_core::tool::Tool;
 use rig_tools::{Delete, Edit, List, Live, Move, Read, Search, Seen, Shell, Spill, Write};
 
-use crate::config::{self, Config, Providers};
+use crate::config::{self, Config, Providers, Thinking};
 use crate::mcp;
 use crate::permissions::{Approval, Origin, Permission, Permissions};
 use crate::render;
@@ -88,6 +89,7 @@ pub fn available_models() -> Vec<String> {
 pub struct Assistant {
     agent: Agent,
     model: Model,
+    thinking: Option<Thinking>,
     permissions: Arc<Permissions>,
 }
 
@@ -120,6 +122,7 @@ impl Assistant {
         Self {
             agent: builder.build(),
             model,
+            thinking: config.thinking,
             permissions,
         }
     }
@@ -133,6 +136,15 @@ impl Assistant {
         self.model = model;
     }
 
+    pub fn thinking(&self) -> Option<Thinking> {
+        self.thinking
+    }
+
+    /// `None` leaves reasoning to the model's default.
+    pub fn set_thinking(&mut self, thinking: Option<Thinking>) {
+        self.thinking = thinking;
+    }
+
     pub fn permissions(&self) -> BTreeMap<String, Permission> {
         self.permissions.snapshot()
     }
@@ -140,10 +152,12 @@ impl Assistant {
     /// Answers `prompt` in `session`, whose log the run reads before its first
     /// model call and appends to once it finishes.
     pub fn run(&self, prompt: &str, session: &SessionId) -> StreamingResult {
-        self.agent
-            .prompt(prompt)
-            .conversation(session.as_str())
-            .stream()
+        let runner = self.agent.prompt(prompt).conversation(session.as_str());
+        match self.thinking {
+            Some(thinking) => runner.options(GenerationOptions::default().reasoning(thinking)),
+            None => runner,
+        }
+        .stream()
     }
 }
 
