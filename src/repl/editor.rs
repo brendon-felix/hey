@@ -82,6 +82,7 @@ impl Editor {
         let mut line_editor = Reedline::create()
             .with_edit_mode(edit_mode(config.mode))
             .with_completer(Box::new(completer))
+            .with_transient_prompt(Box::new(HeyPrompt::Submitted))
             .with_highlighter(Box::new(InputHighlighter(index.clone())))
             .with_status_line(Box::new(InputHelp(index.clone())))
             .with_buffer_editor(buffer_editor(), std::env::temp_dir().join("hey-prompt.md"))
@@ -111,7 +112,7 @@ impl Editor {
         }
         Self {
             line_editor: styled(line_editor, palette()),
-            prompt: HeyPrompt(status),
+            prompt: HeyPrompt::Editing(status),
         }
     }
 
@@ -406,18 +407,34 @@ fn compact(tokens: u64) -> String {
     }
 }
 
-/// A bare indicator on the left and the status on the right edge, as in
-/// nushell; reedline drops the right side once the input reaches it.
-struct HeyPrompt(SharedStatus);
+/// Reedline weighs the input against the right prompt only when the left prompt
+/// spans exactly one line, and an empty one spans none. This SGR reset is one
+/// line yet takes no columns, so the status hides once the input reaches it
+/// rather than being typed over.
+const LEFT: &str = "\x1b[0m";
+
+/// A bare indicator on the left and, while editing, the status on the right
+/// edge, as in nushell; reedline drops the right side once the input reaches
+/// it.
+enum HeyPrompt {
+    Editing(SharedStatus),
+    /// How a submitted line stays in the scrollback: without the status.
+    Submitted,
+}
 
 impl Prompt for HeyPrompt {
     fn render_prompt_left(&self) -> Cow<'_, str> {
-        Cow::Borrowed("")
+        Cow::Borrowed(LEFT)
     }
 
     fn render_prompt_right(&self) -> Cow<'_, str> {
-        let status = self.0.lock().unwrap_or_else(PoisonError::into_inner);
-        Cow::Owned(status.summary())
+        match self {
+            Self::Editing(status) => {
+                let status = status.lock().unwrap_or_else(PoisonError::into_inner);
+                Cow::Owned(status.summary())
+            }
+            Self::Submitted => Cow::Borrowed(""),
+        }
     }
 
     fn render_prompt_indicator(&self, mode: PromptEditMode) -> Cow<'_, str> {
