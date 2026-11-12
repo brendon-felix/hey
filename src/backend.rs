@@ -92,7 +92,7 @@ impl Backend {
 
     pub async fn start(&self, id: &SessionId, request: RunRequest) -> Result<Events> {
         match self {
-            Backend::Local(host) => Ok(host.start(id.clone(), request)?.map(Ok).boxed()),
+            Backend::Local(host) => Ok(host.start(id.clone(), request).await?.map(Ok).boxed()),
             Backend::Remote(client) => client.start(id, &request).await,
         }
     }
@@ -122,6 +122,34 @@ impl Backend {
         match self {
             Backend::Local(host) => Ok(host.tools(id)),
             Backend::Remote(client) => client.tools(id).await,
+        }
+    }
+
+    /// Everything the host remembers, oldest first.
+    pub async fn memories(&self) -> Result<Vec<String>> {
+        match self {
+            Backend::Local(host) => host.memories(),
+            Backend::Remote(client) => client.memories().await,
+        }
+    }
+
+    /// False when `memory` was not saved.
+    pub async fn forget(&self, memory: &str) -> Result<bool> {
+        match self {
+            Backend::Local(host) => host.forget(memory),
+            Backend::Remote(client) => client.forget(memory).await,
+        }
+    }
+
+    /// Lets a host in this process finish learning from its answers before
+    /// the process exits, unless Ctrl+C says not to wait. A remote host
+    /// carries on by itself.
+    pub async fn settle(&self) {
+        if let Backend::Local(host) = self {
+            tokio::select! {
+                () = host.settle() => {}
+                _ = tokio::signal::ctrl_c() => {}
+            }
         }
     }
 }

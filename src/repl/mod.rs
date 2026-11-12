@@ -117,6 +117,7 @@ impl Repl {
                 }
             }
         }
+        self.backend.settle().await;
         if self.greetings {
             snailprint("\nBye!\n\n", 10000);
         }
@@ -162,6 +163,8 @@ impl Repl {
             Command::Think(level) => self.set_thinking(level)?,
             Command::Theme(theme) => self.switch_theme(theme).await?,
             Command::Tools => self.list_tools().await?,
+            Command::Memories => self.list_memories().await?,
+            Command::Forget => self.forget().await?,
             Command::Clear => self.editor.clear_screen(),
             Command::Exit => {}
         }
@@ -298,6 +301,37 @@ impl Repl {
             }
         }
         println!();
+        Ok(())
+    }
+
+    async fn list_memories(&self) -> Result<()> {
+        let memories = self.backend.memories().await?;
+        if memories.is_empty() {
+            println!("{}\n", "Nothing remembered yet.".bold());
+            return Ok(());
+        }
+        println!();
+        for memory in memories {
+            println!("  {} {memory}", "•".cyan());
+        }
+        println!();
+        Ok(())
+    }
+
+    async fn forget(&self) -> Result<()> {
+        let memories = self.backend.memories().await?;
+        if memories.is_empty() {
+            println!("{}\n", "Nothing remembered yet.".bold());
+            return Ok(());
+        }
+        if let Some(index) = ui::pick("Forget a memory", &memories, 0)?
+            && let Some(memory) = memories.get(index)
+        {
+            match self.backend.forget(memory).await? {
+                true => println!("{} {}\n", "Forgot".bold(), memory.dim()),
+                false => println!("{}\n", "Already forgotten.".bold()),
+            }
+        }
         Ok(())
     }
 

@@ -14,6 +14,8 @@ of `hey` is on ease of use, speed, and a pleasant terminal experience.
 - [MCP](https://modelcontextprotocol.io) servers, local (stdio) or remote (streamable HTTP)
 - Per-tool permissions: allow, confirm, or deny
 - Conversations saved automatically and resumable with `/resume` or `hey --resume`
+- Memory across conversations: lasting facts about you and your work are learned from answers and
+  recalled when a conversation starts
 - Remote hosting: run the agent and keep conversations on a server, and pick them up from any
   machine, even while an answer is in progress
 - Syntax highlighting via [syntect](https://github.com/trishume/syntect), with bat's themes
@@ -61,6 +63,8 @@ Type `/` or press Tab to see commands; the status line describes the one you are
 | `/think [level]` | Set thinking: `off`, `minimal`…`max`, or `default` |
 | `/theme [theme]`, `/t` | Switch highlighting theme |
 | `/tools` | List tools, their permissions and MCP servers |
+| `/memories`, `/mem` | List what hey remembers across conversations |
+| `/forget` | Pick a memory to forget |
 | `/clear`, `/c` | Clear the screen |
 | `/exit`, `/quit`, `/q`, `/x` | Exit |
 
@@ -154,6 +158,37 @@ supported yet; most also accept an API key, for example Firecrawl:
 [mcp_servers.firecrawl]
 url = "https://mcp.firecrawl.dev/v2/mcp"
 headers = { Authorization = "Bearer ${FIRECRAWL_API_KEY}" }
+```
+
+## Memory
+
+`hey` remembers lasting facts about you and your work, such as your name, preferences, tools and
+projects, across conversations:
+
+- **Learning**: after each answer, the model reads the exchange and decides what is worth keeping
+  and which saved memories it shows to be outdated. This takes one extra model call, made in the
+  background so the prompt returns at once; a one-off `hey question` waits for it before exiting.
+- **Recall**: a new conversation starts with the memories closest in meaning to its first message
+  (up to `recall`), found with a vector search over their embeddings and added to the system
+  prompt. They stay the same for the conversation, so the provider's prompt cache keeps working.
+
+Embeddings come from a local [Ollama embedding model](https://ollama.com/search?c=embedding),
+`qwen3-embedding:0.6b` by default (`ollama pull qwen3-embedding:0.6b`), on the daemon
+`[providers.ollama]` names, else `OLLAMA_API_BASE_URL`'s, else `localhost:11434`. Each memory is
+embedded once, the first time a search needs it. Until there are more memories than `recall`,
+every conversation gets all of them and nothing is embedded; if the model cannot be reached, a
+conversation starts with the newest and says why.
+
+Memories are kept as a Markdown list (`memories.md` in hey's data directory) that you can read and
+edit, with their embeddings beside it in `memories.vectors.json`; `/memories` lists them and
+`/forget` removes one. With a remote, they are the server's.
+
+```toml
+[memory]
+embedding_model = "ollama/embeddinggemma"   # another embedding model
+model = "openai/gpt-5.4-mini"               # a cheaper model to decide what to remember
+recall = 20
+# enabled = false                           # turn memory off
 ```
 
 ## Remote hosting

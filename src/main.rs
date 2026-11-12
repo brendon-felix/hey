@@ -8,6 +8,7 @@ mod client;
 mod config;
 mod host;
 mod mcp;
+mod memory;
 mod mention;
 mod permissions;
 mod protocol;
@@ -137,6 +138,7 @@ async fn run(args: Args) -> Result<ExitCode> {
                 },
             );
             let turn = turn::run(&backend, &thread, request, &style).await;
+            backend.settle().await;
             Ok(match turn.outcome {
                 turn::Outcome::Answered => ExitCode::SUCCESS,
                 turn::Outcome::Interrupted | turn::Outcome::Failed => ExitCode::FAILURE,

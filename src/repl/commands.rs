@@ -12,6 +12,8 @@ pub enum Command {
     Think(Option<String>),
     Theme(Option<String>),
     Tools,
+    Memories,
+    Forget,
     Clear,
     Exit,
 }
@@ -107,6 +109,20 @@ pub const COMMANDS: &[Spec] = &[
         arg: None,
         about: "List tools, their permissions and MCP servers",
         build: |_| Command::Tools,
+    },
+    Spec {
+        name: "memories",
+        aliases: &["mem"],
+        arg: None,
+        about: "List what hey remembers across conversations",
+        build: |_| Command::Memories,
+    },
+    Spec {
+        name: "forget",
+        aliases: &[],
+        arg: None,
+        about: "Pick a memory to forget",
+        build: |_| Command::Forget,
     },
     Spec {
         name: "clear",

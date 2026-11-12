@@ -71,6 +71,30 @@ history_size = 1000
 # Default: the platform's data directory, under hey/shared.
 # dir = "~/.hey/shared"
 
+[memory]
+# Remember lasting facts about you and your work across conversations. After
+# each answer, one extra model call decides what to remember and what is now
+# outdated; each new conversation starts with the memories closest in meaning
+# to its first message. `/memories` lists them and `/forget` removes one.
+enabled = true
+# Most memories a conversation starts with. While there are no more than
+# this, a conversation starts with all of them and nothing is embedded.
+recall = 20
+# Embedding model that places memories by meaning, as `ollama/model`; only
+# Ollama's are supported (https://ollama.com/search?c=embedding). The daemon
+# is the one `[providers.ollama]` names (a `/v1` suffix is fine), else
+# OLLAMA_API_BASE_URL's, else http://localhost:11434. Each memory is embedded
+# once and kept beside the memories file. When the model cannot be reached, a
+# conversation starts with the newest memories instead.
+embedding_model = "ollama/qwen3-embedding:0.6b"
+# Model that decides what to remember, as `vendor/model`. When unset, the
+# conversation's model.
+# model = "openai/gpt-5.4-mini"
+# Where memories are kept, as a Markdown list you can edit. Their embeddings
+# are kept beside it, in memories.vectors.json.
+# Default: the platform's data directory, under hey/memories.md.
+# file = "~/.hey/memories.md"
+
 [tools]
 # Run every tool, in every conversation, without asking. Overrides `default`
 # and every rule below, including "deny".

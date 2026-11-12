@@ -35,6 +35,7 @@ pub async fn serve(host: Arc<Host>, config: &config::Server) -> Result<()> {
         .route("/v1/threads/{id}/run", post(start).delete(stop))
         .route("/v1/threads/{id}/approvals/{approval}", post(answer))
         .route("/v1/threads/{id}/tools", get(tools))
+        .route("/v1/memories", get(memories).delete(forget))
         .layer(middleware::from_fn_with_state(token, authorize))
         .with_state(host);
     let listener = tokio::net::TcpListener::bind(config.listen)
@@ -127,7 +128,7 @@ async fn start(
     Path(id): Path<SessionId>,
     Json(request): Json<RunRequest>,
 ) -> Reply<Response> {
-    let events = host.start(id, request).map_err(|error| match error {
+    let events = host.start(id, request).await.map_err(|error| match error {
         StartError::Busy => Failure(StatusCode::CONFLICT, error.to_string()),
         StartError::Refused(_) => Failure(StatusCode::BAD_REQUEST, error.to_string()),
     })?;
@@ -154,6 +155,17 @@ async fn answer(
 
 async fn tools(State(host): State<Arc<Host>>, Path(id): Path<SessionId>) -> impl IntoResponse {
     Json(host.tools(&id))
+}
+
+async fn memories(State(host): State<Arc<Host>>) -> Reply<impl IntoResponse> {
+    Ok(Json(host.memories()?))
+}
+
+async fn forget(State(host): State<Arc<Host>>, Json(memory): Json<String>) -> Reply<StatusCode> {
+    Ok(match host.forget(&memory)? {
+        true => StatusCode::NO_CONTENT,
+        false => StatusCode::NOT_FOUND,
+    })
 }
 
 fn ndjson<T: Serialize>(

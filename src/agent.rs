@@ -2,11 +2,12 @@
 /*                                  agent.rs                                  */
 /* -------------------------------------------------------------------------- */
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use rig_agent::agent::AgentBuilder;
 use rig_core::DynModel;
 use rig_core::catalog::Catalog;
-use rig_core::operation::Completion;
+use rig_core::operation::{Completion, Embedding};
+use rig_core::providers::ollama::OllamaConfig;
 use rig_core::providers::registry::ConnectOptions;
 use rig_core::tool::Tool;
 use rig_tools::{Delete, Edit, List, Live, Move, Read, Search, Seen, Shell, Spill, Write};
@@ -63,6 +64,10 @@ impl Model {
         })
     }
 
+    pub fn completion(&self) -> DynModel<Completion> {
+        self.inner.clone()
+    }
+
     pub fn info(&self) -> ModelInfo {
         ModelInfo {
             reference: self.reference.clone(),
@@ -71,7 +76,23 @@ impl Model {
     }
 }
 
-/// Models with tool support whose vendor has an API key in the environment.
+/// The embedding model `reference` names, as `ollama/model`: rig's catalog
+/// connects only chat models, so each vendor's embeddings take code of their
+/// own, and only Ollama's have it. The daemon is the one `[providers.ollama]`
+/// names, else `OLLAMA_API_BASE_URL`'s, else the local one.
+pub fn embedding_model(reference: &str, providers: &Providers) -> Result<DynModel<Embedding>> {
+    let Some(("ollama", model)) = reference.split_once('/') else {
+        bail!("cannot use embedding model `{reference}`: only Ollama's are supported, as `ollama/<model>`");
+    };
+    let mut daemon = OllamaConfig::from_env().context("cannot configure Ollama")?;
+    if let Some(url) = providers.get("ollama").and_then(|p| p.base_url.as_deref()) {
+        // The configured URL is the OpenAI-compatible API, which chat uses;
+        // embeddings use the daemon's own API, at its root.
+        let url = config::expand(url)?;
+        daemon = daemon.with_base_url(url.trim_end_matches('/').trim_end_matches("/v1"));
+    }
+    Ok(daemon.client().embedding(model, None).into())
+}
 pub fn available_models() -> Vec<String> {
     let has_key = |vendor: &rig_core::providers::registry::ProviderId| {
         vendor

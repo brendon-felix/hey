@@ -115,6 +115,18 @@ impl Client {
             .await
     }
 
+    pub async fn memories(&self) -> Result<Vec<String>> {
+        self.json(self.get("v1/memories")?).await
+    }
+
+    pub async fn forget(&self, memory: &str) -> Result<bool> {
+        self.done(
+            self.http.delete(self.url("v1/memories")?).json(memory),
+            StatusCode::NOT_FOUND,
+        )
+        .await
+    }
+
     fn url(&self, path: &str) -> Result<Url> {
         Ok(self.base.join(path)?)
     }

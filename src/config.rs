@@ -26,6 +26,7 @@ pub struct Config {
     pub editor: Editor,
     pub sessions: Sessions,
     pub shared: Shared,
+    pub memory: Memory,
     pub tools: Tools,
     pub mcp_servers: BTreeMap<String, McpServer>,
     pub remote: Option<String>,
@@ -47,6 +48,7 @@ impl Default for Config {
             editor: Editor::default(),
             sessions: Sessions::default(),
             shared: Shared::default(),
+            memory: Memory::default(),
             tools: Tools::default(),
             mcp_servers: BTreeMap::new(),
             remote: None,
@@ -229,6 +231,42 @@ impl Shared {
             None => dirs::data_dir()
                 .map(|dir| dir.join("hey").join("shared"))
                 .context("no data directory on this platform; set `shared.dir`"),
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct Memory {
+    pub enabled: bool,
+    /// The model that decides what to remember; else the conversation's.
+    pub model: Option<String>,
+    /// The model that places memories by meaning, to recall the closest.
+    pub embedding_model: String,
+    /// Most memories a conversation starts with.
+    pub recall: usize,
+    file: Option<String>,
+}
+
+impl Default for Memory {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            model: None,
+            embedding_model: "ollama/qwen3-embedding:0.6b".into(),
+            recall: 20,
+            file: None,
+        }
+    }
+}
+
+impl Memory {
+    pub fn file(&self) -> Result<PathBuf> {
+        match &self.file {
+            Some(file) => expand_path(file),
+            None => dirs::data_dir()
+                .map(|dir| dir.join("hey").join("memories.md"))
+                .context("no data directory on this platform; set `memory.file`"),
         }
     }
 }
@@ -445,6 +483,9 @@ mod tests {
         assert_eq!(documented.display.wrap_width, built_in.display.wrap_width);
         assert_eq!(documented.editor.mode, built_in.editor.mode);
         assert_eq!(documented.editor.history_size, built_in.editor.history_size);
+        assert_eq!(documented.memory.enabled, built_in.memory.enabled);
+        assert_eq!(documented.memory.recall, built_in.memory.recall);
+        assert_eq!(documented.memory.embedding_model, built_in.memory.embedding_model);
         assert_eq!(documented.tools.allow_all, built_in.tools.allow_all);
         assert_eq!(documented.tools.default, built_in.tools.default);
         assert_eq!(documented.tools.permissions, built_in.tools.permissions);

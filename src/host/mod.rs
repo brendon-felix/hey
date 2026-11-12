@@ -10,16 +10,18 @@ use std::fmt;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use futures::StreamExt;
 use futures::stream::BoxStream;
 use rig_agent::agent::{Agent, StreamingResult};
 use rig_core::completion::GenerationOptions;
 use rig_tools::{Live, Seen};
+use tokio_util::task::TaskTracker;
 
 use crate::agent::{self, BUILTIN_TOOLS, Model};
 use crate::config::{Config, Providers};
 use crate::mcp;
+use crate::memory::{self, Memory, Recalled};
 use crate::permissions::{Approval, Origin, Permissions};
 use crate::protocol::{
     ApprovalId, Decision, Defaults, Ending, Event, ModelInfo, RunOptions, RunRequest, ServerReport,
@@ -44,16 +46,24 @@ pub struct Host {
     sessions: Sessions,
     /// The repository `@shared:` mentions attach from.
     shared: PathBuf,
+    memory: Option<Memory>,
+    /// The last time memory failed, until a client is told.
+    memory_failure: Mutex<Option<String>>,
     mcp: Vec<mcp::Tool>,
     servers: Vec<ServerReport>,
     permissions: Permissions,
     threads: Mutex<HashMap<SessionId, Thread>>,
+    /// Runs and what they leave to do once answered, such as learning.
+    tasks: TaskTracker,
 }
 
 /// What a thread keeps on the host between runs.
 struct Thread {
     seen: Seen,
     permissions: Arc<Permissions>,
+    /// Recalled as the thread started here and kept, so the preamble stays
+    /// the same and the provider's prompt cache keeps working.
+    memories: Vec<String>,
     run: Option<Arc<Run>>,
 }
 
@@ -102,10 +112,13 @@ impl Host {
             providers: config.providers.clone(),
             sessions,
             shared: config.shared.dir()?,
+            memory: Memory::open(&config.memory, &config.providers)?,
+            memory_failure: Mutex::default(),
             mcp,
             servers,
             permissions,
             threads: Mutex::default(),
+            tasks: TaskTracker::new(),
         })
     }
 
@@ -143,17 +156,24 @@ impl Host {
     }
 
     /// Starts answering `request` in thread `id`, returning the run's events.
-    pub fn start(
+    /// A thread new to this host first recalls what it should know.
+    pub async fn start(
         self: &Arc<Self>,
         id: SessionId,
         request: RunRequest,
     ) -> Result<Events, StartError> {
         let model = Model::connect(&request.options.model, &self.providers)
             .map_err(StartError::Refused)?;
+        let known = self.lock().contains_key(&id);
+        let memories = match known {
+            true => Vec::new(),
+            false => self.recall(&request.prompt).await,
+        };
         let mut threads = self.lock();
         let thread = threads.entry(id.clone()).or_insert_with(|| Thread {
             seen: Seen::default(),
             permissions: Arc::new(self.permissions.fork()),
+            memories,
             run: None,
         });
         if thread.run.is_some() {
@@ -165,11 +185,15 @@ impl Host {
             .map_err(StartError::Refused)?
             .len();
         let run = Arc::new(Run::new(request.prompt.clone(), history));
+        if let Some(failure) = self.take_memory_failure() {
+            run.emit(Event::Notice { text: failure });
+        }
         let agent = self.agent(thread, &model, &request.options, &run);
         let events = run.events().boxed();
         thread.run = Some(run.clone());
         drop(threads);
-        tokio::spawn(self.clone().drive(id, run, agent, model, request));
+        self.tasks
+            .spawn(self.clone().drive(id, run, agent, model, request));
         Ok(events)
     }
 
@@ -192,6 +216,30 @@ impl Host {
         Tools {
             permissions,
             servers: self.servers.clone(),
+        }
+    }
+
+    /// Every memory, oldest first.
+    pub fn memories(&self) -> Result<Vec<String>> {
+        self.memory()?.all()
+    }
+
+    /// False when `memory` was not saved.
+    pub fn forget(&self, memory: &str) -> Result<bool> {
+        self.memory()?.forget(memory)
+    }
+
+    /// Waits for runs to finish learning, which a host in a process that is
+    /// about to exit must, and reports a failure no run reported. Starts no
+    /// more runs.
+    pub async fn settle(&self) {
+        self.tasks.close();
+        if !self.tasks.is_empty() {
+            render::notice("remembering…");
+        }
+        self.tasks.wait().await;
+        if let Some(failure) = self.take_memory_failure() {
+            render::notice(&failure);
         }
     }
 
@@ -219,14 +267,18 @@ impl Host {
                 permissions: thread.permissions.clone(),
                 run: run.clone(),
             });
+        if let Some(memories) = memory::preamble(&thread.memories) {
+            builder = builder.append_preamble(&memories);
+        }
         if let Some(max_tokens) = self.max_tokens {
             builder = builder.max_tokens(max_tokens);
         }
         builder.build()
     }
 
-    /// Answers `request` into `run` until it ends or is stopped. The agent
-    /// saves the thread as its stream ends.
+    /// Answers `request` into `run` until it ends or is stopped, then learns
+    /// from an answer once its clients are let go. The agent saves the thread
+    /// as its stream ends.
     async fn drive(
         self: Arc<Self>,
         id: SessionId,
@@ -239,11 +291,17 @@ impl Host {
             ending = self.respond(&id, &run, &agent, &model, request) => ending,
             () = run.stopped() => Ending::Interrupted,
         };
-        // Under the lock, so `open` sees either the run or all it saved.
-        let mut threads = self.lock();
-        run.emit(Event::End { ending });
-        if let Some(thread) = threads.get_mut(&id) {
-            thread.run = None;
+        let answered = matches!(ending, Ending::Answered);
+        {
+            // Under the lock, so `open` sees either the run or all it saved.
+            let mut threads = self.lock();
+            run.emit(Event::End { ending });
+            if let Some(thread) = threads.get_mut(&id) {
+                thread.run = None;
+            }
+        }
+        if answered && let Err(error) = self.learn(&id, run.history(), &model).await {
+            *self.lock_memory_failure() = Some(format!("memory not updated: {error:#}"));
         }
     }
 
@@ -282,6 +340,59 @@ impl Host {
                 }
             }
         }
+    }
+
+    /// Learns from what the thread's run said after its first `history`
+    /// messages.
+    async fn learn(&self, id: &SessionId, history: usize, model: &Model) -> Result<()> {
+        let Some(memory) = &self.memory else {
+            return Ok(());
+        };
+        let messages = self.sessions.messages(id)?;
+        let exchange = messages.get(history..).unwrap_or_default();
+        let configured = memory
+            .model()
+            .map(|reference| Model::connect(reference, &self.providers))
+            .transpose()?;
+        memory.learn(configured.as_ref().unwrap_or(model), exchange).await
+    }
+
+    /// The memories a thread opening with `prompt` starts with. A failure is
+    /// told with the run.
+    async fn recall(&self, prompt: &str) -> Vec<String> {
+        let Some(memory) = &self.memory else {
+            return Vec::new();
+        };
+        let (memories, failure) = match memory.recall(prompt).await {
+            Ok(Recalled {
+                memories,
+                fallback,
+            }) => (
+                memories,
+                fallback.map(|error| format!("recalled the newest memories: {error:#}")),
+            ),
+            Err(error) => (Vec::new(), Some(format!("no memories recalled: {error:#}"))),
+        };
+        if failure.is_some() {
+            *self.lock_memory_failure() = failure;
+        }
+        memories
+    }
+
+    fn memory(&self) -> Result<&Memory> {
+        self.memory
+            .as_ref()
+            .context("memory is off in the host's config (`memory.enabled`)")
+    }
+
+    fn take_memory_failure(&self) -> Option<String> {
+        self.lock_memory_failure().take()
+    }
+
+    fn lock_memory_failure(&self) -> MutexGuard<'_, Option<String>> {
+        self.memory_failure
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
     }
 
     fn run(&self, id: &SessionId) -> Option<Arc<Run>> {
