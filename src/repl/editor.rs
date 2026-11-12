@@ -18,7 +18,9 @@ use reedline::{
 };
 
 use super::commands::{self, Arg, COMMANDS};
+use super::mentions::{self as host, Index, Mentions};
 use crate::config::{self, EditMode as Mode, Thinking};
+use crate::mention::{self, Mention, Reference};
 use crate::render;
 
 const MENU: &str = "completion_menu";
@@ -71,13 +73,18 @@ impl Editor {
         colors: bool,
         status: SharedStatus,
         choices: Choices,
+        index: &Index,
     ) -> Self {
+        let completer = InputCompleter {
+            choices,
+            mentions: Mentions::new(index.clone()),
+        };
         let mut line_editor = Reedline::create()
             .with_edit_mode(edit_mode(config.mode))
-            .with_completer(Box::new(choices))
+            .with_completer(Box::new(completer))
             .with_menu(ReedlineMenu::EngineCompleter(Box::new(completion_menu())))
-            .with_highlighter(Box::new(InputHighlighter))
-            .with_status_line(Box::new(CommandHelp))
+            .with_highlighter(Box::new(InputHighlighter(index.clone())))
+            .with_status_line(Box::new(InputHelp(index.clone())))
             .with_buffer_editor(buffer_editor(), std::env::temp_dir().join("hey-prompt.md"))
             .with_history_exclusion_prefix(Some(" ".into()))
             .with_ansi_colors(colors)
@@ -164,18 +171,20 @@ fn edit_mode(mode: Mode) -> Box<dyn EditMode> {
     }
 }
 
-/// Bindings for modes that insert text: menus, plus `/` opening the command
-/// menu, Ctrl+R searching history and Ctrl+O composing in `$EDITOR`.
+/// Bindings for modes that insert text: menus, plus `/` and `@` opening the
+/// completion menu, Ctrl+R searching history and Ctrl+O composing in `$EDITOR`.
 fn with_bindings(keybindings: Keybindings) -> Keybindings {
     let mut keybindings = with_menu_bindings(keybindings);
-    keybindings.add_binding(
-        KeyModifiers::NONE,
-        KeyCode::Char('/'),
-        ReedlineEvent::Multiple(vec![
-            ReedlineEvent::Edit(vec![EditCommand::InsertChar('/')]),
-            ReedlineEvent::Menu(MENU.into()),
-        ]),
-    );
+    for sigil in ['/', '@'] {
+        keybindings.add_binding(
+            KeyModifiers::NONE,
+            KeyCode::Char(sigil),
+            ReedlineEvent::Multiple(vec![
+                ReedlineEvent::Edit(vec![EditCommand::InsertChar(sigil)]),
+                ReedlineEvent::Menu(MENU.into()),
+            ]),
+        );
+    }
     keybindings.add_binding(
         KeyModifiers::CONTROL,
         KeyCode::Char('r'),
@@ -263,20 +272,44 @@ impl Choices {
     }
 }
 
-impl Completer for Choices {
+/// Slash commands and their arguments on a command line, `@` mentions on a
+/// message.
+struct InputCompleter {
+    choices: Choices,
+    mentions: Mentions,
+}
+
+impl Completer for InputCompleter {
     fn complete(&mut self, line: &str, pos: usize) -> CompletionResult {
         let before = line.get(..pos).unwrap_or(line);
-        CompletionResult::fresh(self.suggestions(before))
+        let suggestions = match before.starts_with('/') {
+            true => self.choices.suggestions(before),
+            false => self.mentions.suggestions(before),
+        };
+        CompletionResult::fresh(suggestions)
     }
 }
 
-struct InputHighlighter;
+/// Commands in cyan, and on a message, mentions that name something.
+struct InputHighlighter(Index);
 
 impl Highlighter for InputHighlighter {
     fn highlight(&self, line: &str, _cursor: usize) -> StyledText {
         let mut styled = StyledText::new();
         match line.strip_prefix('/') {
-            None => styled.push((Style::new().fg(Color::Green), line.to_owned())),
+            None => {
+                let message = Style::new().fg(Color::Green);
+                let mut last = 0;
+                let index = host::lock(&self.0);
+                let known = mention::mentions(line)
+                    .filter_map(|mention| mention.resolve(|reference| index.describe(reference)));
+                for (_, span) in known {
+                    styled.push((message, line[last..span.start].to_owned()));
+                    styled.push((Style::new().fg(Color::Cyan), line[span.clone()].to_owned()));
+                    last = span.end;
+                }
+                styled.push((message, line[last..].to_owned()));
+            }
             Some(rest) => {
                 let (word, arg) = rest.split_at(rest.find(char::is_whitespace).unwrap_or(rest.len()));
                 let known = commands::find(word).is_some();
@@ -290,23 +323,50 @@ impl Highlighter for InputHighlighter {
     }
 }
 
-/// Below the line while typing a slash command: its usage, or why it is unknown.
-struct CommandHelp;
+/// Below the line while typing a slash command or a mention: what it does, or
+/// why it is unknown.
+struct InputHelp(Index);
 
-impl StatusLine for CommandHelp {
-    fn status(&mut self, line: &str, _pos: usize, columns: u16, colors: bool) -> String {
-        let Some(typed) = line.trim_start().strip_prefix('/') else {
-            return String::new();
-        };
-        let dim = Style::new().fg(Color::DarkGray);
-        let word = typed.split_whitespace().next().unwrap_or_default();
-        let (style, text) = match commands::find(word) {
-            Some(spec) => (dim, format!("{}  {}", spec.usage(), spec.about)),
-            None if word.is_empty() => (dim, "Tab for commands".into()),
-            None => (Style::new().fg(Color::Yellow), format!("unknown command /{word}")),
+impl StatusLine for InputHelp {
+    fn status(&mut self, line: &str, pos: usize, columns: u16, colors: bool) -> String {
+        let (style, text) = match line.trim_start().strip_prefix('/') {
+            Some(typed) => command_help(typed),
+            None => match mention::under(line, pos) {
+                Some(mention) => self.mention_help(&mention),
+                None => return String::new(),
+            },
         };
         let text: String = text.chars().take(usize::from(columns)).collect();
         if colors { style.paint(text).to_string() } else { text }
+    }
+}
+
+impl InputHelp {
+    fn mention_help(&self, mention: &Mention) -> (Style, String) {
+        let dim = Style::new().fg(Color::DarkGray);
+        let index = host::lock(&self.0);
+        match mention.resolve(|reference| index.describe(reference)) {
+            Some((attached, _)) => (dim, format!("attaches {attached}")),
+            None => match mention.reference() {
+                Reference::Local("") => (dim, "Tab for files and directories".into()),
+                Reference::Shared("") => (dim, "Tab for the host's shared files".into()),
+                Reference::Thread("") => (dim, "Tab for saved conversations".into()),
+                _ => (
+                    Style::new().fg(Color::Yellow),
+                    format!("nothing named {}; sent as typed", mention.text),
+                ),
+            },
+        }
+    }
+}
+
+fn command_help(typed: &str) -> (Style, String) {
+    let dim = Style::new().fg(Color::DarkGray);
+    let word = typed.split_whitespace().next().unwrap_or_default();
+    match commands::find(word) {
+        Some(spec) => (dim, format!("{}  {}", spec.usage(), spec.about)),
+        None if word.is_empty() => (dim, "Tab for commands".into()),
+        None => (Style::new().fg(Color::Yellow), format!("unknown command /{word}")),
     }
 }
 

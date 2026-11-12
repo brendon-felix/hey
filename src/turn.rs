@@ -6,7 +6,8 @@ use crossterm::cursor;
 use futures::StreamExt;
 
 use crate::backend::{Backend, Events};
-use crate::protocol::{Ending, Event, RunRequest};
+use crate::mention;
+use crate::protocol::{Attachment, Ending, Event, RunOptions, RunRequest};
 use crate::render::{self, Reply, Style};
 use crate::sessions::SessionId;
 use crate::ui;
@@ -22,6 +23,25 @@ pub struct Turn {
     /// Tokens the last model call took in and gave back: how full the
     /// context is.
     pub context: Option<u64>,
+}
+
+/// A request to answer `prompt`, with the files and directories it mentions
+/// in the user's working directory; the host attaches the rest.
+pub fn request(prompt: String, options: RunOptions) -> RunRequest {
+    let attachments = mention::local(&prompt)
+        .into_iter()
+        .filter_map(|item| {
+            render::attached(&item);
+            item.load()
+                .inspect_err(|error| render::notice(&format!("{item} not attached: {error:#}")))
+                .ok()
+        })
+        .collect::<Vec<Attachment>>();
+    RunRequest {
+        prompt,
+        attachments,
+        options,
+    }
 }
 
 /// Starts answering `request` in `thread` and follows the run to its end.
@@ -100,6 +120,10 @@ async fn show(
             Event::Notice { text } => {
                 reply.finish().await;
                 render::notice(&text);
+            }
+            Event::Attached { name } => {
+                reply.finish().await;
+                render::attached(&name);
             }
             Event::Approval { id, tool } => {
                 reply.finish().await;

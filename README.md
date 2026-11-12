@@ -19,6 +19,7 @@ of `hey` is on ease of use, speed, and a pleasant terminal experience.
 - Syntax highlighting via [syntect](https://github.com/trishume/syntect), with bat's themes
 - A rich input editor via [reedline](https://github.com/nushell/reedline): Emacs, Vi or Helix mode,
   command completion with descriptions, a status line, history search, and composing in `$EDITOR`
+- `@` mentions that attach files, directories and saved conversations to a message
 
 ## Installation
 
@@ -63,11 +64,31 @@ Type `/` or press Tab to see commands; the status line describes the one you are
 | `/clear`, `/c` | Clear the screen |
 | `/exit`, `/quit`, `/q`, `/x` | Exit |
 
+### Mentions
+
+Type `@` to attach something to your message; a menu suggests, fuzzy-matched, files and
+directories from your working directory, then `@shared:` lists the host's shared files and
+`@thread:` its saved conversations.
+
+| Mention | Attaches |
+| --- | --- |
+| `@src/main.rs` | The file's contents, up to 50 KiB, from your working directory |
+| `@src/` | A listing of the directory, skipping what git ignores |
+| `@"my notes.md"` | A path with spaces |
+| `@shared:guide.md` | A file or directory from the host's shared repository, `[shared] dir` |
+| `@thread:<id>` | A summary of that conversation, written by the model answering |
+
+With a remote, plain mentions still attach from the machine you type on, while `@shared:`
+and `@thread:` attach from the host, so every machine sees the same shared files. The model
+gets your message as typed, followed by what it mentions. A mention that names nothing, like
+`@property`, is sent as plain text. Mentions are highlighted once they name something, and
+work in one-shot messages too: `hey review @src/main.rs`.
+
 ### Keys
 
 | Keys | Action |
 | --- | --- |
-| Tab | Complete commands, models and themes |
+| Tab | Complete commands, models, themes and `@` mentions |
 | Ctrl+R | Search input history |
 | Ctrl+O | Write the message in `$EDITOR` |
 | Alt+Enter | Insert a newline |

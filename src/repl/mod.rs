@@ -4,8 +4,10 @@
 
 mod commands;
 mod editor;
+mod mentions;
 
 use std::sync::{Arc, Mutex, PoisonError};
+use std::time::Instant;
 
 use anyhow::Result;
 use yansi::Paint;
@@ -13,13 +15,14 @@ use yansi::Paint;
 use crate::backend::Backend;
 use crate::config::Thinking;
 use crate::permissions::Permission;
-use crate::protocol::{ModelInfo, RunOptions, RunRequest, Snapshot};
+use crate::protocol::{ModelInfo, RunOptions, Snapshot};
 use crate::render::{self, Highlighter, Reply, Style, snailprint};
 use crate::sessions::SessionId;
 use crate::turn::{self, Turn};
 use crate::ui;
 use commands::{COMMANDS, Command, Input};
 use editor::{Choices, Editor, Read, SharedStatus, Status};
+use mentions::{Index, STALE_AFTER};
 
 pub struct Repl {
     backend: Backend,
@@ -30,6 +33,9 @@ pub struct Repl {
     greetings: bool,
     editor: Editor,
     status: SharedStatus,
+    /// What the host offers to mention, and when it was fetched.
+    index: Index,
+    indexed: Option<Instant>,
 }
 
 pub struct Setup {
@@ -56,7 +62,8 @@ impl Repl {
             thinking: thinking_choices(),
             themes: render::themes(),
         };
-        let editor = Editor::new(&setup.editor, setup.colors, status.clone(), choices);
+        let index = Index::default();
+        let editor = Editor::new(&setup.editor, setup.colors, status.clone(), choices, &index);
         let repl = Self {
             backend: setup.backend,
             thread: setup.thread,
@@ -70,6 +77,8 @@ impl Repl {
             greetings: setup.greetings,
             editor,
             status,
+            index,
+            indexed: None,
         };
         repl.show_status(None);
         repl
@@ -89,6 +98,7 @@ impl Repl {
             println!();
         }
         loop {
+            self.refresh_index().await;
             let line = match self.editor.read() {
                 Read::Line(line) => line,
                 Read::Cancelled => continue,
@@ -114,12 +124,28 @@ impl Repl {
     }
 
     async fn answer(&mut self, prompt: String) {
-        let request = RunRequest {
-            prompt,
-            options: self.options.clone(),
-        };
+        let request = turn::request(prompt, self.options.clone());
         let turn = turn::run(&self.backend, &self.thread, request, &self.style).await;
         self.update_context(&turn);
+    }
+
+    /// Fetches the host's conversations and shared files for completion,
+    /// unless what was fetched is still fresh.
+    async fn refresh_index(&mut self) {
+        if self.indexed.is_some_and(|at| at.elapsed() < STALE_AFTER) {
+            return;
+        }
+        let (threads, shared) = tokio::join!(self.backend.threads(), self.backend.shared());
+        let mut index = mentions::lock(&self.index);
+        match threads {
+            Ok(threads) => index.threads = threads,
+            Err(error) => render::notice(&format!("no conversation completions: {error:#}")),
+        }
+        match shared {
+            Ok(shared) => index.shared = shared,
+            Err(error) => render::notice(&format!("no shared file completions: {error:#}")),
+        }
+        self.indexed = Some(Instant::now());
     }
 
     async fn execute(&mut self, command: Command) -> Result<()> {
@@ -316,7 +342,7 @@ fn help() {
     }
     println!("\n{}", "Keys".bold());
     for (keys, about) in [
-        ("Tab", "complete commands, models and themes"),
+        ("Tab", "complete commands, models, themes and @ mentions"),
         ("Ctrl+R", "search input history"),
         ("Ctrl+O", "write the message in $EDITOR"),
         ("Alt+Enter", "insert a newline"),

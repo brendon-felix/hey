@@ -66,6 +66,10 @@ impl Client {
         self.json(self.get("v1/threads")?).await
     }
 
+    pub async fn shared(&self) -> Result<Vec<String>> {
+        self.json(self.get("v1/shared")?).await
+    }
+
     pub async fn open(&self, id: &SessionId) -> Result<Opened> {
         let response = self
             .ok(self.get(&format!("v1/threads/{}", id.as_str()))?)

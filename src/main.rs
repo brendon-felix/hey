@@ -8,6 +8,7 @@ mod client;
 mod config;
 mod host;
 mod mcp;
+mod mention;
 mod permissions;
 mod protocol;
 mod render;
@@ -29,7 +30,6 @@ use backend::Backend;
 use client::Client;
 use config::Config;
 use host::Host;
-use protocol::RunRequest;
 use repl::Repl;
 use sessions::SessionId;
 
@@ -128,14 +128,14 @@ async fn run(args: Args) -> Result<ExitCode> {
 
     match message {
         Some(prompt) if !args.interactive => {
-            let request = RunRequest {
+            let request = turn::request(
                 prompt,
-                options: protocol::RunOptions {
+                protocol::RunOptions {
                     model: model.reference,
                     thinking,
                     system_prompt,
                 },
-            };
+            );
             let turn = turn::run(&backend, &thread, request, &style).await;
             Ok(match turn.outcome {
                 turn::Outcome::Answered => ExitCode::SUCCESS,

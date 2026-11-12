@@ -12,6 +12,8 @@ use rig_core::message::{Message, UserContent};
 use rig_memory::{DirStore, Store};
 use serde::{Deserialize, Serialize};
 
+use crate::mention;
+
 const ID_FORMAT: &str = "%Y%m%d-%H%M%S%3f";
 
 /// A conversation's log name: when it started, so names sort by age. Names
@@ -128,6 +130,13 @@ impl Sessions {
             })
             .collect())
     }
+
+    /// The saved session `id`, if there is one.
+    pub fn find(&self, id: &str) -> Option<SessionId> {
+        let id: SessionId = id.parse().ok()?;
+        let logs = self.store.logs().ok()?;
+        logs.iter().any(|log| log == id.as_str()).then_some(id)
+    }
 }
 
 /// The start of the first thing the user typed.
@@ -149,7 +158,9 @@ mod tests {
 fn title(messages: &[Message]) -> Option<String> {
     messages.iter().find_map(|message| match message {
         Message::User { content } => content.iter().find_map(|content| match content {
-            UserContent::Text(text) => Some(rig_memory::title_of(&text.text)),
+            UserContent::Text(text) if !mention::is_context(&text.text) => {
+                Some(rig_memory::title_of(&text.text))
+            }
             _ => None,
         }),
         _ => None,

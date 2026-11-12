@@ -25,6 +25,7 @@ pub struct Config {
     pub display: Display,
     pub editor: Editor,
     pub sessions: Sessions,
+    pub shared: Shared,
     pub tools: Tools,
     pub mcp_servers: BTreeMap<String, McpServer>,
     pub remote: Option<String>,
@@ -45,6 +46,7 @@ impl Default for Config {
             display: Display::default(),
             editor: Editor::default(),
             sessions: Sessions::default(),
+            shared: Shared::default(),
             tools: Tools::default(),
             mcp_servers: BTreeMap::new(),
             remote: None,
@@ -209,6 +211,24 @@ impl Sessions {
             None => dirs::data_dir()
                 .map(|dir| dir.join("hey").join("sessions"))
                 .context("no data directory on this platform; set `sessions.dir`"),
+        }
+    }
+}
+
+/// The host's repository of files any client can attach with `@shared:`.
+#[derive(Debug, Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct Shared {
+    dir: Option<String>,
+}
+
+impl Shared {
+    pub fn dir(&self) -> Result<PathBuf> {
+        match &self.dir {
+            Some(dir) => expand_path(dir),
+            None => dirs::data_dir()
+                .map(|dir| dir.join("hey").join("shared"))
+                .context("no data directory on this platform; set `shared.dir`"),
         }
     }
 }

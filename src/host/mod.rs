@@ -2,10 +2,12 @@
 /*                                host/mod.rs                                 */
 /* -------------------------------------------------------------------------- */
 
+mod attach;
 mod run;
 
 use std::collections::HashMap;
 use std::fmt;
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use anyhow::Result;
@@ -40,6 +42,8 @@ pub struct Host {
     max_tokens: Option<u64>,
     providers: Providers,
     sessions: Sessions,
+    /// The repository `@shared:` mentions attach from.
+    shared: PathBuf,
     mcp: Vec<mcp::Tool>,
     servers: Vec<ServerReport>,
     permissions: Permissions,
@@ -97,6 +101,7 @@ impl Host {
             max_tokens: config.max_tokens,
             providers: config.providers.clone(),
             sessions,
+            shared: config.shared.dir()?,
             mcp,
             servers,
             permissions,
@@ -143,8 +148,8 @@ impl Host {
         id: SessionId,
         request: RunRequest,
     ) -> Result<Events, StartError> {
-        let RunRequest { prompt, options } = request;
-        let model = Model::connect(&options.model, &self.providers).map_err(StartError::Refused)?;
+        let model = Model::connect(&request.options.model, &self.providers)
+            .map_err(StartError::Refused)?;
         let mut threads = self.lock();
         let thread = threads.entry(id.clone()).or_insert_with(|| Thread {
             seen: Seen::default(),
@@ -159,18 +164,12 @@ impl Host {
             .messages(&id)
             .map_err(StartError::Refused)?
             .len();
-        let run = Arc::new(Run::new(prompt.clone(), history));
-        let agent = self.agent(thread, &model, &options, &run);
-        let runner = agent.prompt(prompt).conversation(id.as_str());
-        let stream = match options.thinking {
-            Some(thinking) => runner.options(GenerationOptions::default().reasoning(thinking)),
-            None => runner,
-        }
-        .stream();
+        let run = Arc::new(Run::new(request.prompt.clone(), history));
+        let agent = self.agent(thread, &model, &request.options, &run);
         let events = run.events().boxed();
         thread.run = Some(run.clone());
         drop(threads);
-        tokio::spawn(self.clone().drive(id, run, stream));
+        tokio::spawn(self.clone().drive(id, run, agent, model, request));
         Ok(events)
     }
 
@@ -226,18 +225,53 @@ impl Host {
         builder.build()
     }
 
-    /// Feeds the agent's stream into `run` until it ends or is stopped. The
-    /// agent saves the thread as its stream ends.
-    async fn drive(self: Arc<Self>, id: SessionId, run: Arc<Run>, mut stream: StreamingResult) {
-        let ending = loop {
-            let item = tokio::select! {
-                item = stream.next() => item,
-                () = run.stopped() => break Ending::Interrupted,
-            };
-            match item {
-                None => break Ending::Answered,
+    /// Answers `request` into `run` until it ends or is stopped. The agent
+    /// saves the thread as its stream ends.
+    async fn drive(
+        self: Arc<Self>,
+        id: SessionId,
+        run: Arc<Run>,
+        agent: Agent,
+        model: Model,
+        request: RunRequest,
+    ) {
+        let ending = tokio::select! {
+            ending = self.respond(&id, &run, &agent, &model, request) => ending,
+            () = run.stopped() => Ending::Interrupted,
+        };
+        // Under the lock, so `open` sees either the run or all it saved.
+        let mut threads = self.lock();
+        run.emit(Event::End { ending });
+        if let Some(thread) = threads.get_mut(&id) {
+            thread.run = None;
+        }
+    }
+
+    async fn respond(
+        &self,
+        id: &SessionId,
+        run: &Run,
+        agent: &Agent,
+        model: &Model,
+        request: RunRequest,
+    ) -> Ending {
+        let RunRequest {
+            prompt,
+            attachments,
+            options,
+        } = request;
+        let message = self.message(&prompt, &attachments, model, run).await;
+        let runner = agent.prompt(message).conversation(id.as_str());
+        let mut stream: StreamingResult = match options.thinking {
+            Some(thinking) => runner.options(GenerationOptions::default().reasoning(thinking)),
+            None => runner,
+        }
+        .stream();
+        loop {
+            match stream.next().await {
+                None => return Ending::Answered,
                 Some(Err(error)) => {
-                    break Ending::Failed {
+                    return Ending::Failed {
                         error: error.to_string(),
                     };
                 }
@@ -247,13 +281,6 @@ impl Host {
                     }
                 }
             }
-        };
-        drop(stream);
-        // Under the lock, so `open` sees either the run or all it saved.
-        let mut threads = self.lock();
-        run.emit(Event::End { ending });
-        if let Some(thread) = threads.get_mut(&id) {
-            thread.run = None;
         }
     }
 

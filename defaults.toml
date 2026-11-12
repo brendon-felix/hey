@@ -64,6 +64,13 @@ history_size = 1000
 # Default: the platform's data directory, under hey/sessions.
 # dir = "~/.hey/sessions"
 
+[shared]
+# A repository of files and directories on the host that every client can
+# attach to a message, as `@shared:path`; mentions without `shared:` attach
+# from the user's own working directory. It need not exist.
+# Default: the platform's data directory, under hey/shared.
+# dir = "~/.hey/shared"
+
 [tools]
 # Run every tool, in every conversation, without asking. Overrides `default`
 # and every rule below, including "deny".

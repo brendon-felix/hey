@@ -30,6 +30,7 @@ pub async fn serve(host: Arc<Host>, config: &config::Server) -> Result<()> {
         .route("/v1/models", get(models))
         .route("/v1/model", get(model))
         .route("/v1/threads", get(threads))
+        .route("/v1/shared", get(shared))
         .route("/v1/threads/{id}", get(open))
         .route("/v1/threads/{id}/run", post(start).delete(stop))
         .route("/v1/threads/{id}/approvals/{approval}", post(answer))
@@ -104,6 +105,10 @@ async fn model(
 
 async fn threads(State(host): State<Arc<Host>>) -> Reply<impl IntoResponse> {
     Ok(Json(host.threads()?))
+}
+
+async fn shared(State(host): State<Arc<Host>>) -> impl IntoResponse {
+    Json(host.shared())
 }
 
 /// The thread's snapshot on the first line, then its run's events, if one is

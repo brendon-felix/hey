@@ -38,6 +38,10 @@ pub enum Event {
     Notice {
         text: String,
     },
+    /// A mention the host resolved attached this to the prompt.
+    Attached {
+        name: String,
+    },
     /// A tool call waits until a client decides it.
     Approval {
         id: ApprovalId,
@@ -98,8 +102,30 @@ pub struct RunOptions {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RunRequest {
     pub prompt: String,
+    /// What the prompt's mentions attach from the user's working directory.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub attachments: Vec<Attachment>,
     #[serde(flatten)]
     pub options: RunOptions,
+}
+
+/// A file or directory a mention attaches, as read where it was found, by
+/// its absolute path there.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum Attachment {
+    File {
+        path: String,
+        text: String,
+    },
+    Directory {
+        path: String,
+        /// Paths under it that git would not ignore, each directory's
+        /// ending in `/`.
+        entries: Vec<String>,
+        /// Whether there were more than `entries`.
+        truncated: bool,
+    },
 }
 
 /// The host's configured model and thinking level.

@@ -19,6 +19,14 @@ Use your tools to read, search and edit files and to run commands whenever the a
 on the user's machine or project, rather than guessing. Keep answers short: they are read in a \
 terminal and rendered as Markdown.";
 
+/// What Zed asks its summarization model when a conversation is mentioned.
+const SUMMARY_PROMPT: &str = "Generate a detailed summary of this conversation. Include:
+1. A brief overview of what was discussed
+2. Key facts or information discovered
+3. Outcomes or conclusions reached
+4. Any action items or next steps if any
+Format it in Markdown with headings and bullet points.";
+
 pub const BUILTIN_TOOLS: [&str; 8] = [
     Read::NAME,
     List::NAME,
@@ -105,6 +113,14 @@ pub fn builder(model: &Model, seen: &Seen, live: Live) -> AgentBuilder {
         .tool(Move::default())
         .tool(Delete::default())
         .tool(shell)
+}
+
+/// A summary of a conversation's `transcript` by `model`, which gets nothing
+/// else: no tools, history or system prompt.
+pub async fn summarize(model: &Model, transcript: &str) -> Result<String> {
+    let summarizer = AgentBuilder::new(model.inner.clone()).build();
+    let request = format!("<conversation>\n{transcript}\n</conversation>\n\n{SUMMARY_PROMPT}");
+    Ok(summarizer.prompt(request).await?.output())
 }
 
 pub fn environment() -> String {

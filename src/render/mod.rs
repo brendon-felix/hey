@@ -15,6 +15,7 @@ use unicode_segmentation::UnicodeSegmentation;
 use yansi::Paint;
 
 use crate::config::Display;
+use crate::mention;
 
 pub use highlight::{Highlighter, themes};
 
@@ -188,6 +189,11 @@ pub fn live_output(text: &str) {
     println!("  {} {}", "│".dim(), line.dim());
 }
 
+/// What a mention attached to the message being sent.
+pub fn attached(target: &dyn std::fmt::Display) {
+    println!("  {} {}", "@".cyan(), target.to_string().dim());
+}
+
 pub fn notice(text: &str) {
     println!("  {}", text.dim());
 }
@@ -201,7 +207,9 @@ pub async fn conversation(messages: &[Message], style: &Style) {
         match message {
             Message::System { .. } => {}
             Message::User { content } => content.iter().for_each(|content| match content {
-                UserContent::Text(text) => user_message(&text.text),
+                UserContent::Text(text) if !mention::is_context(&text.text) => {
+                    user_message(&text.text)
+                }
                 UserContent::ToolResult(result) => tool_result(result),
                 _ => {}
             }),

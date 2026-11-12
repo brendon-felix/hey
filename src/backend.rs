@@ -69,6 +69,14 @@ impl Backend {
         }
     }
 
+    /// Every path of the host's shared repository.
+    pub async fn shared(&self) -> Result<Vec<String>> {
+        match self {
+            Backend::Local(host) => Ok(host.shared()),
+            Backend::Remote(client) => client.shared().await,
+        }
+    }
+
     pub async fn open(&self, id: &SessionId) -> Result<Opened> {
         match self {
             Backend::Local(host) => {
