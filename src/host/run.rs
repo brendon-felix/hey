@@ -49,6 +49,15 @@ impl Run {
         self.history
     }
 
+    pub fn prompt(&self) -> &str {
+        &self.prompt
+    }
+
+    /// Whether a tool call waits for a client to decide it.
+    pub fn asking(&self) -> bool {
+        !self.lock_approvals().is_empty()
+    }
+
     pub fn emit(&self, event: Event) {
         self.log.send_modify(|log| log.push(event));
     }

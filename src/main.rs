@@ -4,6 +4,7 @@
 
 mod agent;
 mod backend;
+mod browser;
 mod client;
 mod config;
 mod host;
@@ -55,9 +56,14 @@ struct Args {
     #[arg(long)]
     config: Option<PathBuf>,
 
-    /// Continue the most recent conversation
+    /// Continue the most recent conversation that is not archived
     #[arg(long, short)]
     resume: bool,
+
+    /// List conversations and what they are doing, to open, archive,
+    /// delete or fork them
+    #[arg(long, short = 'l', conflicts_with_all = ["resume", "interactive", "message"])]
+    threads: bool,
 
     /// Stay in the REPL after answering MESSAGE
     #[arg(long, short)]
@@ -74,7 +80,7 @@ struct Args {
     /// Host the agent for remote clients, as `[server]` configures
     #[arg(
         long,
-        conflicts_with_all = ["prompt_path", "model", "think", "resume", "interactive", "remote", "local", "message"],
+        conflicts_with_all = ["prompt_path", "model", "think", "resume", "threads", "interactive", "remote", "local", "message"],
     )]
     serve: bool,
 
@@ -114,16 +120,14 @@ async fn run(args: Args) -> Result<ExitCode> {
     let defaults = backend.defaults().await?;
     let model = backend.model(args.model.as_deref().unwrap_or(&defaults.model)).await?;
     let thinking = args.think.or(defaults.thinking);
-    let thread = match args.resume {
-        true => backend.threads().await?.into_iter().next().map(|summary| summary.id),
-        false => None,
-    }
-    .unwrap_or_else(|| {
-        if args.resume {
-            render::notice("no saved conversation; starting a new one");
-        }
-        SessionId::new()
-    });
+    let thread = match (args.threads, args.resume) {
+        (true, _) => match browser::browse(&backend, None).await?.open {
+            Some(thread) => thread,
+            None => return Ok(ExitCode::SUCCESS),
+        },
+        (false, true) => latest(&backend).await?,
+        (false, false) => SessionId::new(),
+    };
 
     let style = render::Style::from(&config.display);
     let message = (!args.message.is_empty()).then(|| args.message.join(" "));
@@ -162,6 +166,20 @@ async fn run(args: Args) -> Result<ExitCode> {
             Ok(ExitCode::SUCCESS)
         }
     }
+}
+
+/// The newest conversation that is not archived, else a new one.
+async fn latest(backend: &Backend) -> Result<SessionId> {
+    let latest = backend
+        .threads()
+        .await?
+        .into_iter()
+        .find(|thread| !thread.archived)
+        .map(|thread| thread.summary.id);
+    Ok(latest.unwrap_or_else(|| {
+        render::notice("no saved conversation; starting a new one");
+        SessionId::new()
+    }))
 }
 
 /// The remote that `--remote` or the config names, unless `--local`; else a

@@ -25,7 +25,7 @@ use crate::memory::{self, Memory, Recalled};
 use crate::permissions::{Approval, Origin, Permissions};
 use crate::protocol::{
     ApprovalId, Decision, Defaults, Ending, Event, ModelInfo, RunOptions, RunRequest, ServerReport,
-    Snapshot, Tools,
+    Snapshot, ThreadInfo, ThreadStatus, Tools,
 };
 use crate::render;
 use crate::sessions::{SessionId, Sessions, Summary};
@@ -74,21 +74,21 @@ pub struct Opened {
 }
 
 #[derive(Debug)]
-pub enum StartError {
+pub enum ThreadError {
     Busy,
-    Refused(anyhow::Error),
+    Other(anyhow::Error),
 }
 
-impl fmt::Display for StartError {
+impl fmt::Display for ThreadError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            StartError::Busy => f.write_str("this conversation is already answering"),
-            StartError::Refused(error) => write!(f, "{error:#}"),
+            ThreadError::Busy => f.write_str("this conversation is answering"),
+            ThreadError::Other(error) => write!(f, "{error:#}"),
         }
     }
 }
 
-impl std::error::Error for StartError {}
+impl std::error::Error for ThreadError {}
 
 impl Host {
     /// Opens the sessions store and connects every MCP server.
@@ -134,8 +134,66 @@ impl Host {
         agent::available_models()
     }
 
-    pub fn threads(&self) -> Result<Vec<Summary>> {
-        self.sessions.list()
+    /// Every conversation, newest first: those saved, and those whose first
+    /// answer is still running.
+    pub fn threads(&self) -> Result<Vec<ThreadInfo>> {
+        let mut summaries = self.sessions.list()?;
+        let marks = self.sessions.marks()?;
+        let threads = self.lock();
+        let unsaved: Vec<Summary> = threads
+            .iter()
+            .filter_map(|(id, thread)| Some((id, thread.run.as_ref()?)))
+            .filter(|(id, _)| !summaries.iter().any(|summary| &summary.id == *id))
+            .map(|(id, run)| Summary {
+                id: id.clone(),
+                title: rig_memory::title_of(run.prompt()),
+            })
+            .collect();
+        summaries.extend(unsaved);
+        summaries.sort_unstable_by(|a, b| b.id.cmp(&a.id));
+        Ok(summaries
+            .into_iter()
+            .map(|summary| {
+                let mark = marks.get(&summary.id).copied().unwrap_or_default();
+                let run = threads.get(&summary.id).and_then(|thread| thread.run.as_ref());
+                let status = match run {
+                    Some(run) if run.asking() => ThreadStatus::Asking,
+                    Some(_) => ThreadStatus::Running,
+                    None if mark.unseen => ThreadStatus::Unseen,
+                    None => ThreadStatus::Idle,
+                };
+                ThreadInfo {
+                    summary,
+                    status,
+                    archived: mark.archived,
+                }
+            })
+            .collect())
+    }
+
+    /// A client showed the thread up to its latest answer.
+    pub fn viewed(&self, id: &SessionId) -> Result<()> {
+        self.sessions.mark(id, |mark| mark.unseen = false)
+    }
+
+    pub fn archive(&self, id: &SessionId, archived: bool) -> Result<()> {
+        self.sessions.mark(id, |mark| mark.archived = archived)
+    }
+
+    /// Starts a new thread as a copy of what `id` saved, returning its id.
+    pub fn fork(&self, id: &SessionId) -> Result<SessionId> {
+        self.sessions.fork(id)
+    }
+
+    /// Removes the thread, unless it is answering.
+    pub fn delete(&self, id: &SessionId) -> Result<(), ThreadError> {
+        let mut threads = self.lock();
+        if threads.get(id).is_some_and(|thread| thread.run.is_some()) {
+            return Err(ThreadError::Busy);
+        }
+        threads.remove(id);
+        self.sessions.delete(id).map_err(ThreadError::Other)?;
+        Ok(())
     }
 
     pub fn open(&self, id: &SessionId) -> Result<Opened> {
@@ -161,9 +219,9 @@ impl Host {
         self: &Arc<Self>,
         id: SessionId,
         request: RunRequest,
-    ) -> Result<Events, StartError> {
+    ) -> Result<Events, ThreadError> {
         let model = Model::connect(&request.options.model, &self.providers)
-            .map_err(StartError::Refused)?;
+            .map_err(ThreadError::Other)?;
         let known = self.lock().contains_key(&id);
         let memories = match known {
             true => Vec::new(),
@@ -177,12 +235,12 @@ impl Host {
             run: None,
         });
         if thread.run.is_some() {
-            return Err(StartError::Busy);
+            return Err(ThreadError::Busy);
         }
         let history = self
             .sessions
             .messages(&id)
-            .map_err(StartError::Refused)?
+            .map_err(ThreadError::Other)?
             .len();
         let run = Arc::new(Run::new(request.prompt.clone(), history));
         if let Some(failure) = self.take_memory_failure() {
@@ -293,8 +351,14 @@ impl Host {
         };
         let answered = matches!(ending, Ending::Answered);
         {
-            // Under the lock, so `open` sees either the run or all it saved.
+            // Under the lock, so `open` sees either the run or all it saved,
+            // and the thread is marked before any client hears it ended.
             let mut threads = self.lock();
+            if let Err(error) = self.sessions.mark(&id, |mark| mark.unseen = true) {
+                run.emit(Event::Notice {
+                    text: format!("not marked as new: {error:#}"),
+                });
+            }
             run.emit(Event::End { ending });
             if let Some(thread) = threads.get_mut(&id) {
                 thread.run = None;

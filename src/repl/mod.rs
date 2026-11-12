@@ -13,6 +13,7 @@ use anyhow::Result;
 use yansi::Paint;
 
 use crate::backend::Backend;
+use crate::browser;
 use crate::config::Thinking;
 use crate::permissions::Permission;
 use crate::protocol::{ModelInfo, RunOptions, Snapshot};
@@ -139,7 +140,7 @@ impl Repl {
         let (threads, shared) = tokio::join!(self.backend.threads(), self.backend.shared());
         let mut index = mentions::lock(&self.index);
         match threads {
-            Ok(threads) => index.threads = threads,
+            Ok(threads) => index.threads = threads.into_iter().map(|thread| thread.summary).collect(),
             Err(error) => render::notice(&format!("no conversation completions: {error:#}")),
         }
         match shared {
@@ -157,7 +158,8 @@ impl Repl {
                 self.show_status(None);
                 println!("{}\n", "Started a new conversation.".bold());
             }
-            Command::Resume => self.resume().await?,
+            Command::Threads => self.browse().await?,
+            Command::Fork => self.fork().await?,
             Command::History => self.show_thread(true).await,
             Command::Model(reference) => self.switch_model(reference).await?,
             Command::Think(level) => self.set_thinking(level)?,
@@ -171,20 +173,36 @@ impl Repl {
         Ok(())
     }
 
-    async fn resume(&mut self) -> Result<()> {
-        let summaries = self.backend.threads().await?;
-        if summaries.is_empty() {
-            println!("{}\n", "No saved conversations yet.".bold());
-            return Ok(());
+    /// Lists the host's conversations to open one, and leaves this one if
+    /// it was deleted there.
+    async fn browse(&mut self) -> Result<()> {
+        let browsed = browser::browse(&self.backend, Some(&self.thread)).await?;
+        match browsed.open {
+            Some(thread) => {
+                self.thread = thread;
+                self.show_status(None);
+                self.show_thread(true).await;
+            }
+            None if browsed.deleted.contains(&self.thread) => {
+                self.thread = SessionId::new();
+                self.show_status(None);
+                println!("{}\n", "Deleted this conversation; started a new one.".bold());
+            }
+            None => {}
         }
-        let items: Vec<String> = summaries.iter().map(ToString::to_string).collect();
-        if let Some(index) = ui::pick("Resume a conversation", &items, 0)?
-            && let Some(summary) = summaries.into_iter().nth(index)
-        {
-            self.thread = summary.id;
-            self.show_status(None);
-            self.show_thread(true).await;
-        }
+        self.indexed = None;
+        Ok(())
+    }
+
+    /// Goes on in a copy of this conversation, leaving the original as it is.
+    async fn fork(&mut self) -> Result<()> {
+        self.thread = self.backend.fork(&self.thread).await?;
+        self.show_status(None);
+        self.indexed = None;
+        println!(
+            "{}\n",
+            "Forked this conversation; you are now in the copy.".bold()
+        );
         Ok(())
     }
 
@@ -206,6 +224,8 @@ impl Repl {
             render::user_message(&running.prompt);
             let turn = turn::follow(&self.backend, &self.thread, events, &self.style).await;
             self.update_context(&turn);
+        } else {
+            turn::viewed(&self.backend, &self.thread).await;
         }
     }
 

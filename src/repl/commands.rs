@@ -6,7 +6,8 @@
 pub enum Command {
     Help,
     New,
-    Resume,
+    Threads,
+    Fork,
     History,
     Model(Option<String>),
     Think(Option<String>),
@@ -69,11 +70,18 @@ pub const COMMANDS: &[Spec] = &[
         build: |_| Command::New,
     },
     Spec {
-        name: "resume",
-        aliases: &["load", "l"],
+        name: "threads",
+        aliases: &["resume", "load", "l"],
         arg: None,
-        about: "Continue a saved conversation",
-        build: |_| Command::Resume,
+        about: "Browse, open, archive and delete conversations",
+        build: |_| Command::Threads,
+    },
+    Spec {
+        name: "fork",
+        aliases: &[],
+        arg: None,
+        about: "Continue in a copy of this conversation",
+        build: |_| Command::Fork,
     },
     Spec {
         name: "history",

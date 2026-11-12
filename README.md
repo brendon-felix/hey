@@ -13,7 +13,8 @@ of `hey` is on ease of use, speed, and a pleasant terminal experience.
   live command output
 - [MCP](https://modelcontextprotocol.io) servers, local (stdio) or remote (streamable HTTP)
 - Per-tool permissions: allow, confirm, or deny
-- Conversations saved automatically and resumable with `/resume` or `hey --resume`
+- Conversations saved automatically, with a list that shows which are answering and which have an
+  answer you have not seen, to open, archive, delete or fork them
 - Memory across conversations: lasting facts about you and your work are learned from answers and
   recalled when a conversation starts
 - Remote hosting: run the agent and keep conversations on a server, and pick them up from any
@@ -42,6 +43,7 @@ hey                                   # interactive REPL
 hey who was Ada Lovelace?             # one answer, then exit
 hey -i explain this repo              # answer, then stay in the REPL
 hey -r what did we decide?            # continue the most recent conversation
+hey -l                                # list conversations to open, archive, delete or fork
 hey -m anthropic/claude-opus-5-5 hi   # use another model
 hey -t high prove it                  # set the thinking level (off, minimal…max)
 hey -p ~/prompts/reviewer.txt         # system prompt from a file
@@ -57,7 +59,8 @@ Type `/` or press Tab to see commands; the status line describes the one you are
 | --- | --- |
 | `/help`, `/h` | Show commands and shortcuts |
 | `/new`, `/reset`, `/r` | Start a new conversation |
-| `/resume`, `/load`, `/l` | Continue a saved conversation, following its answer if one is running |
+| `/threads`, `/resume`, `/load`, `/l` | List conversations to open, archive, delete or fork |
+| `/fork` | Continue in a copy of this conversation, leaving the original as it is |
 | `/history` | Show this conversation |
 | `/model [vendor/model]`, `/m` | Switch model |
 | `/think [level]` | Set thinking: `off`, `minimal`…`max`, or `default` |
@@ -98,6 +101,33 @@ work in one-shot messages too: `hey review @src/main.rs`.
 | Alt+Enter | Insert a newline |
 | Ctrl+C | Clear the line, or stop a running answer |
 | Ctrl+D | Exit |
+
+### Conversations
+
+`hey -l` or `/threads` lists conversations, newest first, with what each is doing:
+
+| Mark | Meaning |
+| --- | --- |
+| spinner | Answering, whether or not any terminal is following it |
+| `?` | Waiting for a tool call to be approved |
+| `●` | Finished an answer you have not seen yet |
+
+An answer carries on if you close the terminal that asked; its conversation shows `●` until you
+open it. Opening a conversation that is still answering follows the answer live.
+
+| Keys | Action |
+| --- | --- |
+| ↑ ↓, `j` `k`, `g` `G` | Move |
+| Enter | Open the conversation |
+| `a` | Archive it, or restore it among the archived |
+| `d` | Delete it, after you confirm with `y` |
+| `f` | Fork it: a copy to continue apart |
+| Tab | Switch between the conversations and the archived ones |
+| `/` | Filter by title; Esc clears it |
+| `q`, Esc | Close the list |
+
+With a remote, the list is the host's, so every machine sees the same conversations and marks.
+`hey -r` skips archived conversations.
 
 ## Configuration
 

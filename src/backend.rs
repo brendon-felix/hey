@@ -11,9 +11,9 @@ use futures::stream::BoxStream;
 use crate::client::Client;
 use crate::host::{self, Host};
 use crate::protocol::{
-    ApprovalId, Decision, Defaults, Event, ModelInfo, RunRequest, Snapshot, Tools,
+    ApprovalId, Decision, Defaults, Event, ModelInfo, RunRequest, Snapshot, ThreadInfo, Tools,
 };
-use crate::sessions::{SessionId, Summary};
+use crate::sessions::SessionId;
 
 pub type Events = BoxStream<'static, Result<Event>>;
 
@@ -61,11 +61,42 @@ impl Backend {
         }
     }
 
-    /// Every saved thread, newest first.
-    pub async fn threads(&self) -> Result<Vec<Summary>> {
+    /// Every thread with its status, newest first.
+    pub async fn threads(&self) -> Result<Vec<ThreadInfo>> {
         match self {
             Backend::Local(host) => host.threads(),
             Backend::Remote(client) => client.threads().await,
+        }
+    }
+
+    /// Tells the host the thread was shown up to its latest answer.
+    pub async fn viewed(&self, id: &SessionId) -> Result<()> {
+        match self {
+            Backend::Local(host) => host.viewed(id),
+            Backend::Remote(client) => client.viewed(id).await,
+        }
+    }
+
+    pub async fn archive(&self, id: &SessionId, archived: bool) -> Result<()> {
+        match self {
+            Backend::Local(host) => host.archive(id, archived),
+            Backend::Remote(client) => client.archive(id, archived).await,
+        }
+    }
+
+    /// A new thread holding a copy of what `id` saved.
+    pub async fn fork(&self, id: &SessionId) -> Result<SessionId> {
+        match self {
+            Backend::Local(host) => host.fork(id),
+            Backend::Remote(client) => client.fork(id).await,
+        }
+    }
+
+    /// Removes the thread, unless it is answering.
+    pub async fn delete(&self, id: &SessionId) -> Result<()> {
+        match self {
+            Backend::Local(host) => Ok(host.delete(id)?),
+            Backend::Remote(client) => client.delete(id).await,
         }
     }
 

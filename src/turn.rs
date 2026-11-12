@@ -61,13 +61,14 @@ pub async fn run(backend: &Backend, thread: &SessionId, request: RunRequest, sty
 }
 
 /// Draws a run's events, tool calls included, and answers its approvals,
-/// until it finishes, fails, or Ctrl+C stops it.
+/// until it finishes, fails, or Ctrl+C stops it. A run seen to its end
+/// is no longer new to the host.
 pub async fn follow(backend: &Backend, thread: &SessionId, mut events: Events, style: &Style) -> Turn {
-    let mut context = None;
+    let mut seen = Seen::default();
     let mut stream = Stream::new(style);
     print!("{}", cursor::Hide);
     let shown = tokio::select! {
-        outcome = show(backend, thread, &mut events, &mut stream, &mut context) => Some(outcome),
+        outcome = show(backend, thread, &mut events, &mut stream, &mut seen) => Some(outcome),
         Ok(()) = tokio::signal::ctrl_c() => None,
     };
     stream.settle();
@@ -75,15 +76,36 @@ pub async fn follow(backend: &Backend, thread: &SessionId, mut events: Events, s
         Some(outcome) => outcome,
         None => {
             println!();
-            stop(backend, thread, events).await
+            stop(backend, thread, events, &mut seen).await
         }
     };
     if let Outcome::Interrupted = outcome {
         render::notice("interrupted");
     }
+    if seen.ended {
+        viewed(backend, thread).await;
+    }
     print!("{}", cursor::Show);
     println!();
-    Turn { outcome, context }
+    Turn {
+        outcome,
+        context: seen.context,
+    }
+}
+
+/// Tells the host the thread was shown up to its latest answer.
+pub async fn viewed(backend: &Backend, thread: &SessionId) {
+    if let Err(error) = backend.viewed(thread).await {
+        render::notice(&format!("still marked as new: {error:#}"));
+    }
+}
+
+/// What following a run learned besides its outcome.
+#[derive(Default)]
+struct Seen {
+    context: Option<u64>,
+    /// Whether the run's end arrived, rather than its events stopping.
+    ended: bool,
 }
 
 async fn show(
@@ -91,7 +113,7 @@ async fn show(
     thread: &SessionId,
     events: &mut Events,
     stream: &mut Stream,
-    context: &mut Option<u64>,
+    seen: &mut Seen,
 ) -> Outcome {
     let mut frames = tokio::time::interval(render::FRAME);
     frames.set_missed_tick_behavior(MissedTickBehavior::Skip);
@@ -121,10 +143,11 @@ async fn show(
             Event::Reasoning { text } => stream.reasoning(text),
             Event::PartEnd => stream.end_part(),
             Event::Decided { .. } => {}
-            Event::Context { tokens } => *context = Some(tokens),
+            Event::Context { tokens } => seen.context = Some(tokens),
             event => {
                 stream.settle();
                 if let Some(outcome) = report(backend, thread, event).await {
+                    seen.ended = true;
                     return outcome;
                 }
             }
@@ -133,7 +156,7 @@ async fn show(
 }
 
 /// Prints an event that is not part of the reply's text, and how the run
-/// ended if it did.
+/// ended if it did: only its end returns an outcome.
 async fn report(backend: &Backend, thread: &SessionId, event: Event) -> Option<Outcome> {
     match event {
         Event::ToolCall { name, args } => render::tool_call(&name, &args),
@@ -170,13 +193,14 @@ async fn report(backend: &Backend, thread: &SessionId, event: Event) -> Option<O
 
 /// Stops the run, then waits for its end without drawing the rest, so the
 /// thread is free for the next message.
-async fn stop(backend: &Backend, thread: &SessionId, mut events: Events) -> Outcome {
+async fn stop(backend: &Backend, thread: &SessionId, mut events: Events, seen: &mut Seen) -> Outcome {
     if let Err(error) = backend.stop(thread).await {
         render::error(&format!("{error:#}"));
         return Outcome::Interrupted;
     }
     while let Some(Ok(event)) = events.next().await {
         if let Event::End { .. } = event {
+            seen.ended = true;
             break;
         }
     }

@@ -10,6 +10,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::config::Thinking;
 use crate::permissions::Permission;
+use crate::sessions::Summary;
 
 /// What happens during a run, in order. Every client following a thread
 /// draws the same events, whichever of them started the run.
@@ -152,6 +153,28 @@ pub struct Snapshot {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Running {
     pub prompt: String,
+}
+
+/// A conversation as a listing shows it.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ThreadInfo {
+    #[serde(flatten)]
+    pub summary: Summary,
+    pub status: ThreadStatus,
+    #[serde(default)]
+    pub archived: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ThreadStatus {
+    /// Nothing new since a client last showed it.
+    Idle,
+    /// An answer ended that no client has shown yet.
+    Unseen,
+    Running,
+    /// The run waits for a client to approve a tool call.
+    Asking,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

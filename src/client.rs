@@ -15,9 +15,9 @@ use tokio_util::io::StreamReader;
 use crate::backend::{Events, Opened};
 use crate::config::{self, Remote};
 use crate::protocol::{
-    ApprovalId, Decision, Defaults, Event, ModelInfo, RunRequest, Snapshot, Tools,
+    ApprovalId, Decision, Defaults, Event, ModelInfo, RunRequest, Snapshot, ThreadInfo, Tools,
 };
-use crate::sessions::{SessionId, Summary};
+use crate::sessions::SessionId;
 use crate::{render, token, ui};
 
 /// A host served by `hey --serve` on another machine.
@@ -110,8 +110,30 @@ impl Client {
         self.json(self.get("v1/models")?).await
     }
 
-    pub async fn threads(&self) -> Result<Vec<Summary>> {
+    pub async fn threads(&self) -> Result<Vec<ThreadInfo>> {
         self.json(self.get("v1/threads")?).await
+    }
+
+    pub async fn viewed(&self, id: &SessionId) -> Result<()> {
+        let path = format!("v1/threads/{}/viewed", id.as_str());
+        self.ok(self.http.post(self.url(&path)?)).await.map(drop)
+    }
+
+    pub async fn archive(&self, id: &SessionId, archived: bool) -> Result<()> {
+        let path = format!("v1/threads/{}/archived", id.as_str());
+        self.ok(self.http.put(self.url(&path)?).json(&archived))
+            .await
+            .map(drop)
+    }
+
+    pub async fn fork(&self, id: &SessionId) -> Result<SessionId> {
+        let path = format!("v1/threads/{}/fork", id.as_str());
+        self.json(self.http.post(self.url(&path)?)).await
+    }
+
+    pub async fn delete(&self, id: &SessionId) -> Result<()> {
+        let path = format!("v1/threads/{}", id.as_str());
+        self.ok(self.http.delete(self.url(&path)?)).await.map(drop)
     }
 
     pub async fn shared(&self) -> Result<Vec<String>> {

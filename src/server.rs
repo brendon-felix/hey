@@ -13,13 +13,13 @@ use axum::extract::{Path, Query, Request, State};
 use axum::http::{StatusCode, header};
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
-use axum::routing::{get, post};
+use axum::routing::{get, post, put};
 use axum::{Json, Router};
 use futures::{Stream, StreamExt, stream};
 use serde::{Deserialize, Serialize};
 
 use crate::{config, token};
-use crate::host::{Host, StartError};
+use crate::host::{Host, ThreadError};
 use crate::protocol::{ApprovalId, Decision, RunRequest};
 use crate::sessions::SessionId;
 
@@ -31,8 +31,11 @@ pub async fn serve(host: Arc<Host>, config: &config::Server) -> Result<()> {
         .route("/v1/model", get(model))
         .route("/v1/threads", get(threads))
         .route("/v1/shared", get(shared))
-        .route("/v1/threads/{id}", get(open))
+        .route("/v1/threads/{id}", get(open).delete(delete))
         .route("/v1/threads/{id}/run", post(start).delete(stop))
+        .route("/v1/threads/{id}/viewed", post(viewed))
+        .route("/v1/threads/{id}/archived", put(archive))
+        .route("/v1/threads/{id}/fork", post(fork))
         .route("/v1/threads/{id}/approvals/{approval}", post(answer))
         .route("/v1/threads/{id}/tools", get(tools))
         .route("/v1/memories", get(memories).delete(forget))
@@ -129,8 +132,8 @@ async fn start(
     Json(request): Json<RunRequest>,
 ) -> Reply<Response> {
     let events = host.start(id, request).await.map_err(|error| match error {
-        StartError::Busy => Failure(StatusCode::CONFLICT, error.to_string()),
-        StartError::Refused(_) => Failure(StatusCode::BAD_REQUEST, error.to_string()),
+        ThreadError::Busy => Failure(StatusCode::CONFLICT, error.to_string()),
+        ThreadError::Other(_) => Failure(StatusCode::BAD_REQUEST, error.to_string()),
     })?;
     Ok(ndjson_response(ndjson(events)))
 }
@@ -140,6 +143,35 @@ async fn stop(State(host): State<Arc<Host>>, Path(id): Path<SessionId>) -> Statu
         true => StatusCode::NO_CONTENT,
         false => StatusCode::NOT_FOUND,
     }
+}
+
+async fn viewed(State(host): State<Arc<Host>>, Path(id): Path<SessionId>) -> Reply<StatusCode> {
+    host.viewed(&id)?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+async fn archive(
+    State(host): State<Arc<Host>>,
+    Path(id): Path<SessionId>,
+    Json(archived): Json<bool>,
+) -> Reply<StatusCode> {
+    host.archive(&id, archived)?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+async fn fork(State(host): State<Arc<Host>>, Path(id): Path<SessionId>) -> Reply<impl IntoResponse> {
+    let copy = host
+        .fork(&id)
+        .map_err(|error| Failure(StatusCode::BAD_REQUEST, format!("{error:#}")))?;
+    Ok(Json(copy))
+}
+
+async fn delete(State(host): State<Arc<Host>>, Path(id): Path<SessionId>) -> Reply<StatusCode> {
+    host.delete(&id).map_err(|error| match error {
+        ThreadError::Busy => Failure(StatusCode::CONFLICT, error.to_string()),
+        ThreadError::Other(_) => Failure(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()),
+    })?;
+    Ok(StatusCode::NO_CONTENT)
 }
 
 async fn answer(
