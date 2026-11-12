@@ -18,13 +18,13 @@ use axum::{Json, Router};
 use futures::{Stream, StreamExt, stream};
 use serde::{Deserialize, Serialize};
 
-use crate::config;
+use crate::{config, token};
 use crate::host::{Host, StartError};
 use crate::protocol::{ApprovalId, Decision, RunRequest};
 use crate::sessions::SessionId;
 
 pub async fn serve(host: Arc<Host>, config: &config::Server) -> Result<()> {
-    let token: Arc<str> = config.token()?.into();
+    let token: Arc<str> = token::host(&config.token)?.into();
     let app = Router::new()
         .route("/v1/defaults", get(defaults))
         .route("/v1/models", get(models))

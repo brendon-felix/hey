@@ -198,14 +198,15 @@ Start a conversation on your laptop, close it, and continue it from your desktop
 carries on without a client. Opening the conversation elsewhere replays the answer so far, then
 follows it live. Tool calls that need confirming wait until any client answers them.
 
-On the server, set a token and an address, then run `hey --serve` in the directory the agent
-should work in:
+On the server, set the address and run `hey --serve` in the directory the agent should work in:
 
 ```toml
 [server]
 listen = "0.0.0.0:7700"
-token = "${HEY_TOKEN}"
 ```
+
+The first start generates a token and says where it saved it, `hey/server-token` in the data
+directory (`~/.local/share` on Linux). Clients need that token.
 
 On each client, name the server and make it the default:
 
@@ -214,7 +215,23 @@ remote = "fermi"
 
 [remotes.fermi]
 url = "http://fermi:7700"
-token = "${HEY_TOKEN}"
+```
+
+The first time a client connects, it asks for the token and keeps it in the system keychain. Where
+there is none, as on a server without a desktop session, it keeps it in a private file in the data
+directory.
+
+To manage the token yourself, set `token_file` on both sides, or `token`, which may name
+environment variables. A `token_file` in a folder synced between your machines needs no copying:
+the server generates the token there, and clients read it from their copy.
+
+```toml
+[server]
+token_file = "~/Sync/hey-token"    # or token = "${HEY_TOKEN}"
+
+[remotes.fermi]
+url = "http://fermi:7700"
+token_file = "~/Sync/hey-token"
 ```
 
 With a remote, everything about the agent comes from the server's config and environment: model

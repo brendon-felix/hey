@@ -18,6 +18,7 @@ use crate::protocol::{
     ApprovalId, Decision, Defaults, Event, ModelInfo, RunRequest, Snapshot, Tools,
 };
 use crate::sessions::{SessionId, Summary};
+use crate::{render, token, ui};
 
 /// A host served by `hey --serve` on another machine.
 pub struct Client {
@@ -28,7 +29,9 @@ pub struct Client {
 }
 
 impl Client {
-    pub fn new(name: &str, remote: &Remote) -> Result<Self> {
+    /// Connects with the token `remote` configures, else the one hey kept,
+    /// else one the user enters, which hey keeps once the host accepts it.
+    pub async fn connect(name: &str, remote: &Remote) -> Result<Self> {
         let mut url = config::expand(&remote.url)?;
         if !url.ends_with('/') {
             url.push('/');
@@ -37,12 +40,57 @@ impl Client {
         let http = reqwest::Client::builder()
             .connect_timeout(Duration::from_secs(10))
             .build()?;
-        Ok(Self {
+        let mut client = Self {
             name: name.to_owned(),
             base,
-            token: config::expand(&remote.token)?,
+            token: String::new(),
             http,
-        })
+        };
+        if let Some(token) = token::configured(&remote.token)? {
+            client.token = token;
+            if !client.accepted().await? {
+                bail!(
+                    "remote `{name}` refused the token from {}",
+                    token::describe(&remote.token)
+                );
+            }
+            return Ok(client);
+        }
+        let mut kept = token::kept(name)?;
+        loop {
+            let entered = kept.is_none();
+            client.token = match kept.take() {
+                Some(token) => token,
+                None => client.ask()?,
+            };
+            if client.accepted().await? {
+                if entered {
+                    let place = token::keep(name, &client.token)?;
+                    render::notice(&format!("kept the token for `{name}` in {place}"));
+                }
+                return Ok(client);
+            }
+            render::notice(&format!("remote `{name}` refused the token"));
+        }
+    }
+
+    fn ask(&self) -> Result<String> {
+        let name = &self.name;
+        let why = format!(
+            "no token for remote `{name}`: run hey in a terminal to enter it, \
+             or set `token` or `token_file` in `[remotes.{name}]`"
+        );
+        ui::secret(&format!("Token for `{name}` (from the host's token file)"), &why)?
+            .with_context(|| format!("no token entered for remote `{name}`"))
+    }
+
+    /// Whether the host accepts the token.
+    async fn accepted(&self) -> Result<bool> {
+        let response = self.send(self.get("v1/defaults")?).await?;
+        match response.status() {
+            StatusCode::UNAUTHORIZED => Ok(false),
+            _ => self.check(response).await.map(|_| true),
+        }
     }
 
     pub fn name(&self) -> &str {

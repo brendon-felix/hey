@@ -2,10 +2,10 @@
 /*                                   ui.rs                                    */
 /* -------------------------------------------------------------------------- */
 
-use std::io::ErrorKind;
+use std::io::{ErrorKind, IsTerminal};
 
-use anyhow::Result;
-use dialoguer::{FuzzySelect, Select, theme::ColorfulTheme};
+use anyhow::{Result, bail};
+use dialoguer::{FuzzySelect, Password, Select, theme::ColorfulTheme};
 
 use crate::protocol::Decision;
 
@@ -25,6 +25,19 @@ pub async fn confirm_tool(tool: String) -> Decision {
         Ok(Ok(_)) => Decision::Decline,
         _ => Decision::Stop,
     }
+}
+
+/// Asks for a secret without showing it; `None` when nothing is entered.
+/// `why_needed` explains the failure when there is no terminal to ask in.
+pub fn secret(prompt: &str, why_needed: &str) -> Result<Option<String>> {
+    if !std::io::stdin().is_terminal() {
+        bail!("{why_needed}");
+    }
+    let secret = Password::with_theme(&ColorfulTheme::default())
+        .with_prompt(prompt)
+        .allow_empty_password(true)
+        .interact()?;
+    Ok(Some(secret.trim().to_owned()).filter(|secret| !secret.is_empty()))
 }
 
 /// Picks one of `items`, starting at `current`; `None` when cancelled with

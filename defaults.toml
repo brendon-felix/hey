@@ -134,17 +134,26 @@ search = "allow"
 # every machine using it sees the same ones. This file still sets the display
 # and editor. `remote` picks one for every run; `hey --remote NAME` for one
 # run, and `hey --local` ignores it.
+#
+# The host's token comes from `token`, which may name environment variables,
+# or `token_file`, a file holding just the token. With neither, hey asks for
+# it the first time and keeps it in the system keychain, or a private file in
+# the data directory where there is none.
 # remote = "fermi"
 #
 # [remotes.fermi]
 # url = "http://fermi:7700"
-# token = "${HEY_TOKEN}"
+# token_file = "~/Sync/hey-token"
 
 # How `hey --serve` hosts the agent for remote clients. It runs tools on this
-# machine for anyone holding the token, so it requires one. There is no TLS:
-# reach it over a private network (Tailscale, WireGuard, an SSH tunnel) or put
-# an HTTPS reverse proxy in front of it.
+# machine for anyone holding the token. There is no TLS: reach it over a
+# private network (Tailscale, WireGuard, an SSH tunnel) or put an HTTPS reverse
+# proxy in front of it.
 [server]
 # Address to listen on; "0.0.0.0:7700" for every interface.
 listen = "127.0.0.1:7700"
-# token = "${HEY_TOKEN}"
+# The token clients must present: `token`, which may name environment
+# variables, or `token_file`. A token file that does not exist is generated,
+# so one in a folder synced to the clients needs no copying. With neither,
+# the token is generated in the data directory's hey/server-token.
+# token_file = "~/Sync/hey-token"

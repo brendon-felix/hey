@@ -16,6 +16,7 @@ mod render;
 mod repl;
 mod server;
 mod sessions;
+mod token;
 mod turn;
 mod ui;
 
@@ -176,7 +177,7 @@ async fn connect(args: &Args, config: &Config) -> Result<Backend> {
                 .remotes
                 .get(name)
                 .with_context(|| format!("no remote `{name}` in `[remotes]`"))?;
-            Ok(Backend::Remote(Client::new(name, remote)?))
+            Ok(Backend::Remote(Client::connect(name, remote).await?))
         }
         None => Ok(Backend::Local(Arc::new(Host::new(config).await?))),
     }

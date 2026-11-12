@@ -4,7 +4,7 @@
 
 use std::collections::BTreeMap;
 use std::fs;
-use std::net::{Ipv4Addr, SocketAddr};
+use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
@@ -210,9 +210,9 @@ impl Sessions {
     pub fn dir(&self) -> Result<PathBuf> {
         match &self.dir {
             Some(dir) => expand_path(dir),
-            None => dirs::data_dir()
-                .map(|dir| dir.join("hey").join("sessions"))
-                .context("no data directory on this platform; set `sessions.dir`"),
+            None => data_dir()
+                .map(|dir| dir.join("sessions"))
+                .context("set `sessions.dir`"),
         }
     }
 }
@@ -228,9 +228,9 @@ impl Shared {
     pub fn dir(&self) -> Result<PathBuf> {
         match &self.dir {
             Some(dir) => expand_path(dir),
-            None => dirs::data_dir()
-                .map(|dir| dir.join("hey").join("shared"))
-                .context("no data directory on this platform; set `shared.dir`"),
+            None => data_dir()
+                .map(|dir| dir.join("shared"))
+                .context("set `shared.dir`"),
         }
     }
 }
@@ -264,9 +264,9 @@ impl Memory {
     pub fn file(&self) -> Result<PathBuf> {
         match &self.file {
             Some(file) => expand_path(file),
-            None => dirs::data_dir()
-                .map(|dir| dir.join("hey").join("memories.md"))
-                .context("no data directory on this platform; set `memory.file`"),
+            None => data_dir()
+                .map(|dir| dir.join("memories.md"))
+                .context("set `memory.file`"),
         }
     }
 }
@@ -379,45 +379,110 @@ impl TryFrom<RawMcpServer> for McpServer {
 
 /// A host that runs the agent and keeps its threads, reached by `hey --remote`.
 #[derive(Debug, Clone, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[serde(try_from = "RawRemote")]
 pub struct Remote {
     pub url: String,
-    pub token: String,
+    pub token: TokenSource,
 }
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawRemote {
+    url: String,
+    token: Option<String>,
+    token_file: Option<String>,
+}
+
+impl TryFrom<RawRemote> for Remote {
+    type Error = &'static str;
+
+    fn try_from(raw: RawRemote) -> Result<Self, Self::Error> {
+        Ok(Self {
+            url: raw.url,
+            token: TokenSource::new(raw.token, raw.token_file)?,
+        })
+    }
+}
+
+const DEFAULT_LISTEN: SocketAddr = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 7700);
 
 /// How `hey --serve` hosts the agent for remote clients.
 #[derive(Debug, Deserialize)]
-#[serde(default, deny_unknown_fields)]
+#[serde(try_from = "RawServer")]
 pub struct Server {
     pub listen: SocketAddr,
-    token: Option<String>,
+    pub token: TokenSource,
 }
 
 impl Default for Server {
     fn default() -> Self {
         Self {
-            listen: (Ipv4Addr::LOCALHOST, 7700).into(),
-            token: None,
+            listen: DEFAULT_LISTEN,
+            token: TokenSource::Kept,
         }
     }
 }
 
-impl Server {
-    /// The token clients must present. There is no default: a host runs
-    /// tools on its machine for whoever reaches it.
-    pub fn token(&self) -> Result<String> {
-        let token = self
-            .token
-            .as_deref()
-            .context("set `server.token`, e.g. token = \"${HEY_TOKEN}\"")?;
-        let token = expand(token)?;
-        anyhow::ensure!(!token.trim().is_empty(), "`server.token` is empty");
-        Ok(token)
+#[derive(Deserialize)]
+#[serde(default, deny_unknown_fields)]
+struct RawServer {
+    listen: SocketAddr,
+    token: Option<String>,
+    token_file: Option<String>,
+}
+
+impl Default for RawServer {
+    fn default() -> Self {
+        Self {
+            listen: DEFAULT_LISTEN,
+            token: None,
+            token_file: None,
+        }
+    }
+}
+
+impl TryFrom<RawServer> for Server {
+    type Error = &'static str;
+
+    fn try_from(raw: RawServer) -> Result<Self, Self::Error> {
+        Ok(Self {
+            listen: raw.listen,
+            token: TokenSource::new(raw.token, raw.token_file)?,
+        })
+    }
+}
+
+/// Where the token a host and its clients share comes from.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TokenSource {
+    /// `token`: the token itself, which may name environment variables.
+    Value(String),
+    /// `token_file`: a file holding just the token, such as one in a folder
+    /// synced between the host and its clients.
+    File(String),
+    /// Neither: hey keeps the token itself.
+    Kept,
+}
+
+impl TokenSource {
+    fn new(token: Option<String>, token_file: Option<String>) -> Result<Self, &'static str> {
+        match (token, token_file) {
+            (Some(_), Some(_)) => Err("set either `token` or `token_file`, not both"),
+            (Some(token), None) => Ok(Self::Value(token)),
+            (None, Some(path)) => Ok(Self::File(path)),
+            (None, None) => Ok(Self::Kept),
+        }
     }
 }
 
 pub fn config_dir() -> Option<PathBuf> {
     dirs::config_dir().map(|dir| dir.join("hey"))
+}
+
+pub fn data_dir() -> Result<PathBuf> {
+    dirs::data_dir()
+        .map(|dir| dir.join("hey"))
+        .context("no data directory on this platform")
 }
 
 pub fn cache_dir() -> Option<PathBuf> {
@@ -501,5 +566,28 @@ mod tests {
         assert!(error("wrap_width = 80").contains("unknown field"));
         assert!(error("[tools]\ndefault = \"maybe\"").contains("unknown variant"));
         assert!(error("thinking = \"huge\"").contains("unknown variant"));
+        assert!(error("[server]\ntoken = \"t\"\ntoken_file = \"f\"").contains("not both"));
+    }
+
+    #[test]
+    fn tokens_are_given_read_from_a_file_or_kept_by_hey() {
+        let config: Config = toml::from_str(
+            r#"
+            [server]
+            token_file = "~/Vault/hey-token"
+
+            [remotes.home]
+            url = "http://home:7700"
+            token = "${HEY_TOKEN}"
+
+            [remotes.work]
+            url = "http://work:7700"
+            "#,
+        )
+        .unwrap();
+        assert_eq!(config.server.token, TokenSource::File("~/Vault/hey-token".into()));
+        assert_eq!(config.remotes["home"].token, TokenSource::Value("${HEY_TOKEN}".into()));
+        assert_eq!(config.remotes["work"].token, TokenSource::Kept);
+        assert_eq!(Config::default().server.token, TokenSource::Kept);
     }
 }
