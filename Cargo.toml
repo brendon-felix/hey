@@ -1,6 +1,6 @@
 [package]
 name = "hey-rs"
-version = "0.2.3"
+version = "0.3.0"
 authors = ["Brendon Felix"]
 edition = "2024"
 license = "MIT"
