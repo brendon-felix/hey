@@ -1,224 +1,297 @@
-use anyhow::{Context, Result};
-use dirs::config_dir;
-use serde::{Deserialize, Serialize};
+/* -------------------------------------------------------------------------- */
+/*                                 config.rs                                  */
+/* -------------------------------------------------------------------------- */
+
+use std::collections::BTreeMap;
 use std::fs;
-use std::path::PathBuf;
-use toml;
-use yansi::Paint;
+use std::path::{Path, PathBuf};
 
-// Configuration options:
-// - API key path
-// - API key env var
-// - System prompt
-// - System prompt path
-// - Model
-// - Max tokens
-// - Single message or REPL for args message
-// - Auto save/load conversations
-// - Disable snail print
-// - Conversations folder
-// - Configure reedline prompt
-//   - edit mode (emacs, vi)
-//   - command tab completion
-//   - input editor
-//   - highlighting
-//   - prompt style (color, indicator, etc)
-//   - history file path
-//   - history size
-// - Configure response rendering
-//   - disable syntax highlighting
-//   - disable ansi color
-//   - default theme
-//   - wrap width (int, 0 to disable)
+use anyhow::{Context, Result};
+use serde::{Deserialize, Deserializer};
 
-const DEFAULT_CONVERSATIONS_FOLDER: &str = "./";
-const DEFAULT_ENTER_REPL: bool = false;
-const DEFAULT_GREETINGS: bool = true;
-// const DEFAULT_AUTO_SAVE: bool = false;
-// const DEFAULT_AUTO_LOAD: bool = false;
-const DEFAULT_ANIMATIONS: bool = true;
-const DEFAULT_SYSTEM_PROMPT: &str = "You are a helpful assistant.";
-const DEFAULT_MODEL: &str = "gpt-4o";
-const DEFAULT_MAX_TOKENS: u32 = 2048;
-const DEFAULT_BRACKETED_PASTE: bool = true;
-const DEFAULT_ANSI_COLORS: bool = true;
-const DEFAULT_EDIT_MODE: &str = "emacs";
-const DEFAULT_SYNTAX_HIGHLIGHTING: bool = true;
-const DEFAULT_THEME: &str = "ansi";
-const DEFAULT_WRAP_WIDTH: u32 = 100;
-const DEFAULT_REEDLINE_HISTORY: bool = true;
-const DEFAULT_HISTORY_MAX_SIZE: usize = 1000;
+use crate::permissions::{self, Permission};
 
+#[derive(Debug, Deserialize)]
+#[serde(default, deny_unknown_fields)]
 pub struct Config {
-    pub system_prompt: String,
     pub model: String,
-    pub max_tokens: u32,
-    pub conversations_folder: String,
-    pub enter_repl: bool,
+    pub system_prompt: Option<String>,
+    pub max_tokens: Option<u64>,
+    pub max_turns: usize,
     pub greetings: bool,
-    // pub auto_save: bool,
-    // pub auto_load: bool,
-    pub animations: bool, // snail print
-    pub bracketed_paste: bool,
-    pub ansi_colors: bool,
-    pub edit_mode: String,
-    pub syntax_highlighting: bool,
-    pub theme: String,
-    pub wrap_width: u32,
-    pub reedline_history: bool,
-    pub history_max_size: usize,
+    pub providers: Providers,
+    pub display: Display,
+    pub editor: Editor,
+    pub sessions: Sessions,
+    pub tools: Tools,
+    pub mcp_servers: BTreeMap<String, McpServer>,
 }
 
 impl Default for Config {
     fn default() -> Self {
         Self {
-            system_prompt: String::from(DEFAULT_SYSTEM_PROMPT),
-            model: String::from(DEFAULT_MODEL),
-            max_tokens: DEFAULT_MAX_TOKENS,
-            conversations_folder: String::from(DEFAULT_CONVERSATIONS_FOLDER),
-            enter_repl: DEFAULT_ENTER_REPL,
-            greetings: DEFAULT_GREETINGS,
-            // auto_save: DEFAULT_AUTO_SAVE,
-            // auto_load: DEFAULT_AUTO_LOAD,
-            animations: DEFAULT_ANIMATIONS,
-            bracketed_paste: DEFAULT_BRACKETED_PASTE,
-            ansi_colors: DEFAULT_ANSI_COLORS,
-            edit_mode: String::from(DEFAULT_EDIT_MODE),
-            syntax_highlighting: DEFAULT_SYNTAX_HIGHLIGHTING,
-            theme: String::from(DEFAULT_THEME),
-            wrap_width: DEFAULT_WRAP_WIDTH,
-            reedline_history: DEFAULT_REEDLINE_HISTORY,
-            history_max_size: DEFAULT_HISTORY_MAX_SIZE,
+            model: "openai/gpt-5.5".into(),
+            system_prompt: None,
+            max_tokens: None,
+            max_turns: 50,
+            greetings: true,
+            providers: Providers::default(),
+            display: Display::default(),
+            editor: Editor::default(),
+            sessions: Sessions::default(),
+            tools: Tools::default(),
+            mcp_servers: BTreeMap::new(),
         }
     }
 }
 
 impl Config {
-    pub fn from_toml(config_toml: ConfigToml, prompt: Option<String>) -> Self {
-        let system_prompt = prompt.unwrap_or_else(|| match config_toml.system_prompt {
-            Some(prompt) => prompt,
-            None => {
-                println!(
-                    "{}",
-                    "No system prompt file provided, using default.".yellow()
-                );
-                String::from(DEFAULT_SYSTEM_PROMPT)
-            }
-        });
-        let model = config_toml.model.unwrap_or(String::from(DEFAULT_MODEL));
-        let max_tokens = config_toml.max_tokens.unwrap_or(DEFAULT_MAX_TOKENS);
-        let conversations_folder = config_toml
-            .conversations_folder
-            .unwrap_or(String::from(DEFAULT_CONVERSATIONS_FOLDER));
-        let enter_repl = config_toml.enter_repl.unwrap_or(DEFAULT_ENTER_REPL);
-        let greetings = config_toml.greetings.unwrap_or(DEFAULT_GREETINGS);
-        // let auto_save = config_toml.auto_save.unwrap_or(DEFAULT_AUTO_SAVE);
-        // let auto_load = config_toml.auto_load.unwrap_or(DEFAULT_AUTO_LOAD);
-        let animations = config_toml.animations.unwrap_or(DEFAULT_ANIMATIONS);
-        let bracketed_paste = config_toml
-            .bracketed_paste
-            .unwrap_or(DEFAULT_BRACKETED_PASTE);
-        let ansi_colors = config_toml.ansi_colors.unwrap_or(DEFAULT_ANSI_COLORS);
-        let edit_mode = config_toml
-            .edit_mode
-            .unwrap_or(String::from(DEFAULT_EDIT_MODE));
-        let syntax_highlighting = config_toml
-            .syntax_highlighting
-            .unwrap_or(DEFAULT_SYNTAX_HIGHLIGHTING);
-        let theme = config_toml.theme.unwrap_or(String::from(DEFAULT_THEME));
-        let wrap_width = config_toml.wrap_width.unwrap_or(DEFAULT_WRAP_WIDTH);
-        let reedline_history = config_toml
-            .reedline_history
-            .unwrap_or(DEFAULT_REEDLINE_HISTORY);
-        let history_max_size = config_toml
-            .history_max_size
-            .unwrap_or(DEFAULT_HISTORY_MAX_SIZE);
+    /// The config at `path`, else the default file if it exists, else the defaults.
+    pub fn load(path: Option<&Path>) -> Result<Self> {
+        let path = match path {
+            Some(path) => path.to_path_buf(),
+            None => match config_dir().map(|dir| dir.join("hey.toml")) {
+                Some(path) if path.exists() => path,
+                _ => return Ok(Self::default()),
+            },
+        };
+        let text = fs::read_to_string(&path)
+            .with_context(|| format!("failed to read config {}", path.display()))?;
+        toml::from_str(&text).with_context(|| format!("invalid config {}", path.display()))
+    }
+}
 
+/// Settings for a vendor, by the name model references start with.
+pub type Providers = BTreeMap<String, Provider>;
+
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct Provider {
+    pub base_url: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct Display {
+    pub syntax_highlighting: bool,
+    pub theme: String,
+    pub wrap_width: usize,
+    pub colors: bool,
+    pub animations: bool,
+}
+
+impl Default for Display {
+    fn default() -> Self {
         Self {
-            // api_key,
-            system_prompt,
-            model,
-            max_tokens,
-            conversations_folder,
-            enter_repl,
-            greetings,
-            // auto_save,
-            // auto_load,
-            animations,
-            bracketed_paste,
-            ansi_colors,
-            edit_mode,
-            syntax_highlighting,
-            theme,
-            wrap_width,
-            reedline_history,
-            history_max_size,
+            syntax_highlighting: true,
+            theme: "ansi".into(),
+            wrap_width: 100,
+            colors: true,
+            animations: true,
         }
     }
 }
 
-#[derive(Serialize, Deserialize, Default, Debug)]
-pub struct ConfigToml {
-    // api_key: Option<String>,
-    system_prompt: Option<String>,
-    model: Option<String>,
-    max_tokens: Option<u32>,
-    conversations_folder: Option<String>,
-    enter_repl: Option<bool>,
-    greetings: Option<bool>,
-    auto_save: Option<bool>,
-    auto_load: Option<bool>,
-    animations: Option<bool>, // snail print
-    bracketed_paste: Option<bool>,
-    ansi_colors: Option<bool>,
-    edit_mode: Option<String>,
-    syntax_highlighting: Option<bool>,
-    theme: Option<String>,
-    wrap_width: Option<u32>,
-    reedline_history: Option<bool>,
-    history_max_size: Option<usize>,
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum EditMode {
+    Emacs,
+    Vi,
+    Helix,
 }
 
-impl ConfigToml {
-    pub fn load(path: PathBuf) -> Result<Self> {
-        let config = fs::read_to_string(path).context("Failed to read config file")?;
-        let config: Self = toml::from_str(&config).context("Invalid config file")?;
-        Ok(config)
+#[derive(Debug, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct Editor {
+    pub mode: EditMode,
+    pub bracketed_paste: bool,
+    pub history: bool,
+    pub history_size: usize,
+}
+
+impl Default for Editor {
+    fn default() -> Self {
+        Self {
+            mode: EditMode::Emacs,
+            bracketed_paste: true,
+            history: true,
+            history_size: 1000,
+        }
     }
 }
 
-fn get_config_path() -> Result<PathBuf> {
-    // Configuration directory path
-    // ╭──────────┬───────────────────────────────────╮
-    // │ Platform │               Path                │
-    // ├──────────┼───────────────────────────────────┤
-    // │ Linux    │ $XDG_CONFIG_HOME or $HOME/.config │
-    // │ macOS    │ $HOME/Library/Application Support │
-    // │ Windows  │ %APPDATA%                         │
-    // ╰──────────┴───────────────────────────────────╯
-    let config_toml_path = config_dir()
-        .map(|path| path.join("hey").join("hey.toml"))
-        .context("Failed to determine config path")?;
-    Ok(config_toml_path)
+#[derive(Debug, Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct Sessions {
+    dir: Option<String>,
 }
 
-pub fn get_config_toml() -> Option<ConfigToml> {
-    let config_path = get_config_path().ok()?;
-    if config_path.exists() {
-        ConfigToml::load(config_path).ok()
-    } else {
-        None
+impl Sessions {
+    pub fn dir(&self) -> Result<PathBuf> {
+        match &self.dir {
+            Some(dir) => expand_path(dir),
+            None => dirs::data_dir()
+                .map(|dir| dir.join("hey").join("sessions"))
+                .context("no data directory on this platform; set `sessions.dir`"),
+        }
     }
 }
 
-pub fn get_history_file_path() -> Result<PathBuf> {
-    let history_path = config_dir()
-        .map(|path| path.join("hey").join("history.txt"))
-        .context("Failed to determine config path")?;
+#[derive(Debug, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct Tools {
+    pub default: Permission,
+    #[serde(deserialize_with = "over_default_rules")]
+    pub permissions: BTreeMap<String, Permission>,
+}
 
-    if let Some(parent) = history_path.parent() {
-        fs::create_dir_all(parent).context("Failed to create config directory")?;
+impl Default for Tools {
+    fn default() -> Self {
+        Self {
+            default: Permission::Confirm,
+            permissions: permissions::default_rules(),
+        }
+    }
+}
+
+/// The user's rules extend the defaults rather than replace them, so adding
+/// `shell = "allow"` keeps the read-only tools allowed.
+fn over_default_rules<'de, D: Deserializer<'de>>(
+    deserializer: D,
+) -> Result<BTreeMap<String, Permission>, D::Error> {
+    let mut rules = permissions::default_rules();
+    rules.extend(BTreeMap::deserialize(deserializer)?);
+    Ok(rules)
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(try_from = "RawMcpServer")]
+pub enum McpServer {
+    Stdio {
+        command: String,
+        args: Vec<String>,
+        env: BTreeMap<String, String>,
+    },
+    Http {
+        url: String,
+        headers: BTreeMap<String, String>,
+    },
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawMcpServer {
+    command: Option<String>,
+    #[serde(default)]
+    args: Vec<String>,
+    #[serde(default)]
+    env: BTreeMap<String, String>,
+    url: Option<String>,
+    #[serde(default)]
+    headers: BTreeMap<String, String>,
+}
+
+impl TryFrom<RawMcpServer> for McpServer {
+    type Error = &'static str;
+
+    fn try_from(raw: RawMcpServer) -> Result<Self, Self::Error> {
+        let local_only = !raw.args.is_empty() || !raw.env.is_empty();
+        match (raw.command, raw.url) {
+            (Some(_), Some(_)) => Err("set either `command` or `url`, not both"),
+            (None, None) => Err("set `command` for a local server or `url` for a remote one"),
+            (Some(_), None) if !raw.headers.is_empty() => {
+                Err("`headers` only applies to a remote server (`url`)")
+            }
+            (None, Some(_)) if local_only => {
+                Err("`args` and `env` only apply to a local server (`command`)")
+            }
+            (Some(command), None) => Ok(Self::Stdio {
+                command,
+                args: raw.args,
+                env: raw.env,
+            }),
+            (None, Some(url)) => Ok(Self::Http {
+                url,
+                headers: raw.headers,
+            }),
+        }
+    }
+}
+
+pub fn config_dir() -> Option<PathBuf> {
+    dirs::config_dir().map(|dir| dir.join("hey"))
+}
+
+pub fn cache_dir() -> Option<PathBuf> {
+    dirs::cache_dir().map(|dir| dir.join("hey"))
+}
+
+/// Expands `~` and environment variables, as a shell would.
+pub fn expand_path(path: &str) -> Result<PathBuf> {
+    Ok(PathBuf::from(expand(path.trim())?))
+}
+
+/// Expands `~` and `$VAR`/`${VAR}`, so secrets can stay in the environment.
+pub fn expand(text: &str) -> Result<String> {
+    shellexpand::full(text)
+        .map(|expanded| expanded.into_owned())
+        .with_context(|| format!("cannot expand {text:?}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rules_extend_defaults_and_servers_are_local_or_remote() {
+        let config: Config = toml::from_str(
+            r#"
+            model = "anthropic/claude-opus-5-5"
+
+            [tools.permissions]
+            shell = "allow"
+            "mcp:github" = "deny"
+
+            [mcp_servers.github]
+            command = "github-mcp-server"
+            args = ["stdio"]
+
+            [mcp_servers.docs]
+            url = "https://example.com/mcp"
+            headers = { Authorization = "Bearer ${TOKEN}" }
+            "#,
+        )
+        .unwrap();
+
+        assert_eq!(config.tools.default, Permission::Confirm);
+        assert_eq!(config.tools.permissions["read"], Permission::Allow);
+        assert_eq!(config.tools.permissions["shell"], Permission::Allow);
+        assert_eq!(config.tools.permissions["mcp:github"], Permission::Deny);
+        assert!(matches!(config.mcp_servers["github"], McpServer::Stdio { .. }));
+        assert!(matches!(config.mcp_servers["docs"], McpServer::Http { .. }));
+        assert!(config.display.syntax_highlighting);
     }
 
-    Ok(history_path)
+    #[test]
+    fn documented_defaults_match_the_code() {
+        let documented: Config = toml::from_str(include_str!("../defaults.toml")).unwrap();
+        let built_in = Config::default();
+        assert_eq!(documented.model, built_in.model);
+        assert_eq!(documented.max_turns, built_in.max_turns);
+        assert_eq!(documented.display.theme, built_in.display.theme);
+        assert_eq!(documented.display.wrap_width, built_in.display.wrap_width);
+        assert_eq!(documented.editor.mode, built_in.editor.mode);
+        assert_eq!(documented.editor.history_size, built_in.editor.history_size);
+        assert_eq!(documented.tools.default, built_in.tools.default);
+        assert_eq!(documented.tools.permissions, built_in.tools.permissions);
+    }
+
+    #[test]
+    fn rejects_mistakes_with_a_reason() {
+        let error = |text| toml::from_str::<Config>(text).unwrap_err().to_string();
+        assert!(error("[mcp_servers.x]\nurl = \"u\"\nargs = [\"a\"]").contains("only apply to a local"));
+        assert!(error("[mcp_servers.x]\nargs = []").contains("set `command`"));
+        assert!(error("wrap_width = 80").contains("unknown field"));
+        assert!(error("[tools]\ndefault = \"maybe\"").contains("unknown variant"));
+    }
 }

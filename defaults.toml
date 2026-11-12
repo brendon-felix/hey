@@ -1,72 +1,85 @@
 # defaults.toml
-# This file documents all available configuration options with their default values.
+# Every option hey reads, with its default. Copy what you want to change into
+# your config file; anything left out keeps the value shown here. Unknown keys
+# are reported as errors, so a typo cannot be silently ignored.
 #
-# Config directory locations:
+# Config file location (override with `hey --config PATH`):
 # - Linux:   $XDG_CONFIG_HOME/hey/hey.toml or $HOME/.config/hey/hey.toml
 # - macOS:   $HOME/Library/Application Support/hey/hey.toml
 # - Windows: %APPDATA%/hey/hey.toml
 
-# System prompt for the model
-system_prompt = "You are a helpful assistant."
+# Model, as `vendor/model` from rig's catalog (https://rig.rs). The vendor's
+# usual API key variable is read from the environment, e.g. OPENAI_API_KEY,
+# ANTHROPIC_API_KEY or GEMINI_API_KEY. `/model` switches at runtime.
+model = "openai/gpt-5.5"
 
-# OpenAI model to use
-model = "gpt-4o"
+# System prompt. When unset, hey uses its own agent prompt. Either way, the
+# working directory, platform and date are appended.
+# system_prompt = "You are a helpful assistant."
 
-# Maximum tokens in the response
-max_tokens = 2048
+# Cap on tokens per response. When unset, the provider's default applies.
+# max_tokens = 8192
 
-# Enter REPL mode even when a message is provided via command line
-enter_repl = false
+# Most model calls one answer may take, tool calls included.
+max_turns = 50
 
-# Display greeting messages ("Hey!" when starting, "Bye!" when exiting)
+# Show "Hey!" when starting and "Bye!" when exiting.
 greetings = true
 
-# Folder path for storing and loading conversation files
-# Set to a valid directory path to store conversations there
-# If the path doesn't exist when saving/loading, you'll be prompted to use the current directory
-# Supports robust cross-platform path expansion using shellexpand:
-#   - Tilde expansion: "~/Documents/hey/", "~" (expands to user home directory)
-#   - Environment variables: "$HOME/conversations", "${HOME}/Documents/hey"
-#   - Windows paths: "C:\Users\username\Documents\hey", ".\conversations"
-#   - Unix/Linux paths: "/home/user/conversations", "./conversations"
-#   - Relative paths: "./conversations", "../saved_chats"
-#   - Default values: "${CUSTOM_DIR:-~/Documents/hey}" (uses ~/Documents/hey if CUSTOM_DIR not set)
-conversations_folder = "./"
+# Per-vendor settings, keyed by the vendor in `model`. Values may use
+# `~` and `$VAR`.
+# [providers.ollama]
+# base_url = "http://localhost:11434/v1"
 
-# Enable animations (snail print effect)
+[display]
+# Highlight Markdown and code in responses.
+syntax_highlighting = true
+# Highlighting theme; `/theme` lists and previews them.
+theme = "ansi"
+# Wrap responses at this width, or the terminal's if narrower. 0 disables.
+wrap_width = 100
+# Colored output.
+colors = true
+# Typewriter effect.
 animations = true
 
-# Enable bracketed paste mode in the editor
+[editor]
+# "emacs", "vi" or "helix".
+mode = "emacs"
+# Paste multiple lines as one message.
 bracketed_paste = true
+# Keep input history across sessions, in the config directory's history.txt.
+history = true
+history_size = 1000
 
-# Enable ANSI colors in output
-# When set to false, all colored text (errors, warnings, messages, etc.) will be plain text
-ansi_colors = true
+[sessions]
+# Where conversations are saved. Every answer is saved as it finishes;
+# `/resume` and `hey --resume` continue a saved conversation.
+# Default: the platform's data directory, under hey/sessions.
+# dir = "~/.hey/sessions"
 
-# Edit mode for reedline editor: "emacs" or "vi"
-edit_mode = "emacs"
+[tools]
+# Permission for any tool without a rule below: "allow", "confirm" or "deny".
+# "confirm" asks before each call and offers to allow the tool for the session.
+default = "confirm"
 
-# Enable syntax highlighting in responses
-syntax_highlighting = true
+# Rules by tool. Built-in tools: read, list, search, write, edit, move, delete,
+# shell. MCP tools are "mcp:<server>:<tool>", or "mcp:<server>" for all of a
+# server's tools. Your rules extend these defaults rather than replace them.
+[tools.permissions]
+read = "allow"
+list = "allow"
+search = "allow"
 
-# Theme for syntax highlighting
-# Available themes: "ansi", "base16", "base16-256", and various bat themes
-theme = "ansi"
-
-# Maximum width for line word wrapping
-# Set to 0 to disable word wrapping entirely
-# When set to a positive value, uses the minimum of wrap_width and terminal width
-wrap_width = 100
-
-# Enable file-backed input history for reedline editor
-# When enabled, input history is persisted across sessions
-# History file location:
-# - Linux:   $XDG_CONFIG_HOME/hey/history.txt or $HOME/.config/hey/history.txt
-# - macOS:   $HOME/Library/Application Support/hey/history.txt
-# - Windows: %APPDATA%/hey/history.txt
-reedline_history = true
-
-# Maximum number of inputs to store in history
-# Only applies when reedline_history is enabled
-# Default is 1000 entries
-history_max_size = 1000
+# MCP servers, keyed by name. A local server runs a command over stdio; a
+# remote one is reached over streamable HTTP. Values may use `~` and `$VAR`,
+# which keeps secrets out of this file.
+#
+# [mcp_servers.github]
+# command = "github-mcp-server"
+# args = ["stdio"]
+# env = { GITHUB_PERSONAL_ACCESS_TOKEN = "${GITHUB_TOKEN}" }
+#
+# [mcp_servers.docs]
+# url = "https://example.com/mcp"
+# headers = { Authorization = "Bearer ${DOCS_TOKEN}" }

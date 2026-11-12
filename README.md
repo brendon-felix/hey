@@ -1,35 +1,30 @@
 # hey
 
-A minimal command-line application for quickly interacting with OpenAI's chat models, with support for streaming and syntax highlighting. The focus of `hey` is on ease of use, speed, and a pleasant terminal experience.
+A minimal command-line agent with streaming and syntax highlighting. Ask a quick question, or let it
+read, search and edit files and run commands in the current directory, with your approval. The focus
+of `hey` is on ease of use, speed, and a pleasant terminal experience.
 
 ![demo](./hey_demo.gif)
 
 ## Features
 
-- Streaming responses via [async-openai](https://github.com/64bit/async-openai)
-- Syntax highlighting via [syntect](https://github.com/trishume/syntect)
-- Rich input editor via [reedline](https://github.com/nushell/reedline) with Vi mode, multi-line paste, and persistent history
-- Command completions - tab completion for all commands (e.g., `/h` + Tab → `/help`)
-- History search - use Ctrl+R to search through your input history
-- Conversation history - quickly save, load, and view past conversations
-- Customizable - Vi mode, themes, and more
+- Any model [rig](https://rig.rs) supports: OpenAI, Anthropic, Gemini, Ollama, OpenRouter, and more
+- Built-in tools to read, list, search, write, edit, move and delete files and run shell commands, with
+  live command output
+- [MCP](https://modelcontextprotocol.io) servers, local (stdio) or remote (streamable HTTP)
+- Per-tool permissions: allow, confirm, or deny
+- Conversations saved automatically and resumable with `/resume` or `hey --resume`
+- Syntax highlighting via [syntect](https://github.com/trishume/syntect), with bat's themes
+- A rich input editor via [reedline](https://github.com/nushell/reedline): Emacs, Vi or Helix mode,
+  command completion with descriptions, a status line, history search, and composing in `$EDITOR`
 
 ## Installation
-
-### Prerequisites
-
-- [Rust](https://rustup.rs/) (for installation via cargo)
-- OpenAI API key
-
-### Install
 
 ```bash
 cargo install hey-rs
 ```
 
-### Setup
-
-Set your OpenAI API key:
+Set the API key for your model's vendor, for example:
 
 ```bash
 export OPENAI_API_KEY=your_api_key_here
@@ -37,118 +32,79 @@ export OPENAI_API_KEY=your_api_key_here
 
 ## Usage
 
-### Interactive Mode (REPL)
-
 ```bash
-hey
+hey                                   # interactive REPL
+hey who was Ada Lovelace?             # one answer, then exit
+hey -i explain this repo              # answer, then stay in the REPL
+hey -r what did we decide?            # continue the most recent conversation
+hey -m anthropic/claude-opus-5-5 hi   # use another model
+hey -p ~/prompts/reviewer.txt         # system prompt from a file
 ```
 
-### Single Message
+### Commands
 
-```bash
-hey who was Ada Lovelace?
-```
-
-### With Custom Prompt File
-
-```bash
-hey -p ~/path/to/prompt.txt
-```
-
-## Commands
-
-All commands support tab completion - just type `/` and press Tab to see available commands, or start typing a command (e.g., `/h`) and press Tab to complete it.
+Type `/` or press Tab to see commands; the status line describes the one you are typing.
 
 | Command | Description |
 | --- | --- |
-| `/exit`, `/quit`, `/q`, `/x` | Exit the REPL |
-| `/clear`, `/c` | Clear screen |
-| `/reset`, `/r` | Reset conversation |
-| `/model`, `/m` | Select model |
-| `/theme`, `/t` | Select theme |
-| `/save`, `/s` | Save conversation |
-| `/load`, `/l` | Load conversation |
-| `/history` | View conversation history |
-| `/help`, `/h` | Show help |
+| `/help`, `/h` | Show commands and shortcuts |
+| `/new`, `/reset`, `/r` | Start a new conversation |
+| `/resume`, `/load`, `/l` | Continue a saved conversation |
+| `/history` | Show this conversation |
+| `/model [vendor/model]`, `/m` | Switch model |
+| `/theme [theme]`, `/t` | Switch highlighting theme |
+| `/tools` | List tools, their permissions and MCP servers |
+| `/clear`, `/c` | Clear the screen |
+| `/exit`, `/quit`, `/q`, `/x` | Exit |
 
-### History Search
+### Keys
 
-Press **Ctrl+R** to search through your input history. Start typing to filter previous inputs, and press Enter to use the selected command. Press Ctrl+R again to cycle through matching results.
+| Keys | Action |
+| --- | --- |
+| Tab | Complete commands, models and themes |
+| Ctrl+R | Search input history |
+| Ctrl+O | Write the message in `$EDITOR` |
+| Alt+Enter | Insert a newline |
+| Ctrl+C | Clear the line, or stop a running answer |
+| Ctrl+D | Exit |
 
 ## Configuration
 
-`hey` uses a TOML configuration file located at:
+`hey` reads a TOML file, if present:
 
 - **Linux**: `~/.config/hey/hey.toml`
 - **macOS**: `~/Library/Application Support/hey/hey.toml`
 - **Windows**: `%APPDATA%/hey/hey.toml`
 
-### Common Options
+Every option, with its default, is documented in [`defaults.toml`](./defaults.toml). An example:
 
 ```toml
-# AI Model settings
-model = "gpt-4o"                    # or "gpt-4o-mini", "gpt-3.5-turbo"
-system_prompt = "You are a helpful coding assistant."
-max_tokens = 2048
+model = "ollama/qwen3.8:latest"
 
-# Display
-syntax_highlighting = true
-theme = "ansi"                      # Run /theme to see all options
-wrap_width = 100                    # 0 to disable wrapping
-ansi_colors = true
-animations = true                   # Typewriter effect
-greetings = true                  # Show "Hey!" and "Bye!" messages
+[providers.ollama]
+base_url = "https://ollama.example.com/v1"
 
-# Editor
-edit_mode = "emacs"                 # or "vi"
-bracketed_paste = true
-reedline_history = true             # Save input history
-history_max_size = 1000             # Max number of inputs to save
+[editor]
+mode = "vi"
 
-# Files
-conversations_folder = "~/.hey"     # Where to save conversations
+[tools.permissions]
+shell = "allow"
+"mcp:github" = "allow"
+
+[mcp_servers.github]
+command = "github-mcp-server"
+args = ["stdio"]
+env = { GITHUB_PERSONAL_ACCESS_TOKEN = "${GITHUB_TOKEN}" }
 ```
 
-### All Configuration Options
+### Tool permissions
 
-| Option | Default | Description |
-| --- | --- | --- |
-| `system_prompt` | `"You are a helpful assistant."` | Initial context for AI |
-| `model` | `"gpt-4o"` | OpenAI model to use |
-| `max_tokens` | `2048` | Response length limit |
-| `enter_repl` | `false` | Force REPL mode with CLI message |
-| `wrap_width` | `100` | Text wrapping width (0 = disabled) |
-| `syntax_highlighting` | `true` | Code syntax highlighting |
-| `theme` | `"ansi"` | Highlighting color scheme |
-| `ansi_colors` | `true` | Colored terminal output |
-| `animations` | `true` | Typewriter text effect |
-| `greetings` | `true` | Show greeting messages ("Hey!" and "Bye!") |
-| `edit_mode` | `"emacs"` | Input editor mode ("emacs" or "vi") |
-| `bracketed_paste` | `true` | Multi-line paste support |
-| `conversations_folder` | `"./"` | Directory for saved conversations |
-| `reedline_history` | `true` | Persist input history across sessions |
-| `history_max_size` | `1000` | Maximum input history size |
+Each tool call is shown as it happens. Whether it runs depends on its permission:
 
-See [`defaults.toml`](./defaults.toml) for detailed documentation of all options.
+- `allow` runs it.
+- `confirm` asks first, and offers to allow that tool for the rest of the session.
+- `deny` tells the model it is not allowed.
 
-### Example Configurations
-
-**Minimal setup:**
-```toml
-model = "gpt-4o-mini"
-system_prompt = "You are a helpful coding assistant."
-```
-
-**Plain text output:**
-```toml
-syntax_highlighting = false
-ansi_colors = false
-wrap_width = 0
-```
-
-**Vi user setup:**
-```toml
-edit_mode = "vi"
-theme = "base16"
-conversations_folder = "~/Documents/hey-conversations"
-```
+`read`, `list` and `search` are allowed by default; everything else asks. Rules are keyed by tool
+name, or `mcp:<server>:<tool>` and `mcp:<server>` for MCP tools, which the model sees as
+`mcp__<server>__<tool>`.

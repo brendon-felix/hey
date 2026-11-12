@@ -1,132 +1,144 @@
-// TODO: Add load flag to load a conversation in comand line (--load, -l)
-// TODO: Add context referencing command (/context, /c)
-//   TODO: Add a context referenceing flag (--context, -c)
-// TODO: Implement auto saving and loading (default off)
-// TODO: Support models like o3 and gpt-5
-// TODO: organize config into global, reedline config and response config
-// TODO: support api_key path
-//   TODO: support api_key path flag (--api-key-path, -k)
-// TODO: add config options for reedline prompt style (color, indicator char, etc.)
+/* -------------------------------------------------------------------------- */
+/*                                  main.rs                                   */
+/* -------------------------------------------------------------------------- */
 
-// Experiments
-// Experiment with ratatui based UI
-// Use nushell $env to configure reedline
-// Support command tab completion for commands
-// Allow editor as prompt input as supported by reedline
-
-use anyhow::{Context, Result};
-use async_openai::{Client, config::OpenAIConfig};
-use clap::Parser;
-use yansi::{self, Paint};
-
-mod commands;
+mod agent;
 mod config;
-mod conversation;
-mod editor;
+mod mcp;
+mod permissions;
 mod render;
 mod repl;
-mod response;
-mod utils;
+mod sessions;
+mod turn;
+mod ui;
 
-use config::{Config, get_config_toml};
+use std::path::PathBuf;
+use std::process::ExitCode;
 
+use anyhow::{Context, Result};
+use clap::Parser;
+use yansi::Paint;
+
+use agent::{Assistant, Model};
+use config::Config;
+use repl::{Repl, ServerReport};
+use sessions::{SessionId, Sessions};
+
+/// A minimal command-line agent.
 #[derive(Parser, Debug)]
+#[command(version)]
 struct Args {
-    /// Optional path to a system prompt text file
+    /// Read the system prompt from this file
     #[arg(long, short)]
-    prompt_path: Option<String>,
+    prompt_path: Option<PathBuf>,
 
-    /// Message to send to the model. If not provided, enters interactive REPL mode.
+    /// Use this model, as `vendor/model`, instead of the configured one
+    #[arg(long, short)]
+    model: Option<String>,
+
+    /// Read this config file instead of the default one
+    #[arg(long)]
+    config: Option<PathBuf>,
+
+    /// Continue the most recent conversation
+    #[arg(long, short)]
+    resume: bool,
+
+    /// Stay in the REPL after answering MESSAGE
+    #[arg(long, short)]
+    interactive: bool,
+
+    /// Message to send; without one, hey starts a REPL
     #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
     message: Vec<String>,
 }
 
 #[tokio::main]
-async fn main() -> Result<()> {
-    let args = Args::parse();
-    let prompt: Option<String> = if let Some(path) = args.prompt_path {
-        std::fs::read_to_string(&path)
-            .with_context(|| format!("Failed to read system prompt at path {}", path.blue()))
-            .ok()
-    } else {
-        None
+async fn main() -> ExitCode {
+    match run(Args::parse()).await {
+        Ok(code) => code,
+        Err(error) => {
+            eprintln!("{} {error:#}", "Error:".red());
+            ExitCode::FAILURE
+        }
+    }
+}
+
+async fn run(args: Args) -> Result<ExitCode> {
+    let config = Config::load(args.config.as_deref())?;
+    render::configure(&config.display);
+
+    let system_prompt = match &args.prompt_path {
+        Some(path) => std::fs::read_to_string(path)
+            .with_context(|| format!("cannot read system prompt {}", path.display()))?,
+        None => config
+            .system_prompt
+            .clone()
+            .unwrap_or_else(|| agent::DEFAULT_SYSTEM_PROMPT.into()),
     };
-    let config = if let Some(config_toml) = get_config_toml() {
-        Config::from_toml(config_toml, prompt)
-    } else {
-        Config::default()
+    let reference = args.model.as_deref().unwrap_or(&config.model);
+    let model = Model::connect(reference, &config.providers)?;
+    let sessions = Sessions::open(config.sessions.dir()?)?;
+    let session = match args.resume {
+        true => sessions.latest()?.unwrap_or_else(|| {
+            render::notice("no saved conversation; starting a new one");
+            SessionId::new()
+        }),
+        false => SessionId::new(),
     };
 
-    if config.ansi_colors {
-        yansi::enable();
-    } else {
-        yansi::disable();
+    let (tools, servers) = connect_mcp(&config).await;
+    let assistant = Assistant::new(&config, model, &system_prompt, &sessions, tools);
+    let style = render::Style::from(&config.display);
+    let message = (!args.message.is_empty()).then(|| args.message.join(" "));
+
+    match message {
+        Some(message) if !args.interactive => {
+            let turn = turn::run(&assistant, &message, &session, &style).await;
+            Ok(match turn.outcome {
+                turn::Outcome::Answered => ExitCode::SUCCESS,
+                turn::Outcome::Interrupted | turn::Outcome::Failed => ExitCode::FAILURE,
+            })
+        }
+        first => {
+            let repl = Repl::new(repl::Setup {
+                assistant,
+                sessions,
+                session,
+                providers: config.providers.clone(),
+                servers,
+                style,
+                greetings: config.greetings,
+                editor: config.editor,
+                colors: config.display.colors,
+            });
+            repl.run(first).await?;
+            Ok(ExitCode::SUCCESS)
+        }
     }
+}
 
-    if config.animations {
-        render::enable_animations();
-    } else {
-        render::disable_animations();
+/// The tools of every server that connected, and how each connection went.
+async fn connect_mcp(config: &Config) -> (Vec<mcp::Tool>, Vec<ServerReport>) {
+    let mut tools = Vec::new();
+    let mut reports = Vec::new();
+    for server in mcp::connect_all(&config.mcp_servers).await {
+        let outcome = server.tools.map(|server_tools| {
+            let count = server_tools.len();
+            tools.extend(server_tools);
+            count
+        });
+        if let Err(error) = &outcome {
+            render::notice(&format!(
+                "MCP server `{}` unavailable: {}",
+                server.name,
+                error.root_cause()
+            ));
+        }
+        reports.push(ServerReport {
+            name: server.name,
+            tools: outcome.map_err(|error| error.root_cause().to_string()),
+        });
     }
-
-    let api_key = std::env::var("OPENAI_API_KEY")
-        .context("Please set the OPENAI_API_KEY environment variable to your OpenAI API key.")?;
-
-    // let api_key = match args.api_key_path {
-    //     Some(path) => std::fs::read_to_string(path)
-    //         .context("Failed to read API key from file")?
-    //         .trim()
-    //         .to_string(),
-    //     None => std::env::var("OPENAI_API_KEY").context(
-    //         "Please set the OPENAI_API_KEY environment variable to your OpenAI API key.",
-    //     )?,
-    // };
-
-    // utils::api_check(&api_key).await?;
-
-    // let system_prompt = if let Some(path) = args.prompt_path {
-    //     std::fs::read_to_string(&path)
-    //         .with_context(|| format!("Failed to read system prompt at path {}", path.blue()))?
-    // } else {
-    //     println!(
-    //         "{}",
-    //         "No system prompt file provided, using default.".yellow()
-    //     );
-    //     String::from(DEFAULT_SYSTEM_PROMPT)
-    // };
-
-    let openai_config = OpenAIConfig::new().with_api_key(api_key);
-    let client = Client::with_config(openai_config);
-
-    if args.message.is_empty() {
-        // interactive REPL
-        let mut repl = repl::ReadEvalPrintLoop::new(client, config);
-        repl.run().await?;
-    } else if config.enter_repl {
-        // enter REPL with initial message
-        let messages = vec![
-            utils::new_system_message(config.system_prompt.clone()),
-            utils::new_user_message(args.message.join(" ")),
-        ];
-        let mut repl = repl::ReadEvalPrintLoop::with_conversation(
-            client,
-            config,
-            conversation::Conversation::from_messages(messages),
-        );
-        repl.run().await?;
-    } else {
-        // single message
-        let messages = vec![
-            utils::new_system_message(config.system_prompt),
-            utils::new_user_message(args.message.join(" ")),
-        ];
-        let request = response::create_request(&config.model, config.max_tokens, messages)?;
-        let mut highlighter = if config.syntax_highlighting {
-            Some(render::Highlighter::new(&config.theme)?)
-        } else {
-            None
-        };
-        response::stream_response(&client, request, &mut highlighter, config.wrap_width).await?;
-    }
-    Ok(())
+    (tools, reports)
 }
