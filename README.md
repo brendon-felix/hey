@@ -108,3 +108,15 @@ Each tool call is shown as it happens. Whether it runs depends on its permission
 `read`, `list` and `search` are allowed by default; everything else asks. Rules are keyed by tool
 name, or `mcp:<server>:<tool>` and `mcp:<server>` for MCP tools, which the model sees as
 `mcp__<server>__<tool>`.
+
+### MCP servers
+
+A server is local (`command`, `args`, `env`) or remote (`url`, `headers`). Entries copied from
+other clients may keep their `type` key. Remote servers that only offer an OAuth sign-in are not
+supported yet; most also accept an API key, for example Firecrawl:
+
+```toml
+[mcp_servers.firecrawl]
+url = "https://mcp.firecrawl.dev/v2/mcp"
+headers = { Authorization = "Bearer ${FIRECRAWL_API_KEY}" }
+```

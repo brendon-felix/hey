@@ -181,6 +181,10 @@ pub enum McpServer {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct RawMcpServer {
+    /// Redundant with `command`/`url`, but accepted so entries copied from
+    /// other clients' docs work as written.
+    #[serde(rename = "type")]
+    transport: Option<Transport>,
     command: Option<String>,
     #[serde(default)]
     args: Vec<String>,
@@ -191,12 +195,21 @@ struct RawMcpServer {
     headers: BTreeMap<String, String>,
 }
 
+#[derive(Deserialize, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+enum Transport {
+    #[serde(alias = "local")]
+    Stdio,
+    #[serde(alias = "remote", alias = "streamable-http", alias = "streamableHttp")]
+    Http,
+}
+
 impl TryFrom<RawMcpServer> for McpServer {
     type Error = &'static str;
 
     fn try_from(raw: RawMcpServer) -> Result<Self, Self::Error> {
         let local_only = !raw.args.is_empty() || !raw.env.is_empty();
-        match (raw.command, raw.url) {
+        let server = match (raw.command, raw.url) {
             (Some(_), Some(_)) => Err("set either `command` or `url`, not both"),
             (None, None) => Err("set `command` for a local server or `url` for a remote one"),
             (Some(_), None) if !raw.headers.is_empty() => {
@@ -214,6 +227,15 @@ impl TryFrom<RawMcpServer> for McpServer {
                 url,
                 headers: raw.headers,
             }),
+        }?;
+        match (raw.transport, &server) {
+            (Some(Transport::Stdio), Self::Http { .. }) => {
+                Err("a local (`stdio`) server is started with `command`, not `url`")
+            }
+            (Some(Transport::Http), Self::Stdio { .. }) => {
+                Err("a remote (`http`) server is reached at a `url`, not a `command`")
+            }
+            _ => Ok(server),
         }
     }
 }
@@ -257,6 +279,7 @@ mod tests {
             args = ["stdio"]
 
             [mcp_servers.docs]
+            type = "remote"
             url = "https://example.com/mcp"
             headers = { Authorization = "Bearer ${TOKEN}" }
             "#,
@@ -291,6 +314,7 @@ mod tests {
         let error = |text| toml::from_str::<Config>(text).unwrap_err().to_string();
         assert!(error("[mcp_servers.x]\nurl = \"u\"\nargs = [\"a\"]").contains("only apply to a local"));
         assert!(error("[mcp_servers.x]\nargs = []").contains("set `command`"));
+        assert!(error("[mcp_servers.x]\ntype = \"http\"\ncommand = \"c\"").contains("not a `command`"));
         assert!(error("wrap_width = 80").contains("unknown field"));
         assert!(error("[tools]\ndefault = \"maybe\"").contains("unknown variant"));
     }

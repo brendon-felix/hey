@@ -13,7 +13,9 @@ use rig_rmcp::{McpConnection, McpTool};
 use rmcp::ServiceExt;
 use rmcp::model::ClientConfig;
 use rmcp::service::ClientInitializeError;
-use rmcp::transport::streamable_http_client::StreamableHttpClientTransportConfig;
+use rmcp::transport::streamable_http_client::{
+    AuthRequiredError, StreamableHttpClientTransportConfig,
+};
 use rmcp::transport::{StreamableHttpClientTransport, TokioChildProcess};
 
 use crate::config::{McpServer, expand};
@@ -68,7 +70,8 @@ async fn connect(server: &str, config: &McpServer) -> Result<Vec<Tool>> {
             let config = StreamableHttpClientTransportConfig::with_uri(expand(url)?)
                 .custom_headers(header_map(headers)?);
             let transport = StreamableHttpClientTransport::from_config(config);
-            client.serve(transport).await.map_err(initialize_error)?.into()
+            let client = client.serve(transport).await.map_err(initialize_error);
+            client.map_err(explain_sign_in)?.into()
         }
     };
     let tools = connection.tools().await?;
@@ -83,6 +86,19 @@ fn initialize_error(error: ClientInitializeError) -> anyhow::Error {
             anyhow::Error::from_boxed(error.error).context(context)
         }
         other => other.into(),
+    }
+}
+
+/// A server that answers 401 wants an OAuth sign-in, which hey cannot do;
+/// say how to connect with a key instead.
+fn explain_sign_in(error: anyhow::Error) -> anyhow::Error {
+    if error.chain().any(|cause| cause.is::<AuthRequiredError>()) {
+        anyhow::anyhow!(
+            "the server requires a sign-in, which hey does not support yet; \
+             set `headers = {{ Authorization = \"Bearer ${{YOUR_KEY_VAR}}\" }}` instead"
+        )
+    } else {
+        error
     }
 }
 

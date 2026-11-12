@@ -73,7 +73,10 @@ search = "allow"
 
 # MCP servers, keyed by name. A local server runs a command over stdio; a
 # remote one is reached over streamable HTTP. Values may use `~` and `$VAR`,
-# which keeps secrets out of this file.
+# which keeps secrets out of this file. An optional `type` ("stdio"/"local"
+# or "http"/"remote") is accepted, so entries copied from other clients work.
+# Servers that only offer an OAuth sign-in are not supported yet; give them an
+# API key through `headers`.
 #
 # [mcp_servers.github]
 # command = "github-mcp-server"
