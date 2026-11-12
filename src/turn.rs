@@ -42,51 +42,67 @@ pub async fn run(backend: &Backend, thread: &SessionId, request: RunRequest, sty
 /// Draws a run's events, tool calls included, and answers its approvals,
 /// until it finishes, fails, or Ctrl+C stops it.
 pub async fn follow(backend: &Backend, thread: &SessionId, mut events: Events, style: &Style) -> Turn {
-    let mut reply = Reply::new(style);
     let mut context = None;
     print!("{}", cursor::Hide);
+    // Racing the whole drawing, rather than each wait for an event, lets
+    // Ctrl+C cut a reply that is still animating events received long ago.
+    let shown = tokio::select! {
+        outcome = show(backend, thread, &mut events, style, &mut context) => Some(outcome),
+        Ok(()) = tokio::signal::ctrl_c() => None,
+    };
+    let outcome = match shown {
+        Some(outcome) => outcome,
+        None => {
+            println!();
+            stop(backend, thread, events).await
+        }
+    };
+    if let Outcome::Interrupted = outcome {
+        render::notice("interrupted");
+    }
+    print!("{}", cursor::Show);
+    println!();
+    Turn { outcome, context }
+}
+
+async fn show(
+    backend: &Backend,
+    thread: &SessionId,
+    events: &mut Events,
+    style: &Style,
+    context: &mut Option<u64>,
+) -> Outcome {
+    let mut reply = Reply::new(style);
     let outcome = loop {
-        let event = tokio::select! {
-            event = events.next() => event,
-            _ = tokio::signal::ctrl_c() => match backend.stop(thread).await {
-                // The host ends the run and says so.
-                Ok(_) => continue,
-                Err(error) => {
-                    reply.finish();
-                    render::error(&format!("{error:#}"));
-                    break Outcome::Interrupted;
-                }
-            },
-        };
-        let event = match event {
+        let event = match events.next().await {
             Some(Ok(event)) => event,
             Some(Err(error)) => {
-                reply.finish();
+                reply.finish().await;
                 render::error(&format!("{error:#}"));
                 break Outcome::Failed;
             }
             None => {
-                reply.finish();
+                reply.finish().await;
                 render::error(&"the run's events stopped before it ended; `/resume` follows it again");
                 break Outcome::Failed;
             }
         };
         match event {
-            Event::Text { text } => reply.text(&text),
-            Event::Reasoning { text } => reply.reasoning(&text),
-            Event::PartEnd => reply.finish(),
+            Event::Text { text } => reply.text(&text).await,
+            Event::Reasoning { text } => reply.reasoning(&text).await,
+            Event::PartEnd => reply.finish().await,
             Event::ToolCall { name, args } => {
-                reply.finish();
+                reply.finish().await;
                 render::tool_call(&name, &args);
             }
             Event::Output { text } => render::live_output(&text),
             Event::ToolResult { result } => render::tool_result(&result),
             Event::Notice { text } => {
-                reply.finish();
+                reply.finish().await;
                 render::notice(&text);
             }
             Event::Approval { id, tool } => {
-                reply.finish();
+                reply.finish().await;
                 let decision = ui::confirm_tool(tool).await;
                 match backend.answer(thread, id, decision).await {
                     Ok(true) => {}
@@ -95,13 +111,13 @@ pub async fn follow(backend: &Backend, thread: &SessionId, mut events: Events, s
                 }
             }
             Event::Decided { .. } => {}
-            Event::Context { tokens } => context = Some(tokens),
+            Event::Context { tokens } => *context = Some(tokens),
             Event::End { ending } => {
                 break match ending {
                     Ending::Answered => Outcome::Answered,
                     Ending::Interrupted => Outcome::Interrupted,
                     Ending::Failed { error } => {
-                        reply.finish();
+                        reply.finish().await;
                         render::error(&error);
                         Outcome::Failed
                     }
@@ -109,13 +125,22 @@ pub async fn follow(backend: &Backend, thread: &SessionId, mut events: Events, s
             }
         }
     };
-    drop(events);
-    reply.finish();
-    if let Outcome::Interrupted = outcome {
-        render::notice("interrupted");
+    reply.finish().await;
+    outcome
+}
+
+/// Stops the run, then waits for its end without drawing the rest, so the
+/// thread is free for the next message.
+async fn stop(backend: &Backend, thread: &SessionId, mut events: Events) -> Outcome {
+    if let Err(error) = backend.stop(thread).await {
+        render::error(&format!("{error:#}"));
+        return Outcome::Interrupted;
     }
-    print!("{}", cursor::Show);
-    println!();
-    Turn { outcome, context }
+    while let Some(Ok(event)) = events.next().await {
+        if let Event::End { .. } = event {
+            break;
+        }
+    }
+    Outcome::Interrupted
 }
 

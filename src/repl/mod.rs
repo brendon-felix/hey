@@ -134,7 +134,7 @@ impl Repl {
             Command::History => self.show_thread(true).await,
             Command::Model(reference) => self.switch_model(reference).await?,
             Command::Think(level) => self.set_thinking(level)?,
-            Command::Theme(theme) => self.switch_theme(theme)?,
+            Command::Theme(theme) => self.switch_theme(theme).await?,
             Command::Tools => self.list_tools().await?,
             Command::Clear => self.editor.clear_screen(),
             Command::Exit => {}
@@ -169,7 +169,7 @@ impl Repl {
         };
         let Snapshot { messages, running } = opened.snapshot;
         if !messages.is_empty() {
-            render::conversation(&messages, &self.style);
+            render::conversation(&messages, &self.style).await;
         } else if running.is_none() && announce_empty {
             println!("\n{}\n", "Nothing said yet.".bold());
         }
@@ -229,7 +229,7 @@ impl Repl {
         Ok(())
     }
 
-    fn switch_theme(&mut self, theme: Option<String>) -> Result<()> {
+    async fn switch_theme(&mut self, theme: Option<String>) -> Result<()> {
         let theme = match theme {
             Some(theme) => theme,
             None => {
@@ -245,8 +245,8 @@ impl Repl {
         Highlighter::new(&theme)?;
         self.style.theme = Some(theme);
         let mut sample = Reply::instant(&self.style);
-        sample.text(SAMPLE);
-        sample.finish();
+        sample.text(SAMPLE).await;
+        sample.finish().await;
         println!();
         Ok(())
     }

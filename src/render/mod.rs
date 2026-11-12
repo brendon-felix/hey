@@ -97,28 +97,28 @@ impl Reply {
         }
     }
 
-    pub fn text(&mut self, fragment: &str) {
-        self.push(Part::Text, fragment);
+    pub async fn text(&mut self, fragment: &str) {
+        self.push(Part::Text, fragment).await;
     }
 
-    pub fn reasoning(&mut self, fragment: &str) {
-        self.push(Part::Reasoning, fragment);
+    pub async fn reasoning(&mut self, fragment: &str) {
+        self.push(Part::Reasoning, fragment).await;
     }
 
     /// Ends the open part, so whatever prints next starts on its own line.
-    pub fn finish(&mut self) {
+    pub async fn finish(&mut self) {
         if let Some(part) = self.part.take()
             && !self.pending.is_empty()
         {
             let mut line = std::mem::take(&mut self.pending);
             line.push('\n');
-            self.print(part, &line);
+            self.print(part, &line).await;
         }
     }
 
-    fn push(&mut self, part: Part, fragment: &str) {
+    async fn push(&mut self, part: Part, fragment: &str) {
         if self.part != Some(part) {
-            self.finish();
+            self.finish().await;
             self.part = Some(part);
             self.highlighter = (part == Part::Text)
                 .then(|| self.style.highlighter())
@@ -128,11 +128,11 @@ impl Reply {
         self.pending.push_str(fragment);
         while let Some(end) = self.pending.find('\n') {
             let line: String = self.pending.drain(..=end).collect();
-            self.print(part, &line);
+            self.print(part, &line).await;
         }
     }
 
-    fn print(&mut self, part: Part, line: &str) {
+    async fn print(&mut self, part: Part, line: &str) {
         let painted = match (part, &mut self.highlighter) {
             (Part::Text, Some(highlighter)) => highlighter.line(line),
             (Part::Text, None) => line.to_owned(),
@@ -140,7 +140,7 @@ impl Reply {
         };
         let wrapped = self.style.wrap(&painted);
         if self.animate {
-            snailprint(&wrapped, 5000);
+            animate(&wrapped, 5000).await;
         } else {
             print!("{wrapped}");
         }
@@ -196,7 +196,7 @@ pub fn error(error: &dyn std::fmt::Display) {
     snailprint(&format!("\n{} {error}\n", "Error:".red()), 2000);
 }
 
-pub fn conversation(messages: &[Message], style: &Style) {
+pub async fn conversation(messages: &[Message], style: &Style) {
     for message in messages {
         match message {
             Message::System { .. } => {}
@@ -209,16 +209,16 @@ pub fn conversation(messages: &[Message], style: &Style) {
                 let mut reply = Reply::instant(style);
                 for content in &assistant.content {
                     match content {
-                        AssistantContent::Text(text) => reply.text(&text.text),
+                        AssistantContent::Text(text) => reply.text(&text.text).await,
                         AssistantContent::ToolCall(call) => {
-                            reply.finish();
+                            reply.finish().await;
                             let args = serde_json::Value::Object(call.function.arguments.clone());
                             tool_call(call.function.name.as_str(), &args.to_string());
                         }
                         _ => {}
                     }
                 }
-                reply.finish();
+                reply.finish().await;
             }
         }
     }
@@ -263,21 +263,40 @@ pub fn terminal_width() -> usize {
 /// Prints `text` a grapheme at a time when animations are on, leaving ANSI
 /// escapes whole.
 pub fn snailprint(text: &str, micros: u64) {
-    let mut out = stdout();
     if !ANIMATIONS.load(Ordering::Relaxed) {
-        print!("{text}");
-        let _ = out.flush();
-        return;
+        return show(text);
     }
-    for output in text.ansi_parse() {
-        match output {
-            Output::TextBlock(block) => block.graphemes(true).for_each(|grapheme| {
-                sleep(Duration::from_micros(micros));
-                print!("{grapheme}");
-                let _ = out.flush();
-            }),
-            Output::Escape(escape) => print!("{escape}"),
+    for frame in frames(text) {
+        if let Output::TextBlock(_) = frame {
+            sleep(Duration::from_micros(micros));
         }
+        show(frame);
     }
-    let _ = out.flush();
+}
+
+/// [`snailprint`] that waits on the runtime's timer, so whoever awaits it can
+/// stop it midway, as Ctrl+C does to a streaming reply.
+async fn animate(text: &str, micros: u64) {
+    if !ANIMATIONS.load(Ordering::Relaxed) {
+        return show(text);
+    }
+    for frame in frames(text) {
+        if let Output::TextBlock(_) = frame {
+            tokio::time::sleep(Duration::from_micros(micros)).await;
+        }
+        show(frame);
+    }
+}
+
+/// What an animation prints at each step: a grapheme, or an ANSI escape.
+fn frames(text: &str) -> impl Iterator<Item = Output<'_>> {
+    text.ansi_parse().flat_map(|output| match output {
+        Output::TextBlock(block) => block.graphemes(true).map(Output::TextBlock).collect(),
+        escape => vec![escape],
+    })
+}
+
+fn show(text: impl std::fmt::Display) {
+    print!("{text}");
+    let _ = stdout().flush();
 }

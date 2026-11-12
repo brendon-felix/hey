@@ -59,6 +59,10 @@ async fn connect(server: &str, config: &McpServer) -> Result<Vec<Tool>> {
             for (key, value) in env {
                 command.env(key, expand(value)?);
             }
+            // Out of the terminal's foreground group, so Ctrl+C stops the
+            // run without also killing the server.
+            #[cfg(unix)]
+            command.process_group(0);
             // A server's logs would interleave with the conversation.
             let (transport, _) = TokioChildProcess::builder(command)
                 .stderr(Stdio::null())

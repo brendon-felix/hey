@@ -2,6 +2,8 @@
 /*                                   ui.rs                                    */
 /* -------------------------------------------------------------------------- */
 
+use std::io::ErrorKind;
+
 use anyhow::Result;
 use dialoguer::{FuzzySelect, Select, theme::ColorfulTheme};
 
@@ -25,15 +27,23 @@ pub async fn confirm_tool(tool: String) -> Decision {
     }
 }
 
-/// Picks one of `items`, starting at `current`; `None` when cancelled.
+/// Picks one of `items`, starting at `current`; `None` when cancelled with
+/// Esc or Ctrl+C.
 pub fn pick(prompt: &str, items: &[String], current: usize) -> Result<Option<usize>> {
+    // On Ctrl+C dialoguer raises SIGINT, which ends hey unless something
+    // listens for it; the error that follows then reports the cancel.
+    #[cfg(unix)]
+    let _listening = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt())?;
     println!();
     let picked = FuzzySelect::with_theme(&ColorfulTheme::default())
         .with_prompt(prompt)
         .items(items)
         .default(current)
         .max_length(15)
-        .interact_opt()?;
+        .interact_opt();
     println!();
-    Ok(picked)
+    match picked {
+        Err(dialoguer::Error::IO(error)) if error.kind() == ErrorKind::Interrupted => Ok(None),
+        picked => Ok(picked?),
+    }
 }
