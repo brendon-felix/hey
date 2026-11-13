@@ -289,7 +289,7 @@ fn report(event: Event, style: &Style) -> Option<Outcome> {
             args,
             machine,
         } => render::tool_call(&name, &args, machine.as_deref(), style.tool_output),
-        Event::ToolResult { result } => render::tool_result(&result),
+        Event::ToolResult { result } => render::tool_result(&result, style.tool_output),
         Event::Notice { text } => render::notice(&text),
         Event::Attached { name } => render::attached(&name),
         Event::End { ending, .. } => {

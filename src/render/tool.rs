@@ -40,10 +40,29 @@ pub(super) fn printed(result: &ToolResult, shown: Output) {
     if result.name.as_str() != "shell" || result.is_error {
         return;
     }
-    let text: Vec<_> = result.content.iter().filter_map(|content| content.as_text()).collect();
-    let text = text.join("\n");
+    let text = text(result);
     let lines: Vec<_> = split_status(&text).0.lines().map(|line| (Mark::Printed, line)).collect();
     excerpt(&lines, shown, Keep::Last);
+}
+
+/// What a call gave back, where it has not shown already: a command's
+/// output shows as it runs, what `write` and `edit` change shows with the
+/// call, and a single line shows beside the result's marker.
+pub(super) fn returned(result: &ToolResult, shown: Output) {
+    if matches!(result.name.as_str(), "shell" | "write" | "edit") || result.is_error {
+        return;
+    }
+    let text = text(result);
+    let lines: Vec<_> = text.lines().map(|line| (Mark::Printed, line)).collect();
+    if lines.len() > 1 {
+        excerpt(&lines, shown, Keep::First);
+    }
+}
+
+/// A result's text, whatever else it holds left out.
+pub(super) fn text(result: &ToolResult) -> String {
+    let text: Vec<_> = result.content.iter().filter_map(|content| content.as_text()).collect();
+    text.join("\n")
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

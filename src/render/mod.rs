@@ -128,13 +128,10 @@ fn machine_arg(args: &str) -> Option<String> {
     args.get(route::ARG)?.as_str().map(str::to_owned)
 }
 
-pub fn tool_result(result: &ToolResult) {
-    let text = result
-        .content
-        .iter()
-        .filter_map(|content| content.as_text())
-        .collect::<Vec<_>>()
-        .join("\n");
+/// What a call gave back, under it, and how it ended.
+pub fn tool_result(result: &ToolResult, shown: Output) {
+    tool::returned(result, shown);
+    let text = tool::text(result);
     let room = terminal_width().saturating_sub(result.name.as_str().chars().count() + 7);
     if result.is_error {
         let first = text.lines().next().unwrap_or("failed");
@@ -252,7 +249,7 @@ pub fn conversation(messages: &[Message], style: &Style) {
                 }
                 UserContent::ToolResult(result) => {
                     tool::printed(result, style.tool_output);
-                    tool_result(result)
+                    tool_result(result, style.tool_output)
                 }
                 _ => {}
             }),
