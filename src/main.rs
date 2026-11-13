@@ -167,6 +167,7 @@ async fn run(args: Args) -> Result<ExitCode> {
                 system_prompt,
                 style,
                 greetings: config.greetings,
+                config_file: config.file,
                 editor: config.editor,
                 colors: config.display.colors,
             })

@@ -8,6 +8,7 @@ mod mentions;
 mod theme_picker;
 mod watch;
 
+use std::path::PathBuf;
 use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Instant;
@@ -17,7 +18,7 @@ use yansi::Paint;
 
 use crate::backend::{Backend, Events};
 use crate::browser;
-use crate::config::Thinking;
+use crate::config::{Setting, Thinking};
 use crate::mention;
 use crate::permissions::Permission;
 use crate::protocol::{ModelInfo, RunId, RunOptions, Snapshot};
@@ -38,6 +39,8 @@ pub struct Repl {
     window: Option<u32>,
     style: Style,
     greetings: bool,
+    /// Where settings changed here are saved.
+    config_file: Option<PathBuf>,
     editor: Editor,
     status: SharedStatus,
     /// What the host's threads are doing.
@@ -60,6 +63,7 @@ pub struct Setup {
     pub system_prompt: Option<String>,
     pub style: Style,
     pub greetings: bool,
+    pub config_file: Option<PathBuf>,
     pub editor: crate::config::Editor,
     pub colors: bool,
 }
@@ -100,6 +104,7 @@ impl Repl {
             window: setup.model.context_window,
             style: setup.style,
             greetings: setup.greetings,
+            config_file: setup.config_file,
             editor,
             status,
             watch,
@@ -337,7 +342,8 @@ impl Repl {
         self.options.model = model.reference;
         self.window = model.context_window;
         self.show_status(None);
-        println!("{} {}\n", "Using".bold(), palette().name.paint(&reference));
+        println!("{} {}", "Using".bold(), palette().name.paint(&reference));
+        self.save(Setting::Model(&reference));
         Ok(())
     }
 
@@ -361,7 +367,8 @@ impl Repl {
         self.options.thinking = thinking;
         self.status.lock().unwrap_or_else(PoisonError::into_inner).thinking = thinking;
         let described = thinking.map_or("the model's default", Thinking::as_str);
-        println!("{} {}\n", "Thinking:".bold(), palette().name.paint(described));
+        println!("{} {}", "Thinking:".bold(), palette().name.paint(described));
+        self.save(Setting::Thinking(thinking));
         Ok(())
     }
 
@@ -379,8 +386,26 @@ impl Repl {
         let mut sample = Reply::new(&self.style);
         sample.text(theme_picker::SAMPLE);
         sample.finish();
-        println!();
+        self.save(Setting::Theme(&theme));
         Ok(())
+    }
+
+    /// Saves `setting` to the config file so later sessions start with it,
+    /// unless a remote host's config decides it, and says which.
+    fn save(&self, setting: Setting) {
+        match (&self.config_file, self.backend.remote()) {
+            (_, Some(remote)) if setting.is_hosts() => {
+                render::notice(&format!("for this session; `{remote}` sets the default"))
+            }
+            (None, _) => render::notice("for this session; there is no config file to save it to"),
+            (Some(file), _) => match setting.save(file) {
+                Ok(()) => render::notice(&format!("saved to {}", file.display())),
+                Err(error) => {
+                    render::error(&format!("cannot save it to {}: {error:#}", file.display()))
+                }
+            },
+        }
+        println!();
     }
 
     async fn list_tools(&self) -> Result<()> {

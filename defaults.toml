@@ -10,13 +10,13 @@
 
 # Model, as `vendor/model` from rig's catalog (https://rig.rs). The vendor's
 # usual API key variable is read from the environment, e.g. OPENAI_API_KEY,
-# ANTHROPIC_API_KEY or GEMINI_API_KEY. `/model` switches at runtime.
+# ANTHROPIC_API_KEY or GEMINI_API_KEY. `/model` switches and saves it here.
 model = "openai/gpt-5.5"
 
 # How much the model reasons before answering: "off", "minimal", "low",
 # "medium", "high", "xhigh" or "max". When unset, the model's default.
 # Models that cannot honour a level report it when you send a message.
-# `/think` changes it at runtime, `hey --think LEVEL` for one run.
+# `/think` changes and saves it here, `hey --think LEVEL` for one run.
 # thinking = "medium"
 
 # System prompt. When unset, hey uses its own agent prompt. Either way, hey
@@ -44,7 +44,7 @@ greetings = true
 # Highlight Markdown and code in responses.
 syntax_highlighting = true
 # Theme for responses, the prompt, input and menus; `/theme` lists and
-# previews them.
+# previews them, and saves the one picked here.
 theme = "ansi"
 # Wrap responses at this width, or the terminal's if narrower. 0 wraps at the
 # terminal's width.

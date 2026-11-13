@@ -2,13 +2,11 @@
 /*                            subagents/access.rs                             */
 /* -------------------------------------------------------------------------- */
 
-use std::fs;
-use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, PoisonError};
 
 use anyhow::{Context, Result};
-use toml_edit::{Array, DocumentMut};
+use toml_edit::Array;
 
 use crate::config::{self, Directories};
 
@@ -119,27 +117,19 @@ fn rule_path(rule: &str) -> Result<PathBuf> {
 }
 
 /// Adds `dir` to `subagents.machines.<machine>.allow` in the config at
-/// `file`, keeping the rest of the file as the user wrote it.
+/// `file`.
 fn save_allowed(file: &Path, machine: &str, dir: &Path) -> Result<()> {
-    let text = match fs::read_to_string(file) {
-        Ok(text) => text,
-        Err(error) if error.kind() == ErrorKind::NotFound => String::new(),
-        Err(error) => return Err(error.into()),
-    };
-    let mut document: DocumentMut = text.parse()?;
-    let allow = &mut document["subagents"]["machines"][machine]["allow"];
-    if allow.is_none() {
-        *allow = toml_edit::value(Array::new());
-    }
-    allow
-        .as_array_mut()
-        .context("its `allow` is not a list")?
-        .push(shown(dir));
-    if let Some(parent) = file.parent() {
-        fs::create_dir_all(parent)?;
-    }
-    fs::write(file, document.to_string())?;
-    Ok(())
+    config::edit(file, |document| {
+        let allow = &mut document["subagents"]["machines"][machine]["allow"];
+        if allow.is_none() {
+            *allow = toml_edit::value(Array::new());
+        }
+        allow
+            .as_array_mut()
+            .context("its `allow` is not a list")?
+            .push(shown(dir));
+        Ok(())
+    })
 }
 
 /// `dir` as a person would write it, under `~` when in the home directory.
@@ -154,6 +144,8 @@ fn shown(dir: &Path) -> String {
 
 #[cfg(test)]
 mod tests {
+    use std::fs;
+
     use super::*;
 
     fn access(allow: &[&str], exclude: &[&str], file: Option<PathBuf>) -> Access {

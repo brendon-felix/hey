@@ -77,6 +77,9 @@ Type `/` or press Tab to see commands and skills; the status line describes the 
 | `/clear`, `/c` | Clear the screen |
 | `/exit`, `/quit`, `/q`, `/x` | Exit |
 
+`/model`, `/think` and `/theme` save their choice to the config file, so later sessions start
+with it; `--model` and `--think` apply to one run only.
+
 ### Mentions
 
 Type `@` to attach something to your message; a menu suggests, fuzzy-matched, files and
@@ -349,8 +352,9 @@ token_file = "~/Sync/hey-token"
 
 With a remote, everything about the agent comes from the server's config and environment: model
 API keys, tools and their permissions, MCP servers and where conversations are saved. The client
-chooses the model and thinking level per run (`/model`, `/think`) and keeps its own display and
-editor settings. `hey --local` runs the agent on the client instead.
+chooses the model and thinking level per run (`/model`, `/think`, which then last only the session,
+since the server's config sets the defaults) and keeps its own display and editor settings.
+`hey --local` runs the agent on the client instead.
 
 The model is told that its tools act on the server, and which machine and directory you are on,
 so it does not look for your files on the server; mention them with `@` to attach them.

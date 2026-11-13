@@ -4,11 +4,13 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
+use std::io::ErrorKind;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Deserializer, Serialize};
+use toml_edit::{DocumentMut, Item, TableLike, Value};
 
 use crate::permissions::{self, Permission};
 
@@ -82,6 +84,70 @@ impl Config {
         config.file = file;
         Ok(config)
     }
+}
+
+/// A setting changed in the REPL, which is saved so it outlasts the session.
+#[derive(Debug, Clone, Copy)]
+pub enum Setting<'a> {
+    Model(&'a str),
+    Thinking(Option<Thinking>),
+    Theme(&'a str),
+}
+
+impl Setting<'_> {
+    /// Whether the host running the agent reads it from its config, rather
+    /// than the terminal showing the conversation.
+    pub fn is_hosts(self) -> bool {
+        matches!(self, Setting::Model(_) | Setting::Thinking(_))
+    }
+
+    pub fn save(self, file: &Path) -> Result<()> {
+        edit(file, |document| {
+            match self {
+                Setting::Model(model) => set(document.as_table_mut(), "model", model),
+                Setting::Thinking(Some(level)) => {
+                    set(document.as_table_mut(), "thinking", level.as_str())
+                }
+                Setting::Thinking(None) => drop(document.remove("thinking")),
+                Setting::Theme(theme) => {
+                    let display = document
+                        .entry("display")
+                        .or_insert(toml_edit::table())
+                        .as_table_like_mut()
+                        .context("its `display` is not a table")?;
+                    set(display, "theme", theme);
+                }
+            }
+            Ok(())
+        })
+    }
+}
+
+/// Changes the config at `file`, or creates it, keeping the rest of the
+/// file as the user wrote it.
+pub fn edit(file: &Path, change: impl FnOnce(&mut DocumentMut) -> Result<()>) -> Result<()> {
+    let text = match fs::read_to_string(file) {
+        Ok(text) => text,
+        Err(error) if error.kind() == ErrorKind::NotFound => String::new(),
+        Err(error) => return Err(error.into()),
+    };
+    let mut document: DocumentMut = text.parse()?;
+    change(&mut document)?;
+    if let Some(parent) = file.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    fs::write(file, document.to_string())?;
+    Ok(())
+}
+
+/// Sets `key` in `table`, keeping the comments around it.
+fn set(table: &mut dyn TableLike, key: &str, value: &str) {
+    let mut new = Value::from(value);
+    let item = table.entry(key).or_insert(Item::None);
+    if let Some(old) = item.as_value() {
+        *new.decor_mut() = old.decor().clone();
+    }
+    *item = Item::Value(new);
 }
 
 /// How much the model reasons before answering. Unset leaves it to the
@@ -644,6 +710,26 @@ mod tests {
         assert!(error("[tools]\ndefault = \"maybe\"").contains("unknown variant"));
         assert!(error("thinking = \"huge\"").contains("unknown variant"));
         assert!(error("[server]\ntoken = \"t\"\ntoken_file = \"f\"").contains("not both"));
+    }
+
+    #[test]
+    fn saved_settings_keep_the_rest_of_the_file() {
+        let dir = std::env::temp_dir().join(format!("hey-settings-{}", std::process::id()));
+        let file = dir.join("hey.toml");
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(&file, "# mine\nmodel = \"openai/gpt-5.5\" # fast\nthinking = \"low\"\n\n[editor]\nmode = \"vi\"\n").unwrap();
+
+        Setting::Model("anthropic/claude-opus-5-5").save(&file).unwrap();
+        Setting::Thinking(None).save(&file).unwrap();
+        Setting::Theme("Nord").save(&file).unwrap();
+
+        let saved = fs::read_to_string(&file).unwrap();
+        assert!(saved.starts_with("# mine\nmodel = \"anthropic/claude-opus-5-5\" # fast\n"), "{saved}");
+        assert!(saved.contains("\n[display]\ntheme = \"Nord\"\n"), "{saved}");
+        let config: Config = toml::from_str(&saved).unwrap();
+        assert_eq!(config.thinking, None);
+        assert_eq!(config.editor.mode, EditMode::Vi);
+        fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]
