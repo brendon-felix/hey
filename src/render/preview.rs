@@ -2,13 +2,118 @@
 /*                              render/preview.rs                             */
 /* -------------------------------------------------------------------------- */
 
+use std::collections::VecDeque;
+use std::time::Duration;
+
 use rig_core::streaming::parse_partial_arguments;
 use textwrap::core::display_width;
 
-use super::{call_line, palette, summarize, wrap};
+use super::tool::{Mark, PREVIEW_LINES, row};
+use super::{agent_row, call_line, palette, summarize, thought_text, wrap};
 
 /// Most rows of the text being written the box shows.
 const ROWS: usize = 10;
+
+/// What a [`Preview`] shows the latest of.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Source {
+    /// A running command's output, a row per line.
+    Command,
+    /// The model's reasoning, wrapped, under a line saying it thinks.
+    Reasoning,
+    /// What subagents do, a row per step.
+    Agents,
+}
+
+/// Whether what a [`Preview`] shows goes on, and once it has ended, how long
+/// it took when that is known.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Progress {
+    Going,
+    Ended(Option<Duration>),
+}
+
+/// The latest of what the agent does besides answering, which shows in
+/// place as more arrives and stays once it ends.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Preview {
+    source: Source,
+    /// Its latest lines, each with its `\n` once complete.
+    lines: VecDeque<String>,
+}
+
+impl Preview {
+    pub fn new(source: Source) -> Self {
+        Self {
+            source,
+            lines: VecDeque::new(),
+        }
+    }
+
+    pub fn source(&self) -> Source {
+        self.source
+    }
+
+    pub fn push(&mut self, text: &str) {
+        for piece in text.split_inclusive('\n') {
+            match self.lines.back_mut() {
+                Some(open) if !open.ends_with('\n') => open.push_str(piece),
+                _ => self.lines.push_back(piece.to_owned()),
+            }
+            // Reasoning spaces its paragraphs, which would waste a preview's rows.
+            if self.source == Source::Reasoning
+                && self.lines.back().is_some_and(|line| line.ends_with('\n') && blank(line))
+            {
+                self.lines.pop_back();
+            }
+        }
+        let excess = self.lines.len().saturating_sub(PREVIEW_LINES);
+        self.lines.drain(..excess);
+    }
+
+    /// Its rows, none wider than `width` columns: at most [`PREVIEW_LINES`]
+    /// of the latest, under a header for reasoning.
+    pub fn rows(&self, width: usize, progress: Progress) -> Vec<String> {
+        let lines = self.lines.iter().map(|line| line.strip_suffix('\n').unwrap_or(line));
+        let mut rows: Vec<String> = match self.source {
+            Source::Command => lines.map(|line| row(Mark::Printed, line, width)).collect(),
+            Source::Agents => lines.map(|line| agent_row(line, width)).collect(),
+            Source::Reasoning => lines
+                .filter(|line| !blank(line))
+                .flat_map(|line| reasoning_rows(line, width))
+                .collect(),
+        };
+        rows.drain(..rows.len().saturating_sub(PREVIEW_LINES));
+        match self.source {
+            Source::Reasoning => {
+                let header = match progress {
+                    Progress::Going => "Thinking".to_owned(),
+                    Progress::Ended(took) => thought_text(took),
+                };
+                let header = palette().muted.paint(&header).italic().to_string();
+                [String::new(), header].into_iter().chain(rows).collect()
+            }
+            Source::Command | Source::Agents => rows,
+        }
+    }
+}
+
+fn blank(line: &str) -> bool {
+    line.trim().is_empty()
+}
+
+/// A line of reasoning wrapped beside the preview's border.
+fn reasoning_rows(line: &str, width: usize) -> Vec<String> {
+    let line = line.replace('\t', "    ");
+    let muted = palette().muted;
+    wrap::rows(&line, width.saturating_sub(4))
+        .into_iter()
+        .map(|range| {
+            let text = &line[wrap::trimmed(&line, &range)];
+            format!("  {} {}", muted.paint("│"), muted.paint(text).italic())
+        })
+        .collect()
+}
 
 /// A tool call as far as the model has written it, drawn as it grows: the
 /// line it prints once complete, over a box with the end of the text the
@@ -156,6 +261,29 @@ mod tests {
         for (json, expected) in cases {
             assert_eq!(writing(json).as_deref(), expected, "{json}");
         }
+    }
+
+    #[test]
+    fn previews_the_latest_reasoning_wrapped_without_its_gaps() {
+        yansi::disable();
+        let mut preview = Preview::new(Source::Reasoning);
+        for piece in ["one\n\ntwo\n", "\nthree four five six", " seven\n  \n", "eight\nnine\nten"] {
+            preview.push(piece);
+        }
+        assert_eq!(
+            preview.rows(16, Progress::Going),
+            [
+                "",
+                "Thinking",
+                "  │ five six",
+                "  │ seven",
+                "  │ eight",
+                "  │ nine",
+                "  │ ten",
+            ]
+        );
+        let ended = preview.rows(16, Progress::Ended(Some(Duration::from_secs(72))));
+        assert_eq!(ended[1], "Thought for 1m 12s");
     }
 
     #[test]

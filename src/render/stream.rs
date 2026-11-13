@@ -11,13 +11,14 @@ use crossterm::Command;
 use crossterm::cursor::MoveUp;
 use crossterm::terminal::{BeginSynchronizedUpdate, Clear, ClearType, EndSynchronizedUpdate};
 
-use super::preview::Call;
+use super::preview::{Call, Preview, Progress, Source};
 use super::reply::{Part, Reply};
-use super::tool::{Mark, PREVIEW_LINES, line, row};
+use super::tool::{Mark, line};
 use super::{
-    Style, animations, clip, clock, show, terminal_height, terminal_width, theme, thought,
+    Style, agent_row, animations, clip, clock, show, terminal_height, terminal_width, theme,
+    thought,
 };
-use crate::config::ToolOutput;
+use crate::config::Output;
 
 /// How often a [`Stream`] wants [`Stream::tick`] called.
 pub const FRAME: Duration = Duration::from_millis(16);
@@ -70,66 +71,11 @@ impl fmt::Display for Activity {
     }
 }
 
-/// The rows under the reply that say what the agent is doing, as drawn.
+/// The rows at the bottom that are redrawn as they change, as drawn: a
+/// preview, and what the agent is doing while it says nothing.
 struct Status {
     text: String,
     rows: usize,
-}
-
-/// How a running command's output shows, per [`ToolOutput`].
-enum Output {
-    Full,
-    Preview(Preview),
-    Hidden,
-}
-
-impl From<ToolOutput> for Output {
-    fn from(setting: ToolOutput) -> Self {
-        match setting {
-            ToolOutput::Full => Output::Full,
-            ToolOutput::Preview => Output::Preview(Preview::default()),
-            ToolOutput::Hidden => Output::Hidden,
-        }
-    }
-}
-
-/// The latest lines of a running command, redrawn in place as more arrive,
-/// and left in place once it ends. Output that is not a terminal gets them
-/// once the command's output ends.
-#[derive(Default)]
-struct Preview {
-    lines: VecDeque<String>,
-    /// Rows the lines take on the terminal, right above the cursor.
-    drawn: usize,
-}
-
-impl Preview {
-    fn push(&mut self, text: String, mode: Mode) {
-        if self.lines.len() == PREVIEW_LINES {
-            self.lines.pop_front();
-        }
-        self.lines.push_back(text);
-        if mode != Mode::Lines {
-            self.draw();
-        }
-    }
-
-    /// Leaves the lines shown and starts a new preview below them.
-    fn end(&mut self, mode: Mode) {
-        if mode == Mode::Lines {
-            self.draw();
-        }
-        *self = Self::default();
-    }
-
-    fn draw(&mut self) {
-        if let Ok(rows @ 1..) = u16::try_from(self.drawn) {
-            show(format!("{}\r{}", MoveUp(rows), Clear(ClearType::FromCursorDown)));
-        }
-        let rows: String = self.lines.iter().map(|text| row(Mark::Printed, text) + "\n").collect();
-        show(rows);
-        self.drawn = self.lines.len();
-    }
 }
 
 /// A run's reply on the terminal, advanced a frame at a time, with a status
@@ -137,9 +83,11 @@ impl Preview {
 pub struct Stream {
     mode: Mode,
     reply: Reply,
-    show_thinking: bool,
+    style: Style,
     activity: Activity,
-    output: Output,
+    /// The latest of what the agent does besides answering, while it goes
+    /// on. Output that is not a terminal gets it once it ends.
+    preview: Option<Preview>,
     /// Received but not yet shown.
     backlog: VecDeque<Chunk>,
     started: Instant,
@@ -159,9 +107,9 @@ impl Stream {
         Self {
             mode,
             reply: Reply::new(style),
-            show_thinking: style.show_thinking,
+            style: style.clone(),
             activity: Activity::Waiting,
-            output: style.tool_output.into(),
+            preview: None,
             backlog: VecDeque::new(),
             started: now,
             quiet_since: now,
@@ -181,10 +129,13 @@ impl Stream {
     }
 
     pub fn reasoning(&mut self, text: String) {
-        if self.show_thinking {
-            self.receive(Part::Reasoning, text);
-        } else {
-            self.think();
+        match self.style.thinking_output {
+            Output::Full => self.receive(Part::Reasoning, text),
+            Output::Preview => {
+                self.think();
+                self.preview(Source::Reasoning, &text);
+            }
+            Output::Hidden => self.think(),
         }
     }
 
@@ -197,12 +148,19 @@ impl Stream {
         self.backlog.push_back(Chunk::End);
     }
 
-    /// A part of reasoning ended after `duration`, which hidden reasoning
-    /// leaves on screen in its place.
+    /// A part of reasoning ended after `duration`, which shows where its
+    /// reasoning does not, or only in preview.
     pub fn thought(&mut self, duration: Duration) {
         self.end_part();
-        if !self.show_thinking {
-            self.backlog.push_back(Chunk::Thought(duration));
+        match (self.style.thinking_output, &self.preview) {
+            (Output::Full, _) => {}
+            (_, Some(preview)) if preview.source() == Source::Reasoning => {
+                self.end_preview(Some(duration));
+            }
+            // Reasoning whose text the provider withholds still took time.
+            (Output::Preview | Output::Hidden, _) => {
+                self.backlog.push_back(Chunk::Thought(duration));
+            }
         }
     }
 
@@ -231,13 +189,24 @@ impl Stream {
 
     /// A line of a running command's output.
     pub fn output(&mut self, text: String) {
-        if let Output::Hidden = self.output {
-            return;
+        match self.style.tool_output {
+            Output::Full => {
+                self.settle();
+                println!("{}", line(Mark::Printed, &text));
+            }
+            Output::Preview => self.preview(Source::Command, &text),
+            Output::Hidden => {}
         }
-        self.flush();
-        match &mut self.output {
-            Output::Full => println!("{}", line(Mark::Printed, &text)),
-            Output::Preview(preview) => preview.push(text, self.mode),
+    }
+
+    /// A step a subagent took, as [`super::agent_step`] puts it.
+    pub fn agent_step(&mut self, step: String) {
+        match self.style.subagent_output {
+            Output::Full => {
+                self.settle();
+                println!("{}", agent_row(&step, terminal_width()));
+            }
+            Output::Preview => self.preview(Source::Agents, &format!("{step}\n")),
             Output::Hidden => {}
         }
     }
@@ -252,15 +221,15 @@ impl Stream {
             return;
         }
         self.reply.draw();
-        if self.reply.at_line_start() && self.quiet_since.elapsed() >= SPINNER_DELAY {
+        if self.reply.at_line_start() {
             self.draw_status();
         }
     }
 
-    /// Shows everything received and ends the open part, so other output
-    /// can follow.
+    /// Shows everything received and ends the open part and preview, so
+    /// other output can follow.
     pub fn settle(&mut self) {
-        self.end_preview();
+        self.end_preview(None);
         self.flush();
     }
 
@@ -273,10 +242,31 @@ impl Stream {
         self.quiet_since = Instant::now();
     }
 
-    fn end_preview(&mut self) {
-        if let Output::Preview(preview) = &mut self.output {
-            preview.end(self.mode);
+    /// Adds `text` to the preview of `source`, which begins below what has
+    /// arrived before it.
+    fn preview(&mut self, source: Source, text: &str) {
+        if !self.backlog.is_empty() {
+            self.flush();
         }
+        if self.preview.as_ref().is_some_and(|preview| preview.source() != source) {
+            self.end_preview(None);
+        }
+        self.preview.get_or_insert_with(|| Preview::new(source)).push(text);
+    }
+
+    /// Leaves the preview shown for good, saying how long it took when that
+    /// is known.
+    fn end_preview(&mut self, took: Option<Duration>) {
+        let Some(preview) = self.preview.take() else {
+            return;
+        };
+        self.hide_status();
+        let rows = preview.rows(self.preview_width(), Progress::Ended(took));
+        show(rows.iter().map(|row| format!("{row}\n")).collect::<String>());
+    }
+
+    fn preview_width(&self) -> usize {
+        self.style.width().min(terminal_width().saturating_sub(1))
     }
 
     fn receive(&mut self, part: Part, text: String) {
@@ -325,7 +315,7 @@ impl Stream {
     /// Hands the reply up to `budget` characters of the backlog, in order.
     fn reveal(&mut self, mut budget: usize) {
         if !self.backlog.is_empty() {
-            self.end_preview();
+            self.end_preview(None);
         }
         while let Some(chunk) = self.backlog.pop_front() {
             match chunk {
@@ -347,28 +337,25 @@ impl Stream {
         }
     }
 
-    /// Draws the status: a call being written, if there is one, over the
-    /// spinner. Each row is narrower than the terminal, so none wraps and
-    /// the rows can be found again to redraw.
+    /// Draws the status: the preview, if there is one, then, once the agent
+    /// has been quiet a while, a call being written, if there is one, over
+    /// the spinner. Each row is narrower than the terminal, so none wraps
+    /// and the rows can be found again to redraw.
     fn draw_status(&mut self) {
-        let elapsed = self.started.elapsed();
-        let frame = (elapsed.as_millis() / SPINNER_FRAME.as_millis()) as usize;
-        let palette = theme::palette();
-        let spinner = format!(
-            "{} {}",
-            palette.accent.paint(SPINNER[frame % SPINNER.len()]),
-            palette.muted.paint(&clip(
-                &format!("{} {}", self.activity, clock(elapsed)),
-                terminal_width().saturating_sub(3)
-            )),
-        );
-        let mut rows = match &self.activity {
-            Activity::Preparing(call) => {
-                call.rows(terminal_width().saturating_sub(1), terminal_height().saturating_sub(2))
+        let mut rows = self
+            .preview
+            .as_ref()
+            .map_or_else(Vec::new, |preview| preview.rows(self.preview_width(), Progress::Going));
+        if self.quiet_since.elapsed() >= SPINNER_DELAY {
+            let room = terminal_height().saturating_sub(rows.len() + 2);
+            if let Activity::Preparing(call) = &self.activity {
+                rows.extend(call.rows(terminal_width().saturating_sub(1), room));
             }
-            _ => Vec::new(),
-        };
-        rows.push(spinner);
+            rows.push(self.spinner());
+        }
+        if rows.is_empty() {
+            return self.hide_status();
+        }
         let text = rows.join("\n");
         if self.status.as_ref().is_some_and(|status| status.text == text) {
             return;
@@ -383,6 +370,20 @@ impl Stream {
             text,
             rows: rows.len(),
         });
+    }
+
+    fn spinner(&self) -> String {
+        let elapsed = self.started.elapsed();
+        let frame = (elapsed.as_millis() / SPINNER_FRAME.as_millis()) as usize;
+        let palette = theme::palette();
+        format!(
+            "{} {}",
+            palette.accent.paint(SPINNER[frame % SPINNER.len()]),
+            palette.muted.paint(&clip(
+                &format!("{} {}", self.activity, clock(elapsed)),
+                terminal_width().saturating_sub(3)
+            )),
+        )
     }
 
     fn hide_status(&mut self) {

@@ -218,8 +218,9 @@ async fn show(
                 seen.agents.insert(agent, label);
             }
             Event::Agent { agent, step } => {
-                stream.settle();
-                render::agent_event(seen.label(&agent), &step);
+                if let Some(step) = render::agent_step(seen.label(&agent), &step) {
+                    stream.agent_step(step);
+                }
             }
             Event::AgentEnded { agent, error } => {
                 stream.settle();

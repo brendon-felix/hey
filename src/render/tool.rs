@@ -7,13 +7,13 @@ use rig_tools::{EditArgs, WriteArgs, split_status};
 use yansi::Paint;
 
 use super::{clip, palette, terminal_width};
-use crate::config::ToolOutput;
+use crate::config::Output;
 
 /// Lines a preview keeps of what a call wrote or printed.
 pub(super) const PREVIEW_LINES: usize = 5;
 
 /// What a call to `write` or `edit` changes in its file.
-pub(super) fn changes(name: &str, args: &str, shown: ToolOutput) {
+pub(super) fn changes(name: &str, args: &str, shown: Output) {
     match name {
         "write" => {
             if let Ok(write) = serde_json::from_str::<WriteArgs>(args) {
@@ -36,7 +36,7 @@ pub(super) fn changes(name: &str, args: &str, shown: ToolOutput) {
 }
 
 /// What a finished command printed, as it showed while it ran.
-pub(super) fn printed(result: &ToolResult, shown: ToolOutput) {
+pub(super) fn printed(result: &ToolResult, shown: Output) {
     if result.name.as_str() != "shell" || result.is_error {
         return;
     }
@@ -73,18 +73,18 @@ fn diff<'a>(old: &'a str, new: &'a str) -> Vec<(Mark, &'a str)> {
     removed.chain(added).collect()
 }
 
-fn excerpt(lines: &[(Mark, &str)], shown: ToolOutput, keep: Keep) {
+fn excerpt(lines: &[(Mark, &str)], shown: Output, keep: Keep) {
     match shown {
-        ToolOutput::Hidden => {}
-        ToolOutput::Full => lines.iter().for_each(|&(mark, text)| println!("{}", line(mark, text))),
-        ToolOutput::Preview => {
+        Output::Hidden => {}
+        Output::Full => lines.iter().for_each(|&(mark, text)| println!("{}", line(mark, text))),
+        Output::Preview => {
             let more = lines.len().saturating_sub(PREVIEW_LINES);
             let (kept, before, after) = match keep {
                 Keep::First => (&lines[..lines.len() - more], 0, more),
                 Keep::Last => (&lines[more..], more, 0),
             };
             elided(before);
-            kept.iter().for_each(|&(mark, text)| println!("{}", row(mark, text)));
+            kept.iter().for_each(|&(mark, text)| println!("{}", row(mark, text, terminal_width())));
             elided(after);
         }
     }
@@ -108,10 +108,10 @@ pub(super) fn line(mark: Mark, text: &str) -> String {
     }
 }
 
-/// [`line`] cut to a single row of the terminal.
-pub(super) fn row(mark: Mark, text: &str) -> String {
+/// [`line`] cut to a single row `width` columns wide.
+pub(super) fn row(mark: Mark, text: &str, width: usize) -> String {
     let text = text.strip_suffix('\n').unwrap_or(text).replace('\t', "    ");
-    line(mark, &clip(&text, terminal_width().saturating_sub(4)))
+    line(mark, &clip(&text, width.saturating_sub(4)))
 }
 
 #[cfg(test)]
