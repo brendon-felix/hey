@@ -36,11 +36,30 @@ enum Chunk {
     End,
 }
 
+/// What the spinner says the agent is doing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Activity {
+    Working,
+    /// Reasoning that is not shown.
+    Thinking,
+}
+
+impl Activity {
+    fn label(self) -> &'static str {
+        match self {
+            Activity::Working => "Working",
+            Activity::Thinking => "Thinking",
+        }
+    }
+}
+
 /// A run's reply on the terminal, advanced a frame at a time, with a spinner
 /// while the agent works without saying anything.
 pub struct Stream {
     mode: Mode,
     reply: Reply,
+    show_thinking: bool,
+    activity: Activity,
     /// Received but not yet shown.
     backlog: VecDeque<Chunk>,
     started: Instant,
@@ -60,6 +79,8 @@ impl Stream {
         Self {
             mode,
             reply: Reply::new(style),
+            show_thinking: style.show_thinking,
+            activity: Activity::Working,
             backlog: VecDeque::new(),
             started: now,
             quiet_since: now,
@@ -68,14 +89,20 @@ impl Stream {
     }
 
     pub fn text(&mut self, text: String) {
+        self.activity = Activity::Working;
         self.receive(Part::Text, text);
     }
 
     pub fn reasoning(&mut self, text: String) {
-        self.receive(Part::Reasoning, text);
+        if self.show_thinking {
+            self.receive(Part::Reasoning, text);
+        } else {
+            self.think();
+        }
     }
 
     pub fn end_part(&mut self) {
+        self.activity = Activity::Working;
         self.backlog.push_back(Chunk::End);
     }
 
@@ -97,6 +124,7 @@ impl Stream {
     /// Shows everything received and ends the open part, so other output
     /// can follow.
     pub fn settle(&mut self) {
+        self.activity = Activity::Working;
         self.hide_spinner();
         self.reveal(usize::MAX);
         self.reply.finish();
@@ -107,6 +135,22 @@ impl Stream {
         match self.backlog.back_mut() {
             Some(Chunk::Text(last, queued)) if *last == part => queued.push_str(&text),
             _ => self.backlog.push_back(Chunk::Text(part, text)),
+        }
+    }
+
+    /// Hidden reasoning ends the text before it, as shown reasoning would,
+    /// so the spinner has a line of its own.
+    fn think(&mut self) {
+        if self.activity == Activity::Thinking {
+            return;
+        }
+        self.activity = Activity::Thinking;
+        // With nothing queued, ending the reply directly keeps a spinner
+        // already showing from blinking off.
+        if self.backlog.is_empty() {
+            self.reply.finish();
+        } else {
+            self.backlog.push_back(Chunk::End);
         }
     }
 
@@ -154,7 +198,7 @@ impl Stream {
         let row = format!(
             "{} {}",
             palette.accent.paint(SPINNER[frame % SPINNER.len()]),
-            palette.muted.paint(&format!("Working {}", clock(elapsed))),
+            palette.muted.paint(&format!("{} {}", self.activity.label(), clock(elapsed))),
         );
         if self.spinner.as_ref() != Some(&row) {
             show(format!("\r{}{row}", Clear(ClearType::CurrentLine)));

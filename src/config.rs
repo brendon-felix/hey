@@ -158,6 +158,7 @@ pub struct Display {
     pub wrap_width: usize,
     pub colors: bool,
     pub animations: bool,
+    pub show_thinking: bool,
 }
 
 impl Default for Display {
@@ -168,6 +169,7 @@ impl Default for Display {
             wrap_width: 100,
             colors: true,
             animations: true,
+            show_thinking: false,
         }
     }
 }
@@ -546,6 +548,7 @@ mod tests {
         assert_eq!(documented.max_turns, built_in.max_turns);
         assert_eq!(documented.display.theme, built_in.display.theme);
         assert_eq!(documented.display.wrap_width, built_in.display.wrap_width);
+        assert_eq!(documented.display.show_thinking, built_in.display.show_thinking);
         assert_eq!(documented.editor.mode, built_in.editor.mode);
         assert_eq!(documented.editor.history_size, built_in.editor.history_size);
         assert_eq!(documented.memory.enabled, built_in.memory.enabled);

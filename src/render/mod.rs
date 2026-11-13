@@ -59,6 +59,7 @@ pub struct Style {
     pub highlight: bool,
     /// Most columns a reply takes, when narrower than the terminal.
     pub wrap: Option<usize>,
+    pub show_thinking: bool,
 }
 
 impl From<&Display> for Style {
@@ -66,6 +67,7 @@ impl From<&Display> for Style {
         Self {
             highlight: display.syntax_highlighting,
             wrap: (display.wrap_width > 0).then_some(display.wrap_width),
+            show_thinking: display.show_thinking,
         }
     }
 }

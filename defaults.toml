@@ -50,6 +50,9 @@ wrap_width = 100
 colors = true
 # Ease streamed text in rather than showing each piece as it arrives.
 animations = true
+# Print the model's reasoning as it arrives, dimmed. When false, the spinner
+# reads "Thinking" while the model reasons.
+show_thinking = false
 
 [editor]
 # "emacs", "vi" or "helix".
