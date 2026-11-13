@@ -26,16 +26,25 @@ What hey remembers across conversations, oldest first. Edit freely: hey keeps \
 the lines that start with `- ` and rewrites the file as it learns.\n\n";
 
 const LEARNING_PROMPT: &str = "\
-You keep the long-term memory of hey, a terminal assistant: what it should know about its user \
-in later, unrelated conversations. Read the exchange, then submit:
-- `remember`: lasting facts the exchange reveals, such as the user's name, role, preferences, \
-tools, environment and projects, and decisions or conventions they set. Write each as one short, \
-self-contained sentence, naming the project or directory a project fact applies to.
+You keep the long-term memory of hey, a terminal assistant: the few things it should know about \
+its user in later, unrelated conversations. Read the exchange, then submit:
+- `remember`: facts about the user that will still hold months from now and help in many \
+conversations, not just ones like this: who they are, their background and work, lasting \
+preferences and how they like to be answered, the machines they use and what each is for, and \
+the ongoing projects they work on, what each is and where it lives. Write each as one short, \
+self-contained sentence about the user.
 - `forget`: the numbers of saved memories the exchange shows to be wrong or outdated. To correct \
 a memory, forget it and remember the corrected version.
-Do not remember what matters only to the task at hand, what is already saved, general \
-knowledge, the assistant's suggestions the user did not adopt, or secrets such as passwords, \
-keys and tokens. Most exchanges teach nothing lasting: then submit two empty lists.";
+Do not remember:
+- hey itself: its configuration, models, tools, MCP servers, limits or behavior.
+- The state of a machine, directory, repository or codebase: what is installed, configured, \
+checked out or available, what a directory holds, how code is structured or where things are \
+defined. These change, and the assistant can look them up when it needs them.
+- The task at hand: its details, progress, findings, bugs and fixes.
+- What is already saved, general knowledge, the assistant's suggestions the user did not adopt, \
+or secrets such as passwords, keys and tokens.
+When unsure whether a fact is lasting and broadly useful, leave it out. Most exchanges teach \
+nothing lasting: then submit two empty lists.";
 
 /// Most saved memories the model sees when deciding what an exchange changes.
 const LEARNING_VIEW: usize = 50;
@@ -212,7 +221,8 @@ pub fn preamble(memories: &[String]) -> Option<String> {
 /// What an exchange changes in memory.
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]
 struct Update {
-    /// New memories, each one short, self-contained sentence.
+    /// New lasting, broadly useful facts about the user, each one short,
+    /// self-contained sentence.
     remember: Vec<String>,
     /// Numbers of saved memories the exchange shows to be wrong or outdated.
     forget: Vec<u32>,
@@ -283,10 +293,7 @@ fn learning_request(shown: &[&String], transcript: &str) -> String {
             .collect::<Vec<_>>()
             .join("\n"),
     };
-    let cwd = std::env::current_dir()
-        .map(|dir| dir.display().to_string())
-        .unwrap_or_else(|_| "unknown".into());
-    format!("Saved memories:\n{saved}\n\nWorking directory: {cwd}\n\nExchange:\n{transcript}")
+    format!("Saved memories:\n{saved}\n\nExchange:\n{transcript}")
 }
 
 /// What was said in `exchange`, leaving out tool calls and their output.

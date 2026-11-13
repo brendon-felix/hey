@@ -312,8 +312,9 @@ remote, skills are the host's, from where `hey --serve` runs, and subagents have
 
 ## Memory
 
-`hey` remembers lasting facts about you and your work, such as your name, preferences, tools and
-projects, across conversations:
+`hey` remembers lasting facts about you, such as your name, background, preferences, machines and
+projects, across conversations. It keeps only what stays true and useful in many conversations, not
+hey's own configuration, the state of your machines or code, or the task at hand:
 
 - **Learning**: after each answer, the model reads the exchange and decides what is worth keeping
   and which saved memories it shows to be outdated. This takes one extra model call, made in the
