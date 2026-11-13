@@ -18,10 +18,12 @@ use yansi::Paint;
 use crate::backend::{Backend, Events};
 use crate::browser;
 use crate::config::Thinking;
+use crate::mention;
 use crate::permissions::Permission;
 use crate::protocol::{ModelInfo, RunId, RunOptions, Snapshot};
 use crate::render::{self, Reply, Style, Theme, palette, snailprint};
 use crate::sessions::SessionId;
+use crate::skills::Invocation;
 use crate::turn::{self, Turn};
 use crate::ui;
 use commands::{COMMANDS, Command, Input};
@@ -131,7 +133,7 @@ impl Repl {
                 Read::Woken => continue,
                 Read::Exit => break,
             };
-            match commands::parse(&line) {
+            match commands::parse(&line, |word| mentions::lock(&self.index).command(word).is_some()) {
                 Input::Empty => {}
                 Input::Message(message) => self.answer(message).await,
                 Input::Invalid(why) => println!("{}\n", why.yellow()),
@@ -217,13 +219,18 @@ impl Repl {
         self.show_status(None);
     }
 
-    /// Fetches the host's conversations and shared files for completion,
-    /// unless what was fetched is still fresh.
+    /// Fetches the host's conversations, shared files and skills for
+    /// completion, unless what was fetched is still fresh. Tells of skills
+    /// that newly failed to load.
     async fn refresh_index(&mut self) {
         if self.indexed.is_some_and(|at| at.elapsed() < STALE_AFTER) {
             return;
         }
-        let (threads, shared) = tokio::join!(self.backend.threads(), self.backend.shared());
+        let (threads, shared, skills) = tokio::join!(
+            self.backend.threads(),
+            self.backend.shared(),
+            self.backend.skills()
+        );
         let mut index = mentions::lock(&self.index);
         match threads {
             Ok(threads) => index.threads = threads.into_iter().map(|thread| thread.summary).collect(),
@@ -232,6 +239,15 @@ impl Repl {
         match shared {
             Ok(shared) => index.shared = shared,
             Err(error) => render::notice(&format!("no shared file completions: {error:#}")),
+        }
+        match skills {
+            Ok(skills) => {
+                for problem in skills.problems.iter().filter(|problem| !index.skills.problems.contains(problem)) {
+                    render::notice(&format!("skill not loaded: {problem}"));
+                }
+                index.skills = skills;
+            }
+            Err(error) => render::notice(&format!("no skill completions: {error:#}")),
         }
         self.indexed = Some(Instant::now());
     }
@@ -250,6 +266,7 @@ impl Repl {
             Command::Think(level) => self.set_thinking(level)?,
             Command::Theme(theme) => self.switch_theme(theme)?,
             Command::Tools => self.list_tools().await?,
+            Command::Skills => self.list_skills().await?,
             Command::Memories => self.list_memories().await?,
             Command::Forget => self.forget().await?,
             Command::Clear => self.editor.clear_screen(),
@@ -384,6 +401,51 @@ impl Repl {
                     Ok(count) => println!("  {} {} ({count} tools)", "●".green(), server.name),
                     Err(error) => println!("  {} {}: {error}", "●".red(), server.name),
                 }
+            }
+        }
+        println!();
+        Ok(())
+    }
+
+    /// The host's skills, how each is invoked, and why any were not loaded.
+    async fn list_skills(&self) -> Result<()> {
+        let found = self.backend.skills().await?;
+        let palette = palette();
+        if found.skills.is_empty() && found.problems.is_empty() {
+            println!(
+                "\n{}",
+                "No skills. A skill is a folder holding a SKILL.md, in one of:".bold()
+            );
+            for (source, dir) in &found.roots {
+                println!("  {} {}", dir.display(), palette.muted.paint(source.as_str()));
+            }
+            println!();
+            return Ok(());
+        }
+        println!();
+        let index = mentions::lock(&self.index);
+        for skill in &found.skills {
+            let invoked = match index.command(skill.name.as_str()) {
+                Some(_) => format!("/{}", skill.name),
+                None => format!("@{}{}", mention::SKILL, skill.name),
+            };
+            let who = match skill.invocation {
+                Invocation::Auto => "",
+                Invocation::Manual => ", only when you invoke it",
+            };
+            let note = format!("{}{who}", skill.source.as_str());
+            let room = render::terminal_width().saturating_sub(29 + note.chars().count());
+            println!(
+                "  {} {} {}",
+                palette.name.paint(&format!("{invoked:<24}")),
+                render::clip(&skill.description, room),
+                palette.muted.paint(&note)
+            );
+        }
+        if !found.problems.is_empty() {
+            println!("\n{}", "Not loaded".bold());
+            for problem in &found.problems {
+                println!("  {} {problem}", "✗".red());
             }
         }
         println!();

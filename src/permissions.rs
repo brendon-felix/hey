@@ -21,8 +21,10 @@ pub enum Permission {
 
 pub fn default_rules() -> BTreeMap<String, Permission> {
     // Starting a subagent asks for its directory, and its tools ask as
-    // their own rules say, so the call itself need not ask too.
-    ["read", "list", "search", crate::subagents::TOOL]
+    // their own rules say, so the call itself need not ask too. Loading a
+    // skill only reads instructions the user installed, which `read` could
+    // read anyway; what following them does asks as usual.
+    ["read", "list", "search", crate::subagents::TOOL, crate::skills::TOOL]
         .map(|tool| (tool.to_owned(), Permission::Allow))
         .into()
 }

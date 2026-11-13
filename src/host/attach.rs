@@ -10,16 +10,18 @@ use rig_core::message::Message;
 
 use super::{Host, Run};
 use crate::agent::{self, Model};
-use crate::mention::{self, Context, Item, Reference, SHARED};
+use crate::mention::{self, Context, Item, Reference, SHARED, SKILL};
 use crate::protocol::{Attachment, Event};
 use crate::sessions::SessionId;
+use crate::skills::{self, Found, Skill};
 
 /// What the host attaches for a mention: a file or directory of its shared
-/// repository, or a saved conversation.
+/// repository, a saved conversation, or a skill the user invoked.
 #[derive(Debug, PartialEq, Eq)]
 enum Target {
     Shared { path: String, item: Item },
     Thread(SessionId),
+    Skill(Skill),
 }
 
 impl fmt::Display for Target {
@@ -31,6 +33,7 @@ impl fmt::Display for Target {
             } if !path.ends_with('/') => write!(f, "{SHARED}{path}/"),
             Self::Shared { path, .. } => write!(f, "{SHARED}{path}"),
             Self::Thread(id) => write!(f, "conversation {id}"),
+            Self::Skill(skill) => write!(f, "{SKILL}{}", skill.name),
         }
     }
 }
@@ -38,11 +41,13 @@ impl fmt::Display for Target {
 impl Host {
     /// `prompt` as the model gets it: what was typed, then what the client
     /// attached and what the host's mentions attach, a conversation as
-    /// `model` sums it up. Tells `run` of each, so every client shows them.
+    /// `model` sums it up, and the `skills` it invokes. Tells `run` of each,
+    /// so every client shows them.
     pub(super) async fn message(
         &self,
         prompt: &str,
         attachments: &[Attachment],
+        skills: &Found,
         model: &Model,
         run: &Run,
     ) -> Message {
@@ -53,7 +58,7 @@ impl Host {
             });
             context.attach(attachment);
         }
-        for target in self.targets(prompt) {
+        for target in self.targets(prompt, skills) {
             run.emit(Event::Attached {
                 name: target.to_string(),
             });
@@ -63,6 +68,7 @@ impl Host {
                     .summary(id, model)
                     .await
                     .map(|summary| context.summary(id, &summary)),
+                Target::Skill(skill) => skill.content().map(|content| context.skill(content)),
             };
             if let Err(error) = attached {
                 run.emit(Event::Notice {
@@ -80,9 +86,12 @@ impl Host {
             .collect()
     }
 
-    fn targets(&self, prompt: &str) -> Vec<Target> {
-        let mut targets = Vec::new();
-        let found = mention::mentions(prompt).filter_map(|mention| {
+    /// What `prompt` attaches: the skill it starts with as `/name`, then
+    /// what it mentions, each once.
+    fn targets(&self, prompt: &str, skills: &Found) -> Vec<Target> {
+        let skill = |name| skills.get(name).cloned().map(Target::Skill);
+        let invoked = skills::invoked(prompt).and_then(skill);
+        let mentioned = mention::mentions(prompt).filter_map(|mention| {
             mention.resolve(|reference| match reference {
                 Reference::Local(_) => None,
                 Reference::Shared(path) => Some(Target::Shared {
@@ -90,9 +99,11 @@ impl Host {
                     path: path.to_owned(),
                 }),
                 Reference::Thread(id) => self.sessions.find(id).map(Target::Thread),
+                Reference::Skill(name) => skill(name),
             })
         });
-        for (target, _) in found {
+        let mut targets = Vec::new();
+        for target in invoked.into_iter().chain(mentioned.map(|(target, _)| target)) {
             if !targets.contains(&target) {
                 targets.push(target);
             }

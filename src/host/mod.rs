@@ -33,6 +33,7 @@ use crate::protocol::{
 };
 use crate::render;
 use crate::sessions::{Mark, SessionId, Sessions, Summary};
+use crate::skills::{self, Found};
 use crate::subagents::{self, Crew, Spawn};
 
 pub use run::Run;
@@ -316,14 +317,15 @@ impl Host {
         if let Some(failure) = self.take_memory_failure() {
             run.emit(Event::Notice { text: failure });
         }
-        let agent = self.agent(&id, thread, &model, &request, &run);
+        let skills = self.skills();
+        let agent = self.agent(&id, thread, &model, &request, &skills, &run);
         let events = run.events().boxed();
         thread.run = Some(run.clone());
         thread.last = Some(run.id());
         self.publish(&threads);
         drop(threads);
         self.tasks
-            .spawn(self.clone().drive(id, run, agent, model, request));
+            .spawn(self.clone().drive(id, run, agent, model, request, skills));
         Ok(events)
     }
 
@@ -395,6 +397,11 @@ impl Host {
         self.memory()?.all()
     }
 
+    /// The skills the agent has now, found from where it works.
+    pub fn skills(&self) -> Found {
+        skills::find(&agent::working_directory())
+    }
+
     /// False when `memory` was not saved.
     pub fn forget(&self, memory: &str) -> Result<bool> {
         self.memory()?.forget(memory)
@@ -420,6 +427,7 @@ impl Host {
         thread: &Thread,
         model: &Model,
         request: &RunRequest,
+        skills: &Found,
         run: &Arc<Run>,
     ) -> Agent {
         let live = Live::new({
@@ -435,21 +443,28 @@ impl Host {
             .system_prompt
             .as_deref()
             .unwrap_or(&self.system_prompt);
+        let spill = agent::spill_dir();
         let setting = Setting {
             hosting: self.hosting,
             host: &self.machine,
             client: request.client.as_ref(),
             model: &request.options.model,
             started: id.started(),
+            thread: id,
+            sessions: self.sessions.dir(),
             shared: &self.shared,
             memories: self.memory.as_ref().map(Memory::file),
+            skills: &skills.roots,
+            spill: spill.as_deref(),
             subagents: self.crew.is_some(),
         };
-        let mut builder = agent::builder(model, &thread.seen, Place::here(live))
+        let builder = agent::builder(model, &thread.seen, Place::here(live))
             .dynamic_tools(self.mcp.iter().map(|tool| tool.tool.clone()).collect())
             .name("hey")
             .preamble(system_prompt)
-            .append_preamble(&setting.render())
+            .append_preamble(&setting.render());
+        let mut builder = skills
+            .equip(builder)
             .default_max_turns(self.max_turns)
             .memory(self.sessions.store())
             .add_hook(Approval {
@@ -505,9 +520,10 @@ impl Host {
         agent: Agent,
         model: Model,
         request: RunRequest,
+        skills: Found,
     ) {
         let ending = tokio::select! {
-            ending = self.respond(&id, &run, &agent, &model, request) => ending,
+            ending = self.respond(&id, &run, &agent, &model, request, &skills) => ending,
             () = run.stopped() => Ending::Interrupted,
         };
         let answered = matches!(ending, Ending::Answered);
@@ -542,6 +558,7 @@ impl Host {
         agent: &Agent,
         model: &Model,
         request: RunRequest,
+        skills: &Found,
     ) -> Ending {
         let RunRequest {
             prompt,
@@ -549,7 +566,7 @@ impl Host {
             options,
             ..
         } = request;
-        let message = self.message(&prompt, &attachments, model, run).await;
+        let message = self.message(&prompt, &attachments, skills, model, run).await;
         let runner = agent.prompt(message).conversation(id.as_str());
         let mut stream: StreamingResult = match options.thinking {
             Some(thinking) => runner.options(GenerationOptions::default().reasoning(thinking)),

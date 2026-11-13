@@ -6,7 +6,7 @@ use std::collections::BTreeMap;
 use std::fmt;
 use std::fs;
 use std::io::ErrorKind;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use std::sync::{Arc, Mutex, PoisonError};
 
@@ -127,6 +127,10 @@ impl Sessions {
 
     pub fn store(&self) -> DirStore {
         self.store.clone()
+    }
+
+    pub fn dir(&self) -> &Path {
+        &self.dir
     }
 
     pub fn messages(&self, id: &SessionId) -> Result<Vec<Message>> {

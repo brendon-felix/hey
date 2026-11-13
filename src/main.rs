@@ -18,6 +18,7 @@ mod render;
 mod repl;
 mod server;
 mod sessions;
+mod skills;
 mod subagents;
 mod token;
 mod turn;

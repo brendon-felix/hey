@@ -3,8 +3,8 @@
 /* -------------------------------------------------------------------------- */
 
 //! `@` mentions in a message. The client attaches those of its user's
-//! working directory; the host, those of its shared repository and its saved
-//! conversations.
+//! working directory; the host, those of its shared repository, its saved
+//! conversations and its skills.
 
 mod context;
 
@@ -25,6 +25,9 @@ pub const THREAD: &str = "thread:";
 /// What precedes a path in the host's shared repository.
 pub const SHARED: &str = "shared:";
 
+/// What precedes a skill's name, as Zed's `@skill`.
+pub const SKILL: &str = "skill:";
+
 /// The most paths a walk offers for completion.
 pub const MAX_INDEXED: usize = 10_000;
 
@@ -42,6 +45,8 @@ pub enum Reference<'a> {
     Shared(&'a str),
     /// A saved conversation's id, on the host.
     Thread(&'a str),
+    /// A skill's name, on the host.
+    Skill(&'a str),
 }
 
 impl<'a> Reference<'a> {
@@ -50,6 +55,8 @@ impl<'a> Reference<'a> {
             Self::Thread(id)
         } else if let Some(path) = text.strip_prefix(SHARED) {
             Self::Shared(path)
+        } else if let Some(name) = text.strip_prefix(SKILL) {
+            Self::Skill(name)
         } else {
             Self::Local(text)
         }
@@ -152,7 +159,7 @@ pub fn local(prompt: &str) -> Vec<Item> {
     let found = mentions(prompt).filter_map(|mention| {
         mention.resolve(|reference| match reference {
             Reference::Local(path) => Item::local(path),
-            Reference::Shared(_) | Reference::Thread(_) => None,
+            Reference::Shared(_) | Reference::Thread(_) | Reference::Skill(_) => None,
         })
     });
     for (item, _) in found {
@@ -280,13 +287,15 @@ mod tests {
 
     #[test]
     fn sorts_local_shared_and_thread_mentions_and_drops_sentence_punctuation() {
-        let text = "read @Cargo.toml, @shared:guide.md and @thread:x. Not @nope.";
+        let text = "read @Cargo.toml, @shared:guide.md and @thread:x. Not @nope; @skill:pdf.";
         let resolved: Vec<_> = mentions(text)
             .filter_map(|mention| {
                 mention.resolve(|reference| match reference {
                     Reference::Local(path) => Item::local(path).map(|_| reference),
-                    Reference::Shared("guide.md") | Reference::Thread("x") => Some(reference),
-                    Reference::Shared(_) | Reference::Thread(_) => None,
+                    Reference::Shared("guide.md") | Reference::Thread("x") | Reference::Skill("pdf") => {
+                        Some(reference)
+                    }
+                    Reference::Shared(_) | Reference::Thread(_) | Reference::Skill(_) => None,
                 })
             })
             .map(|(reference, span)| (reference, &text[span]))
@@ -297,6 +306,7 @@ mod tests {
                 (Reference::Local("Cargo.toml"), "@Cargo.toml"),
                 (Reference::Shared("guide.md"), "@shared:guide.md"),
                 (Reference::Thread("x"), "@thread:x"),
+                (Reference::Skill("pdf"), "@skill:pdf"),
             ]
         );
     }

@@ -15,6 +15,7 @@ use crate::protocol::{
     Snapshot, Task, ThreadInfo, Tools,
 };
 use crate::sessions::SessionId;
+use crate::skills::Found;
 use crate::subagents::{self, Crew};
 
 pub type Events = BoxStream<'static, Result<Event>>;
@@ -120,6 +121,14 @@ impl Backend {
         match self {
             Backend::Local(host) => Ok(host.shared()),
             Backend::Remote(client, _) => client.shared().await,
+        }
+    }
+
+    /// The skills the host's agent has, and why any were not loaded.
+    pub async fn skills(&self) -> Result<Found> {
+        match self {
+            Backend::Local(host) => Ok(host.skills()),
+            Backend::Remote(client, _) => client.skills().await,
         }
     }
 

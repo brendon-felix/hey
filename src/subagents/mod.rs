@@ -27,6 +27,7 @@ use crate::config::{Config, Providers};
 use crate::permissions::{Approval, Origin, Permissions, Reporter};
 use crate::protocol::{AgentId, Ask, Decision, Event, Task, TaskResult};
 use crate::sessions::SessionId;
+use crate::skills;
 
 pub use access::machine_name;
 use access::{Access, Verdict};
@@ -199,11 +200,14 @@ impl Crew {
         reporter: impl Reporter,
     ) -> Agent {
         let environment = environment(&dir, self.machine());
+        let skills = skills::find(&dir);
         let place = Place::within(dir, Arc::new(Fenced::new(self.access.excluded())));
-        let mut builder = agent::builder(model, &team.seen(agent), place)
+        let builder = agent::builder(model, &team.seen(agent), place)
             .name("hey subagent")
             .preamble(PROMPT)
-            .append_preamble(&environment)
+            .append_preamble(&environment);
+        let mut builder = skills
+            .equip(builder)
             .default_max_turns(self.max_turns)
             .memory(team.store.clone())
             .add_hook(Approval {

@@ -12,6 +12,8 @@ of `hey` is on ease of use, speed, and a pleasant terminal experience.
 - Built-in tools to read, list, search, write, edit, move and delete files and run shell commands, with
   live command output
 - [MCP](https://modelcontextprotocol.io) servers, local (stdio) or remote (streamable HTTP)
+- [Agent Skills](https://agentskills.io): instructions for particular tasks that the model loads
+  when a task calls for one, or that you invoke with `/name`
 - Per-tool permissions: allow, confirm, or deny
 - Subagents that work on tasks in parallel, each in a directory you let it into, on the host or
   on your own machine
@@ -24,7 +26,7 @@ of `hey` is on ease of use, speed, and a pleasant terminal experience.
 - Syntax highlighting via [syntect](https://github.com/trishume/syntect), with bat's themes
 - A rich input editor via [reedline](https://github.com/nushell/reedline): Emacs, Vi or Helix mode,
   command completion with descriptions, a status line, history search, and composing in `$EDITOR`
-- `@` mentions that attach files, directories and saved conversations to a message
+- `@` mentions that attach files, directories, saved conversations and skills to a message
 
 ## Installation
 
@@ -55,7 +57,7 @@ hey --serve                           # be a remote host
 
 ### Commands
 
-Type `/` or press Tab to see commands; the status line describes the one you are typing.
+Type `/` or press Tab to see commands and skills; the status line describes the one you are typing.
 
 | Command | Description |
 | --- | --- |
@@ -68,6 +70,8 @@ Type `/` or press Tab to see commands; the status line describes the one you are
 | `/think [level]` | Set thinking: `off`, `minimal`…`max`, or `default` |
 | `/theme [theme]`, `/t` | Switch theme; without one, pick with a live preview |
 | `/tools` | List tools, their permissions and MCP servers |
+| `/skills` | List skills and why any did not load |
+| `/<skill> [message]` | Invoke a skill, with the rest of the line as your message |
 | `/memories`, `/mem` | List what hey remembers across conversations |
 | `/forget` | Pick a memory to forget |
 | `/clear`, `/c` | Clear the screen |
@@ -76,8 +80,8 @@ Type `/` or press Tab to see commands; the status line describes the one you are
 ### Mentions
 
 Type `@` to attach something to your message; a menu suggests, fuzzy-matched, files and
-directories from your working directory, then `@shared:` lists the host's shared files and
-`@thread:` its saved conversations.
+directories from your working directory, then `@shared:` lists the host's shared files,
+`@thread:` its saved conversations and `@skill:` its skills.
 
 | Mention | Attaches |
 | --- | --- |
@@ -86,9 +90,10 @@ directories from your working directory, then `@shared:` lists the host's shared
 | `@"my notes.md"` | A path with spaces |
 | `@shared:guide.md` | A file or directory from the host's shared repository, `[shared] dir` |
 | `@thread:<id>` | A summary of that conversation, written by the model answering |
+| `@skill:<name>` | The skill's instructions, as `/<name>` does, anywhere in the message |
 
-With a remote, plain mentions still attach from the machine you type on, while `@shared:`
-and `@thread:` attach from the host, so every machine sees the same shared files. The model
+With a remote, plain mentions still attach from the machine you type on, while `@shared:`,
+`@thread:` and `@skill:` attach from the host, so every machine sees the same shared files. The model
 gets your message as typed, followed by what it mentions. A mention that names nothing, like
 `@property`, is sent as plain text. Mentions are highlighted once they name something, and
 work in one-shot messages too: `hey review @src/main.rs`.
@@ -169,7 +174,7 @@ Each tool call is shown as it happens. Whether it runs depends on its permission
 - `confirm` asks first, and offers to allow that tool for the rest of the conversation.
 - `deny` tells the model it is not allowed.
 
-`read`, `list`, `search` and `spawn_agents` are allowed by default; everything else asks. Rules are
+`read`, `list`, `search`, `skill` and `spawn_agents` are allowed by default; everything else asks. Rules are
 keyed by tool name, or `mcp:<server>:<tool>` and `mcp:<server>` for MCP tools, which the model sees
 as `mcp__<server>__<tool>`.
 
@@ -227,6 +232,40 @@ tools = ["firecrawl_search", "firecrawl_scrape"]
 Every tool a server offers is described to the model on every call; Firecrawl's 36 come to about
 21,000 tokens. `tools` offers only those named. A result longer than `[tools] mcp_result_bytes`
 (16 KiB) is cut, and kept whole in a file the model can `read` or `search`.
+
+## Skills
+
+A skill is a folder of instructions for a particular task, in the
+[Agent Skills](https://agentskills.io/specification) format other agents share: a `SKILL.md`
+with a `name` and `description`, and any scripts, references or templates it refers to.
+
+```markdown
+---
+name: release
+description: Cut a release of this project. Use when asked to release or publish a version.
+---
+
+1. Bump the version in Cargo.toml…
+```
+
+`hey` finds skills where the agent works:
+
+- `~/.agents/skills/<name>/SKILL.md`, for every project
+- `.agents/skills/<name>/SKILL.md` in the working directory and each directory above it up to
+  the repository root; the nearer of two skills with one name wins, so a project can replace
+  a global skill
+
+The model sees every skill's name and description, and loads one's instructions with its
+`skill` tool when a task matches; it reads the files a skill refers to as it needs them. You
+invoke one yourself with `/<name>`, the rest of the line being your message, or `@skill:<name>`
+anywhere in a message; built-in commands win over skills of the same name. A skill with
+`disable-model-invocation: true` is left out of what the model sees, so only you start it.
+
+Skills are read afresh for every answer, so adding or editing one takes effect at once. One
+whose `SKILL.md` breaks the spec, such as a `name` that is not lowercase-hyphenated or differs
+from its folder's, is not loaded; `/skills` lists the skills and why any did not load. With a
+remote, skills are the host's, from where `hey --serve` runs; a subagent has the skills of the
+machine and directory it works in.
 
 ## Memory
 

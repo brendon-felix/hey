@@ -9,6 +9,7 @@ use std::sync::{Arc, Mutex, PoisonError};
 use crossterm::cursor::{MoveToColumn, SetCursorStyle};
 use crossterm::execute;
 use crossterm::terminal::{Clear, ClearType};
+use fuzzy_matcher::skim::SkimMatcherV2;
 use nu_ansi_term::{Color, Style};
 use reedline::{
     ColumnarMenu, Completer, CompletionResult, CursorConfig, DefaultHinter, EditCommand,
@@ -22,7 +23,7 @@ use reedline::{
 };
 
 use super::commands::{self, Arg, COMMANDS};
-use super::mentions::{self as host, Index, Mentions};
+use super::mentions::{self as host, HostIndex, Index, Mentions};
 use super::watch::{self, Watch};
 use crate::config::{self, EditMode as Mode, RightPrompt, Thinking};
 use crate::mention::{self, Mention, Reference};
@@ -104,6 +105,8 @@ impl Editor {
         let completer = InputCompleter {
             choices,
             mentions: Mentions::new(index.clone()),
+            index: index.clone(),
+            matcher: SkimMatcherV2::default(),
         };
         let mut line_editor = Reedline::create()
             .with_edit_mode(edit_mode(config.mode))
@@ -306,22 +309,29 @@ pub struct Choices {
 }
 
 impl Choices {
-    fn suggestions(&self, before: &str) -> Vec<Suggestion> {
+    /// Commands and the host's skills after `/`, then a command's argument.
+    fn suggestions(&self, before: &str, index: &HostIndex, matcher: &SkimMatcherV2) -> Vec<Suggestion> {
         let Some(typed) = before.strip_prefix('/') else {
             return Vec::new();
         };
         let Some((word, arg)) = typed.split_once(' ') else {
-            return COMMANDS
+            let span = Span::new(0, before.len());
+            let commands = COMMANDS
                 .iter()
                 .filter(|spec| spec.name.starts_with(typed))
                 .map(|spec| Suggestion {
                     value: format!("/{}", spec.name),
                     description: Some(spec.about.into()),
-                    span: Span::new(0, before.len()),
+                    span,
                     append_whitespace: spec.arg.is_some(),
                     ..Suggestion::default()
-                })
-                .collect();
+                });
+            let invocable = index.skills.skills.iter().filter(|skill| index.command(skill.name.as_str()).is_some());
+            let skills = host::skill_suggestions(matcher, invocable, typed).map(|(skill, indices)| Suggestion {
+                value: format!("/{}", skill.name),
+                ..host::skill_suggestion(skill, indices, span)
+            });
+            return commands.chain(skills).collect();
         };
         let values = match commands::find(word).and_then(|spec| spec.arg) {
             Some(Arg::Model) => &self.models,
@@ -342,18 +352,20 @@ impl Choices {
     }
 }
 
-/// Slash commands and their arguments on a command line, `@` mentions on a
-/// message.
+/// Slash commands, skills and command arguments on a command line, `@`
+/// mentions on a message.
 struct InputCompleter {
     choices: Choices,
     mentions: Mentions,
+    index: Index,
+    matcher: SkimMatcherV2,
 }
 
 impl Completer for InputCompleter {
     fn complete(&mut self, line: &str, pos: usize) -> CompletionResult {
         let before = line.get(..pos).unwrap_or(line);
         let suggestions = match before.starts_with('/') {
-            true => self.choices.suggestions(before),
+            true => self.choices.suggestions(before, &host::lock(&self.index), &self.matcher),
             false => self.mentions.suggestions(before),
         };
         CompletionResult::fresh(suggestions)
@@ -384,9 +396,10 @@ impl Highlighter for InputHighlighter {
             }
             Some(rest) => {
                 let (word, arg) = rest.split_at(rest.find(char::is_whitespace).unwrap_or(rest.len()));
-                let word_style = match commands::find(word) {
-                    Some(_) => fg(palette.name),
-                    None => Color::Yellow.normal(),
+                let known = commands::find(word).is_some() || host::lock(&self.0).command(word).is_some();
+                let word_style = match known {
+                    true => fg(palette.name),
+                    false => Color::Yellow.normal(),
                 };
                 styled.push((Style::default(), "/".into()));
                 styled.push((word_style, word.to_owned()));
@@ -404,7 +417,7 @@ struct InputHelp(Index);
 impl StatusLine for InputHelp {
     fn status(&mut self, line: &str, pos: usize, columns: u16, colors: bool) -> String {
         let (style, text) = match line.trim_start().strip_prefix('/') {
-            Some(typed) => command_help(typed),
+            Some(typed) => self.command_help(typed),
             None => match mention::under(line, pos) {
                 Some(mention) => self.mention_help(&mention),
                 None => return String::new(),
@@ -425,6 +438,7 @@ impl InputHelp {
                 Reference::Local("") => (muted, "Tab for files and directories".into()),
                 Reference::Shared("") => (muted, "Tab for the host's shared files".into()),
                 Reference::Thread("") => (muted, "Tab for saved conversations".into()),
+                Reference::Skill("") => (muted, "Tab for skills".into()),
                 _ => (
                     Color::Yellow.normal(),
                     format!("nothing named {}; sent as typed", mention.text),
@@ -432,15 +446,18 @@ impl InputHelp {
             },
         }
     }
-}
 
-fn command_help(typed: &str) -> (Style, String) {
-    let muted = fg(palette().muted);
-    let word = typed.split_whitespace().next().unwrap_or_default();
-    match commands::find(word) {
-        Some(spec) => (muted, format!("{}  {}", spec.usage(), spec.about)),
-        None if word.is_empty() => (muted, "Tab for commands".into()),
-        None => (Color::Yellow.normal(), format!("unknown command /{word}")),
+    fn command_help(&self, typed: &str) -> (Style, String) {
+        let muted = fg(palette().muted);
+        let word = typed.split_whitespace().next().unwrap_or_default();
+        if let Some(spec) = commands::find(word) {
+            return (muted, format!("{}  {}", spec.usage(), spec.about));
+        }
+        match host::lock(&self.0).command(word) {
+            Some(skill) => (muted, format!("/{} [message]  {}", skill.name, skill.description)),
+            None if word.is_empty() => (muted, "Tab for commands and skills".into()),
+            None => (Color::Yellow.normal(), format!("unknown command /{word}")),
+        }
     }
 }
 

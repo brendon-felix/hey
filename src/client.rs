@@ -21,6 +21,7 @@ use crate::protocol::{
     ModelInfo, RunRequest, Snapshot, TaskResult, ThreadInfo, Tools,
 };
 use crate::sessions::SessionId;
+use crate::skills::Found;
 use crate::{render, token, ui};
 
 /// A host served by `hey --serve` on another machine.
@@ -161,6 +162,10 @@ impl Client {
 
     pub async fn shared(&self) -> Result<Vec<String>> {
         self.json(self.get("v1/shared")?).await
+    }
+
+    pub async fn skills(&self) -> Result<Found> {
+        self.json(self.get("v1/skills")?).await
     }
 
     pub async fn open(&self, id: &SessionId) -> Result<Opened> {

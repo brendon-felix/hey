@@ -19,6 +19,7 @@ use rig_tools::{Delete, Edit, List, Live, Move, Read, Search, Seen, Shell, Spill
 
 use crate::config::{self, Providers};
 use crate::protocol::ModelInfo;
+use crate::skills;
 
 pub const DEFAULT_SYSTEM_PROMPT: &str = "You are hey, an assistant in the user's terminal. \
 Use your tools to read, search and edit files and to run commands whenever the answer depends \
@@ -33,7 +34,9 @@ const SUMMARY_PROMPT: &str = "Generate a detailed summary of this conversation. 
 4. Any action items or next steps if any
 Format it in Markdown with headings and bullet points.";
 
-pub const BUILTIN_TOOLS: [&str; 8] = [
+/// The tools every agent has, by the names their permissions are keyed by;
+/// `skill` is offered only when there are skills to load.
+pub const BUILTIN_TOOLS: [&str; 9] = [
     Read::NAME,
     List::NAME,
     Search::NAME,
@@ -42,6 +45,7 @@ pub const BUILTIN_TOOLS: [&str; 8] = [
     Move::NAME,
     Delete::NAME,
     Shell::NAME,
+    skills::TOOL,
 ];
 
 /// A completion model named by its catalog reference, `vendor/model`.
@@ -213,7 +217,11 @@ pub fn builder(model: &Model, seen: &Seen, place: Place) -> AgentBuilder {
 
 /// Where tools keep whole the output they cut.
 pub fn spill() -> Option<Spill> {
-    config::cache_dir().map(|dir| Spill(dir.join("spill")))
+    spill_dir().map(Spill)
+}
+
+pub fn spill_dir() -> Option<PathBuf> {
+    config::cache_dir().map(|dir| dir.join("spill"))
 }
 
 /// A summary of a conversation's `transcript` by `model`, which gets nothing

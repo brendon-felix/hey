@@ -7,11 +7,13 @@
 //! at its surroundings nor reaches for files on the wrong machine.
 
 use std::net::SocketAddr;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use chrono::NaiveDateTime;
 
 use crate::protocol::{ClientInfo, Machine};
+use crate::sessions::SessionId;
+use crate::skills::Source;
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 const HOMEPAGE: &str = env!("CARGO_PKG_HOMEPAGE");
@@ -35,8 +37,16 @@ pub struct Setting<'a> {
     /// Kept for the whole conversation rather than the run's own time, so
     /// the preamble stays the same and the provider's prompt cache works.
     pub started: Option<NaiveDateTime>,
+    pub thread: &'a SessionId,
+    /// Where conversations are saved.
+    pub sessions: &'a Path,
     pub shared: &'a Path,
+    /// The memories file; `None` when memory is off.
     pub memories: Option<&'a Path>,
+    /// Where skills are looked for, farthest first.
+    pub skills: &'a [(Source, PathBuf)],
+    /// Where tools keep whole the output they cut.
+    pub spill: Option<&'a Path>,
     /// Whether the agent can start subagents.
     pub subagents: bool,
 }
@@ -67,20 +77,65 @@ impl Setting<'_> {
                     )
                 }),
             Some(format!(
+                "Conversations are saved in {}, a log each, named by its id; this one is `{}`.",
+                self.sessions.display(),
+                self.thread.as_str()
+            )),
+            Some(format!(
                 "`@shared:` mentions attach from {}, a repository on the host every client can \
                  use.",
                 self.shared.display()
             )),
-            self.memories.map(|file| {
+            Some(self.memories_line()),
+            self.skills_line(),
+            self.spill.map(|dir| {
                 format!(
-                    "Memories of the user are kept in {}, a Markdown list you may edit when \
-                     asked.",
-                    file.display()
+                    "Tool output too long to give you whole is kept whole in {}.",
+                    dir.display()
                 )
             }),
         ];
         let bullets: String = lines.into_iter().flatten().map(|line| format!("\n- {line}")).collect();
         format!("\nSetting:{bullets}")
+    }
+
+    fn memories_line(&self) -> String {
+        match self.memories {
+            Some(file) => format!(
+                "Memories of the user are kept in {}, a Markdown list you may edit when asked, \
+                 with their embeddings in {}.",
+                file.display(),
+                file.with_extension("vectors.json").display()
+            ),
+            None => "Memory is off (`memory.enabled` in the config), so nothing is remembered \
+                      across conversations."
+                .into(),
+        }
+    }
+
+    fn skills_line(&self) -> Option<String> {
+        let dirs = |source: Source| {
+            let dirs: Vec<String> = self
+                .skills
+                .iter()
+                .filter(|(of, _)| *of == source)
+                .map(|(_, dir)| dir.display().to_string())
+                .collect();
+            (!dirs.is_empty()).then(|| dirs.join(", "))
+        };
+        let found = match (dirs(Source::Global), dirs(Source::Project)) {
+            (None, None) => return None,
+            (Some(global), None) => format!("in {global}"),
+            (None, Some(project)) => format!("for this project in {project}"),
+            (Some(global), Some(project)) => {
+                format!("in {global} for every project, and for this one in {project}")
+            }
+        };
+        Some(format!(
+            "Agent Skills (https://agentskills.io) are found {found}, each a folder named after \
+             it holding a SKILL.md; a nearer one replaces a farther one of the same name. The \
+             user invokes one with `/name` or `@skill:name`, and `/skills` lists them."
+        ))
     }
 
     fn host_line(&self) -> String {

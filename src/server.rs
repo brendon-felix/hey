@@ -32,6 +32,7 @@ pub async fn serve(host: Arc<Host>, config: &config::Server) -> Result<()> {
         .route("/v1/threads", get(threads))
         .route("/v1/activity", get(activity))
         .route("/v1/shared", get(shared))
+        .route("/v1/skills", get(skills))
         .route("/v1/threads/{id}", get(open).delete(delete))
         .route("/v1/threads/{id}/run", post(start).delete(stop))
         .route("/v1/threads/{id}/viewed", post(viewed))
@@ -124,6 +125,10 @@ async fn activity(State(host): State<Arc<Host>>) -> Response {
 
 async fn shared(State(host): State<Arc<Host>>) -> impl IntoResponse {
     Json(host.shared())
+}
+
+async fn skills(State(host): State<Arc<Host>>) -> impl IntoResponse {
+    Json(host.skills())
 }
 
 /// The thread's snapshot on the first line, then its run's events, if one is

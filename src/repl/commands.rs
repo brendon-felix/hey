@@ -13,6 +13,7 @@ pub enum Command {
     Think(Option<String>),
     Theme(Option<String>),
     Tools,
+    Skills,
     Memories,
     Forget,
     Clear,
@@ -119,6 +120,13 @@ pub const COMMANDS: &[Spec] = &[
         build: |_| Command::Tools,
     },
     Spec {
+        name: "skills",
+        aliases: &[],
+        arg: None,
+        about: "List skills, which /name invokes",
+        build: |_| Command::Skills,
+    },
+    Spec {
         name: "memories",
         aliases: &["mem"],
         arg: None,
@@ -164,7 +172,10 @@ pub enum Input {
     Invalid(String),
 }
 
-pub fn parse(line: &str) -> Input {
+/// `line` as typed: a command, or a message, which may start with `/name`
+/// to invoke a skill that `is_skill` knows of. Commands win over skills of
+/// the same name, which `@skill:name` still invokes.
+pub fn parse(line: &str, is_skill: impl Fn(&str) -> bool) -> Input {
     let line = line.trim();
     let Some(rest) = line.strip_prefix('/') else {
         return match line {
@@ -178,6 +189,7 @@ pub fn parse(line: &str) -> Input {
     };
     match (find(word), arg) {
         (None, _) if word.is_empty() => Input::Command(Command::Help),
+        (None, _) if is_skill(word) => Input::Message(line.to_owned()),
         (None, _) => Input::Invalid(format!("unknown command /{word}")),
         (Some(spec), Some(_)) if spec.arg.is_none() => {
             Input::Invalid(format!("/{} takes no argument", spec.name))
@@ -191,7 +203,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn parses_messages_commands_and_mistakes() {
+    fn parses_messages_commands_skills_and_mistakes() {
+        let parse = |line| parse(line, |word| ["deploy", "new"].contains(&word));
         assert_eq!(parse("  "), Input::Empty);
         assert_eq!(parse(" hi there "), Input::Message("hi there".into()));
         assert_eq!(parse("/"), Input::Command(Command::Help));
@@ -203,5 +216,7 @@ mod tests {
         );
         assert_eq!(parse("/new now"), Input::Invalid("/new takes no argument".into()));
         assert_eq!(parse("/nope"), Input::Invalid("unknown command /nope".into()));
+        assert_eq!(parse(" /deploy to staging"), Input::Message("/deploy to staging".into()));
+        assert_eq!(parse("/new"), Input::Command(Command::New), "commands win");
     }
 }

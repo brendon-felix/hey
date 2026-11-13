@@ -17,6 +17,7 @@ They are up-to-date and don't need to be re-read.\n";
 /// What a message's mentions attach, by kind, in the order attached.
 #[derive(Default)]
 pub struct Context {
+    skills: Vec<String>,
     files: Vec<String>,
     directories: Vec<String>,
     threads: Vec<String>,
@@ -34,6 +35,12 @@ impl Context {
         }
     }
 
+    /// A skill the user invoked, as [`Skill::content`](crate::skills::Skill::content)
+    /// wraps it.
+    pub fn skill(&mut self, content: String) {
+        self.skills.push(content);
+    }
+
     pub fn summary(&mut self, id: &SessionId, summary: &str) {
         self.threads
             .push(format!("Summary of conversation {id}\n\n{summary}"));
@@ -49,6 +56,7 @@ impl Context {
 
     fn into_text(self) -> Option<String> {
         let sections: Vec<String> = [
+            ("skills", self.skills),
             ("files", self.files),
             ("directories", self.directories),
             ("threads", self.threads),
