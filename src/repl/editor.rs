@@ -43,20 +43,30 @@ pub struct Status {
 
 impl Status {
     fn summary(&self) -> String {
-        let thinking = self.thinking.map(|level| format!("thinking {}", level.as_str()));
+        let name = short_name(&self.model);
+        let model = match self.thinking {
+            Some(level) => format!("{name} {}", level.as_str()),
+            None => name.to_owned(),
+        };
         let context = self.context.map(|used| match self.window {
-            Some(window) => format!("{} / {} tokens", compact(used), compact(u64::from(window))),
-            None => format!("{} tokens", compact(used)),
+            Some(window) => format!("{}/{}", compact(used), compact(u64::from(window))),
+            None => compact(used),
         });
         self.remote
             .iter()
             .cloned()
-            .chain(std::iter::once(self.model.clone()))
-            .chain(thinking)
+            .chain(std::iter::once(model))
             .chain(context)
             .collect::<Vec<_>>()
             .join(" · ")
     }
+}
+
+/// The model without its vendor or Ollama's default tag, which `/model` still
+/// shows in full.
+fn short_name(reference: &str) -> &str {
+    let name = reference.rsplit_once('/').map_or(reference, |(_, name)| name);
+    name.strip_suffix(":latest").unwrap_or(name)
 }
 
 pub type SharedStatus = Arc<Mutex<Status>>;
@@ -426,11 +436,17 @@ fn command_help(typed: &str) -> (Style, String) {
     }
 }
 
+/// A token count in at most four columns: a tenth only below ten, as in
+/// `9.5k`, `24k` and `1M`.
 fn compact(tokens: u64) -> String {
-    match tokens {
-        0..1_000 => tokens.to_string(),
-        1_000..1_000_000 => format!("{:.1}k", tokens as f64 / 1e3),
-        _ => format!("{:.1}M", tokens as f64 / 1e6),
+    let (value, unit) = match tokens {
+        0..1_000 => return tokens.to_string(),
+        1_000..999_500 => (tokens as f64 / 1e3, "k"),
+        _ => (tokens as f64 / 1e6, "M"),
+    };
+    match value < 9.95 {
+        true => format!("{value:.1}").trim_end_matches(".0").to_owned() + unit,
+        false => format!("{value:.0}{unit}"),
     }
 }
 
