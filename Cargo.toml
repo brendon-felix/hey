@@ -51,6 +51,7 @@ textwrap = "0.16"
 tokio = { version = "1", features = ["full"] }
 tokio-util = { version = "0.7", features = ["codec", "io", "rt"] }
 toml = "1"
+toml_edit = "0.25"
 unicode-segmentation = "1"
 yansi = "1"
 

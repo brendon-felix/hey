@@ -2,15 +2,18 @@
 /*                                  turn.rs                                   */
 /* -------------------------------------------------------------------------- */
 
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 
 use crossterm::cursor;
 use futures::StreamExt;
+use tokio::task::JoinSet;
 use tokio::time::MissedTickBehavior;
 
 use crate::backend::{Backend, Events};
 use crate::mention;
-use crate::protocol::{ApprovalId, Attachment, Ending, Event, RunId, RunOptions, RunRequest};
+use crate::protocol::{
+    AgentId, ApprovalId, Ask, Attachment, Ending, Event, RunId, RunOptions, RunRequest,
+};
 use crate::render::{self, Stream, Style};
 use crate::sessions::SessionId;
 use crate::ui;
@@ -127,6 +130,14 @@ struct Seen {
     /// How many messages the thread held as the run ended, once its end
     /// arrived rather than its events stopping.
     saved: Option<usize>,
+    /// The labels of the run's subagents, which their events are shown under.
+    agents: HashMap<AgentId, String>,
+}
+
+impl Seen {
+    fn label<'a>(&'a self, agent: &'a AgentId) -> &'a str {
+        self.agents.get(agent).map_or(agent.as_str(), String::as_str)
+    }
 }
 
 /// What the run's events gave next: an event, a failure, or their end.
@@ -143,6 +154,8 @@ async fn show(
     frames.set_missed_tick_behavior(MissedTickBehavior::Skip);
     // What arrived while an approval was asked, shown once it is decided.
     let mut held = VecDeque::new();
+    // Subagents this machine runs for the run, stopped if it is let go.
+    let mut delegated = JoinSet::new();
     loop {
         let event = match held.pop_front() {
             Some(received) => received,
@@ -178,11 +191,34 @@ async fn show(
             Event::Thought { duration } => stream.thought(duration),
             Event::ToolCallStart { name } => stream.preparing(name),
             Event::ToolCallArguments { json } => stream.arguments(&json),
-            Event::Decided { .. } => {}
+            Event::Decided { .. } | Event::Claimed { .. } => {}
             Event::Context { tokens } => seen.context = Some(tokens),
-            Event::Approval { id, tool } => {
+            Event::Approval { id, ask } => {
                 stream.settle();
-                held.extend(approve(backend, thread, events, id, &tool).await);
+                held.extend(approve(backend, thread, events, id, &ask).await);
+            }
+            Event::Delegated { id, task } => {
+                if let Some(task) = backend.take_up(thread, id, task) {
+                    delegated.spawn(task);
+                }
+            }
+            Event::AgentStarted {
+                agent,
+                label,
+                machine,
+                directory,
+            } => {
+                stream.settle();
+                render::agent_started(&label, &machine, directory.as_deref());
+                seen.agents.insert(agent, label);
+            }
+            Event::Agent { agent, step } => {
+                stream.settle();
+                render::agent_event(seen.label(&agent), &step);
+            }
+            Event::AgentEnded { agent, error } => {
+                stream.settle();
+                render::agent_ended(seen.label(&agent), error.as_deref());
             }
             event => {
                 stream.settle();
@@ -200,21 +236,21 @@ async fn show(
     }
 }
 
-/// Asks whether `tool` may run until this client or another decides, so
-/// every client stops asking at once. Returns what arrived meanwhile.
+/// Asks `ask` until this client or another decides, so every client stops
+/// asking at once. Returns what arrived meanwhile.
 async fn approve(
     backend: &Backend,
     thread: &SessionId,
     events: &mut Events,
     id: ApprovalId,
-    tool: &str,
+    ask: &Ask,
 ) -> Vec<Received> {
     let mut held = Vec::new();
-    let ask = ui::confirm_tool(tool);
-    tokio::pin!(ask);
+    let question = ui::confirm(ask);
+    tokio::pin!(question);
     let decision = loop {
         tokio::select! {
-            decision = &mut ask => break Some(decision),
+            decision = &mut question => break Some(decision),
             received = events.next() => {
                 let settled = match &received {
                     Some(Ok(Event::Decided { id: decided })) => *decided == id,
@@ -266,7 +302,12 @@ fn report(event: Event) -> Option<Outcome> {
         | Event::ToolCallArguments { .. }
         | Event::Approval { .. }
         | Event::Decided { .. }
-        | Event::Context { .. } => {}
+        | Event::Context { .. }
+        | Event::AgentStarted { .. }
+        | Event::Agent { .. }
+        | Event::AgentEnded { .. }
+        | Event::Delegated { .. }
+        | Event::Claimed { .. } => {}
     }
     None
 }

@@ -11,10 +11,11 @@ use futures::stream::BoxStream;
 use crate::client::Client;
 use crate::host::{self, Host};
 use crate::protocol::{
-    Activities, ApprovalId, Decision, Defaults, Event, ModelInfo, RunRequest, Snapshot,
-    ThreadInfo, Tools,
+    Activities, ApprovalId, Decision, Defaults, DelegationId, Event, ModelInfo, RunRequest,
+    Snapshot, Task, ThreadInfo, Tools,
 };
 use crate::sessions::SessionId;
+use crate::subagents::{self, Crew};
 
 pub type Events = BoxStream<'static, Result<Event>>;
 
@@ -29,11 +30,11 @@ pub struct Opened {
 }
 
 /// Where the agent runs and threads are kept: in this process, or on a
-/// remote host.
+/// remote host, for which this machine may run subagents too.
 #[derive(Clone)]
 pub enum Backend {
     Local(Arc<Host>),
-    Remote(Client),
+    Remote(Client, Option<Arc<Crew>>),
 }
 
 impl Backend {
@@ -41,21 +42,21 @@ impl Backend {
     pub fn remote(&self) -> Option<&str> {
         match self {
             Backend::Local(_) => None,
-            Backend::Remote(client) => Some(client.name()),
+            Backend::Remote(client, _) => Some(client.name()),
         }
     }
 
     pub async fn defaults(&self) -> Result<Defaults> {
         match self {
             Backend::Local(host) => Ok(host.defaults()),
-            Backend::Remote(client) => client.defaults().await,
+            Backend::Remote(client, _) => client.defaults().await,
         }
     }
 
     pub async fn model(&self, reference: &str) -> Result<ModelInfo> {
         match self {
             Backend::Local(host) => host.model(reference),
-            Backend::Remote(client) => client.model(reference).await,
+            Backend::Remote(client, _) => client.model(reference).await,
         }
     }
 
@@ -63,7 +64,7 @@ impl Backend {
     pub async fn models(&self) -> Result<Vec<String>> {
         match self {
             Backend::Local(host) => Ok(host.models()),
-            Backend::Remote(client) => client.models().await,
+            Backend::Remote(client, _) => client.models().await,
         }
     }
 
@@ -71,7 +72,7 @@ impl Backend {
     pub async fn threads(&self) -> Result<Vec<ThreadInfo>> {
         match self {
             Backend::Local(host) => host.threads(),
-            Backend::Remote(client) => client.threads().await,
+            Backend::Remote(client, _) => client.threads().await,
         }
     }
 
@@ -79,14 +80,14 @@ impl Backend {
     pub async fn viewed(&self, id: &SessionId) -> Result<()> {
         match self {
             Backend::Local(host) => host.viewed(id),
-            Backend::Remote(client) => client.viewed(id).await,
+            Backend::Remote(client, _) => client.viewed(id).await,
         }
     }
 
     pub async fn archive(&self, id: &SessionId, archived: bool) -> Result<()> {
         match self {
             Backend::Local(host) => host.archive(id, archived),
-            Backend::Remote(client) => client.archive(id, archived).await,
+            Backend::Remote(client, _) => client.archive(id, archived).await,
         }
     }
 
@@ -94,7 +95,7 @@ impl Backend {
     pub async fn fork(&self, id: &SessionId) -> Result<SessionId> {
         match self {
             Backend::Local(host) => host.fork(id),
-            Backend::Remote(client) => client.fork(id).await,
+            Backend::Remote(client, _) => client.fork(id).await,
         }
     }
 
@@ -102,7 +103,7 @@ impl Backend {
     pub async fn delete(&self, id: &SessionId) -> Result<()> {
         match self {
             Backend::Local(host) => Ok(host.delete(id)?),
-            Backend::Remote(client) => client.delete(id).await,
+            Backend::Remote(client, _) => client.delete(id).await,
         }
     }
 
@@ -110,7 +111,7 @@ impl Backend {
     pub async fn activity(&self) -> Result<ActivityStream> {
         match self {
             Backend::Local(host) => Ok(host.activity().map(Ok).boxed()),
-            Backend::Remote(client) => client.activity().await,
+            Backend::Remote(client, _) => client.activity().await,
         }
     }
 
@@ -118,7 +119,7 @@ impl Backend {
     pub async fn shared(&self) -> Result<Vec<String>> {
         match self {
             Backend::Local(host) => Ok(host.shared()),
-            Backend::Remote(client) => client.shared().await,
+            Backend::Remote(client, _) => client.shared().await,
         }
     }
 
@@ -131,14 +132,25 @@ impl Backend {
                     events: events.map(|events| events.map(Ok).boxed()),
                 })
             }
-            Backend::Remote(client) => client.open(id).await,
+            Backend::Remote(client, _) => client.open(id).await,
         }
     }
 
     pub async fn start(&self, id: &SessionId, request: RunRequest) -> Result<Events> {
         match self {
             Backend::Local(host) => Ok(host.start(id.clone(), request).await?.map(Ok).boxed()),
-            Backend::Remote(client) => client.start(id, request).await,
+            Backend::Remote(client, _) => client.start(id, request).await,
+        }
+    }
+
+    /// Runs a subagent's task delegated to this machine, in the background,
+    /// unless it is for another machine or another client takes it up first.
+    pub fn take_up(&self, thread: &SessionId, id: DelegationId, task: Task) -> Option<impl Future<Output = ()> + Send + 'static> {
+        match self {
+            Backend::Remote(client, Some(crew)) if task.machine == crew.machine() => Some(
+                subagents::take_up(client.clone(), crew.clone(), thread.clone(), id, task),
+            ),
+            _ => None,
         }
     }
 
@@ -151,7 +163,7 @@ impl Backend {
     ) -> Result<bool> {
         match self {
             Backend::Local(host) => Ok(host.answer(id, approval, decision)),
-            Backend::Remote(client) => client.answer(id, approval, decision).await,
+            Backend::Remote(client, _) => client.answer(id, approval, decision).await,
         }
     }
 
@@ -159,14 +171,14 @@ impl Backend {
     pub async fn stop(&self, id: &SessionId) -> Result<bool> {
         match self {
             Backend::Local(host) => Ok(host.stop(id)),
-            Backend::Remote(client) => client.stop(id).await,
+            Backend::Remote(client, _) => client.stop(id).await,
         }
     }
 
     pub async fn tools(&self, id: &SessionId) -> Result<Tools> {
         match self {
             Backend::Local(host) => Ok(host.tools(id)),
-            Backend::Remote(client) => client.tools(id).await,
+            Backend::Remote(client, _) => client.tools(id).await,
         }
     }
 
@@ -174,7 +186,7 @@ impl Backend {
     pub async fn memories(&self) -> Result<Vec<String>> {
         match self {
             Backend::Local(host) => host.memories(),
-            Backend::Remote(client) => client.memories().await,
+            Backend::Remote(client, _) => client.memories().await,
         }
     }
 
@@ -182,7 +194,7 @@ impl Backend {
     pub async fn forget(&self, memory: &str) -> Result<bool> {
         match self {
             Backend::Local(host) => host.forget(memory),
-            Backend::Remote(client) => client.forget(memory).await,
+            Backend::Remote(client, _) => client.forget(memory).await,
         }
     }
 

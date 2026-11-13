@@ -17,8 +17,8 @@ use tokio_util::io::StreamReader;
 use crate::backend::{Events, Opened};
 use crate::config::{self, Remote};
 use crate::protocol::{
-    Activities, ApprovalId, ClientInfo, Decision, Defaults, Machine, ModelInfo, RunRequest,
-    Snapshot, ThreadInfo, Tools,
+    Activities, ApprovalId, Ask, ClientInfo, Decision, Defaults, DelegationId, Event, Machine,
+    ModelInfo, RunRequest, Snapshot, TaskResult, ThreadInfo, Tools,
 };
 use crate::sessions::SessionId;
 use crate::{render, token, ui};
@@ -37,7 +37,13 @@ pub struct Client {
 impl Client {
     /// Connects with the token `remote` configures, else the one hey kept,
     /// else one the user enters, which hey keeps once the host accepts it.
-    pub async fn connect(name: &str, remote: &Remote, machine: Machine) -> Result<Self> {
+    /// `subagents` names this machine when it runs subagents for the host.
+    pub async fn connect(
+        name: &str,
+        remote: &Remote,
+        machine: Machine,
+        subagents: Option<String>,
+    ) -> Result<Self> {
         let mut url = config::expand(&remote.url)?;
         if !url.ends_with('/') {
             url.push('/');
@@ -54,6 +60,7 @@ impl Client {
                 machine,
                 remote: name.to_owned(),
                 url: base.to_string(),
+                subagents,
             }),
             base,
         };
@@ -205,6 +212,54 @@ impl Client {
             .await
     }
 
+    /// Takes up a subagent's task; false when another client took it first,
+    /// or it is no longer waited for.
+    pub async fn claim(&self, id: &SessionId, delegation: DelegationId) -> Result<bool> {
+        let path = format!("{}/claim", delegation_path(id, delegation));
+        self.done(self.http.post(self.url(&path)?), StatusCode::CONFLICT)
+            .await
+    }
+
+    /// Shows `event` of the task's subagent to every client following the run.
+    pub async fn delegated_event(
+        &self,
+        id: &SessionId,
+        delegation: DelegationId,
+        event: &Event,
+    ) -> Result<()> {
+        let path = format!("{}/events", delegation_path(id, delegation));
+        self.ok(self.http.post(self.url(&path)?).json(event))
+            .await
+            .map(drop)
+    }
+
+    /// Waits for a client following the run to decide `ask` for the task's
+    /// subagent.
+    pub async fn delegated_ask(
+        &self,
+        id: &SessionId,
+        delegation: DelegationId,
+        ask: &Ask,
+    ) -> Result<Decision> {
+        let path = format!("{}/asks", delegation_path(id, delegation));
+        self.json(self.http.post(self.url(&path)?).json(ask)).await
+    }
+
+    /// Reports how the task went; false when it was no longer waited for.
+    pub async fn finish(
+        &self,
+        id: &SessionId,
+        delegation: DelegationId,
+        result: &TaskResult,
+    ) -> Result<bool> {
+        let path = delegation_path(id, delegation);
+        self.done(
+            self.http.post(self.url(&path)?).json(result),
+            StatusCode::NOT_FOUND,
+        )
+        .await
+    }
+
     pub async fn memories(&self) -> Result<Vec<String>> {
         self.json(self.get("v1/memories")?).await
     }
@@ -266,6 +321,10 @@ impl Client {
             reason => bail!("remote `{}`: {reason}", self.name),
         }
     }
+}
+
+fn delegation_path(id: &SessionId, delegation: DelegationId) -> String {
+    format!("v1/threads/{}/delegations/{delegation}", id.as_str())
 }
 
 fn lines(response: Response) -> impl Stream<Item = Result<String>> + Send + Unpin + 'static {

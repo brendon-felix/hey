@@ -20,7 +20,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{config, token};
 use crate::host::{Host, ThreadError};
-use crate::protocol::{ApprovalId, Decision, RunRequest};
+use crate::protocol::{ApprovalId, Ask, Decision, DelegationId, Event, RunRequest, TaskResult};
 use crate::sessions::SessionId;
 
 pub async fn serve(host: Arc<Host>, config: &config::Server) -> Result<()> {
@@ -38,6 +38,10 @@ pub async fn serve(host: Arc<Host>, config: &config::Server) -> Result<()> {
         .route("/v1/threads/{id}/archived", put(archive))
         .route("/v1/threads/{id}/fork", post(fork))
         .route("/v1/threads/{id}/approvals/{approval}", post(answer))
+        .route("/v1/threads/{id}/delegations/{delegation}", post(finish))
+        .route("/v1/threads/{id}/delegations/{delegation}/claim", post(claim))
+        .route("/v1/threads/{id}/delegations/{delegation}/events", post(delegated_event))
+        .route("/v1/threads/{id}/delegations/{delegation}/asks", post(delegated_ask))
         .route("/v1/threads/{id}/tools", get(tools))
         .route("/v1/memories", get(memories).delete(forget))
         .layer(middleware::from_fn_with_state(token, authorize))
@@ -194,6 +198,53 @@ async fn answer(
 
 async fn tools(State(host): State<Arc<Host>>, Path(id): Path<SessionId>) -> impl IntoResponse {
     Json(host.tools(&id))
+}
+
+/// Takes up a subagent's task for the client; 409 when another client took
+/// it, or it is no longer waited for.
+async fn claim(
+    State(host): State<Arc<Host>>,
+    Path((id, delegation)): Path<(SessionId, u64)>,
+) -> StatusCode {
+    match host.claim(&id, DelegationId(delegation)) {
+        true => StatusCode::NO_CONTENT,
+        false => StatusCode::CONFLICT,
+    }
+}
+
+async fn delegated_event(
+    State(host): State<Arc<Host>>,
+    Path((id, delegation)): Path<(SessionId, u64)>,
+    Json(event): Json<Event>,
+) -> StatusCode {
+    match host.delegated_event(&id, DelegationId(delegation), event) {
+        true => StatusCode::NO_CONTENT,
+        false => StatusCode::NOT_FOUND,
+    }
+}
+
+/// The decision, once a client makes it.
+async fn delegated_ask(
+    State(host): State<Arc<Host>>,
+    Path((id, delegation)): Path<(SessionId, u64)>,
+    Json(ask): Json<Ask>,
+) -> Reply<impl IntoResponse> {
+    let decision = host
+        .delegated_ask(&id, DelegationId(delegation), ask)
+        .await
+        .ok_or_else(|| Failure(StatusCode::NOT_FOUND, "the task is no longer waited for".into()))?;
+    Ok(Json(decision))
+}
+
+async fn finish(
+    State(host): State<Arc<Host>>,
+    Path((id, delegation)): Path<(SessionId, u64)>,
+    Json(result): Json<TaskResult>,
+) -> StatusCode {
+    match host.finish(&id, DelegationId(delegation), result) {
+        true => StatusCode::NO_CONTENT,
+        false => StatusCode::NOT_FOUND,
+    }
 }
 
 async fn memories(State(host): State<Arc<Host>>) -> Reply<impl IntoResponse> {

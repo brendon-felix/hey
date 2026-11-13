@@ -28,6 +28,7 @@ pub struct Config {
     pub shared: Shared,
     pub memory: Memory,
     pub tools: Tools,
+    pub subagents: Subagents,
     pub mcp_servers: BTreeMap<String, McpServer>,
     pub remote: Option<String>,
     pub remotes: BTreeMap<String, Remote>,
@@ -53,6 +54,7 @@ impl Default for Config {
             shared: Shared::default(),
             memory: Memory::default(),
             tools: Tools::default(),
+            subagents: Subagents::default(),
             mcp_servers: BTreeMap::new(),
             remote: None,
             remotes: BTreeMap::new(),
@@ -322,6 +324,36 @@ fn over_default_rules<'de, D: Deserializer<'de>>(
     let mut rules = permissions::default_rules();
     rules.extend(BTreeMap::deserialize(deserializer)?);
     Ok(rules)
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct Subagents {
+    /// Offer the agent the tool that starts subagents.
+    pub enabled: bool,
+    /// The model subagents use; else their parent's.
+    pub model: Option<String>,
+    /// Where subagents may work on each machine, by its name.
+    pub machines: BTreeMap<String, Directories>,
+}
+
+impl Default for Subagents {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            model: None,
+            machines: BTreeMap::new(),
+        }
+    }
+}
+
+/// Directories subagents may work in without asking, and those they are
+/// kept out of, which win.
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct Directories {
+    pub allow: Vec<String>,
+    pub exclude: Vec<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -597,6 +629,8 @@ mod tests {
         assert_eq!(documented.tools.default, built_in.tools.default);
         assert_eq!(documented.tools.permissions, built_in.tools.permissions);
         assert_eq!(documented.tools.mcp_result_bytes, built_in.tools.mcp_result_bytes);
+        assert_eq!(documented.subagents.enabled, built_in.subagents.enabled);
+        assert_eq!(documented.subagents.model, built_in.subagents.model);
         assert_eq!(documented.server.listen, built_in.server.listen);
     }
 

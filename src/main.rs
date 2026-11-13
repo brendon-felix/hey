@@ -18,6 +18,7 @@ mod render;
 mod repl;
 mod server;
 mod sessions;
+mod subagents;
 mod token;
 mod turn;
 mod ui;
@@ -38,6 +39,7 @@ use preamble::Hosting;
 use protocol::Machine;
 use repl::Repl;
 use sessions::SessionId;
+use subagents::Crew;
 
 /// A minimal command-line agent.
 #[derive(Parser, Debug)]
@@ -201,8 +203,14 @@ async fn connect(args: &Args, config: &Config) -> Result<Backend> {
                 .remotes
                 .get(name)
                 .with_context(|| format!("no remote `{name}` in `[remotes]`"))?;
+            let crew = match config.subagents.enabled {
+                true => Some(Arc::new(Crew::new(config)?)),
+                false => None,
+            };
             let machine = Machine::here(config.file.as_deref());
-            Ok(Backend::Remote(Client::connect(name, remote, machine).await?))
+            let subagents = crew.as_ref().map(|crew| crew.machine().to_owned());
+            let client = Client::connect(name, remote, machine, subagents).await?;
+            Ok(Backend::Remote(client, crew))
         }
         None => Ok(Backend::Local(Arc::new(
             Host::new(config, Hosting::Local).await?,

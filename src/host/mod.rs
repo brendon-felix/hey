@@ -20,18 +20,20 @@ use rig_tools::{Live, Seen};
 use tokio::sync::watch;
 use tokio_util::task::TaskTracker;
 
-use crate::agent::{self, BUILTIN_TOOLS, Model};
+use crate::agent::{self, BUILTIN_TOOLS, Model, Place};
 use crate::config::{Config, Providers};
 use crate::mcp;
 use crate::memory::{self, Memory, Recalled};
 use crate::permissions::{Approval, Origin, Permissions};
 use crate::preamble::{Hosting, Setting};
 use crate::protocol::{
-    Activities, Activity, ApprovalId, Decision, Defaults, Ending, Event, Machine, ModelInfo,
-    RunId, RunRequest, ServerReport, Snapshot, ThreadInfo, ThreadStatus, Tools,
+    Activities, Activity, ApprovalId, Ask, Decision, Defaults, DelegationId, Ending, Event,
+    Machine, ModelInfo, RunId, RunRequest, ServerReport, Snapshot, TaskResult, ThreadInfo,
+    ThreadStatus, Tools,
 };
 use crate::render;
 use crate::sessions::{Mark, SessionId, Sessions, Summary};
+use crate::subagents::{self, Crew, Spawn};
 
 pub use run::Run;
 
@@ -63,6 +65,10 @@ pub struct Host {
     mcp: Vec<mcp::Tool>,
     servers: Vec<ServerReport>,
     permissions: Permissions,
+    /// Runs subagents here, when the config offers them.
+    crew: Option<Arc<Crew>>,
+    /// The model subagents use, when not their parent's.
+    subagent_model: Option<String>,
     threads: Mutex<HashMap<SessionId, Thread>>,
     /// What the threads are doing, published at every change.
     activity: watch::Sender<Activities>,
@@ -121,9 +127,15 @@ impl Host {
     pub async fn new(config: &Config, hosting: Hosting) -> Result<Self> {
         let sessions = Sessions::open(config.sessions.dir()?)?;
         let (mcp, servers) = connect_mcp(config).await;
+        let crew = match config.subagents.enabled {
+            true => Some(Arc::new(Crew::new(config)?)),
+            false => None,
+        };
+        let spawn = crew.as_ref().map(|_| (subagents::TOOL, &Origin::Builtin));
         let builtin = BUILTIN_TOOLS.map(|name| (name, &Origin::Builtin));
         let external = mcp.iter().map(|tool| (tool.name.as_str(), &tool.origin));
-        let permissions = Permissions::resolve(builtin.into_iter().chain(external), &config.tools);
+        let tools = builtin.into_iter().chain(spawn).chain(external);
+        let permissions = Permissions::resolve(tools, &config.tools);
         Ok(Self {
             hosting,
             machine: Machine::here(config.file.as_deref()),
@@ -146,6 +158,8 @@ impl Host {
             mcp,
             servers,
             permissions,
+            crew,
+            subagent_model: config.subagents.model.clone(),
             threads: Mutex::default(),
             activity: watch::Sender::default(),
             tasks: TaskTracker::new(),
@@ -236,6 +250,9 @@ impl Host {
             return Err(ThreadError::Busy);
         }
         threads.remove(id);
+        if let Some(crew) = &self.crew {
+            crew.forget(id);
+        }
         self.sessions.delete(id).map_err(ThreadError::Other)?;
         self.publish(&threads);
         Ok(())
@@ -321,6 +338,47 @@ impl Host {
         self.run(id).inspect(|run| run.stop()).is_some()
     }
 
+    /// Takes up a subagent's task for a client; false when another took it
+    /// first, or it is no longer waited for.
+    pub fn claim(&self, id: &SessionId, delegation: DelegationId) -> bool {
+        self.run(id).is_some_and(|run| run.claim(delegation))
+    }
+
+    /// Shows `event` of a client's subagent as part of the run; false when
+    /// the task is no longer waited for.
+    pub fn delegated_event(&self, id: &SessionId, delegation: DelegationId, event: Event) -> bool {
+        let Some(run) = self.run(id) else {
+            return false;
+        };
+        let Some(claimed) = run.claimed(delegation) else {
+            return false;
+        };
+        run.emit(Event::Agent {
+            agent: claimed.agent,
+            step: Box::new(event),
+        });
+        true
+    }
+
+    /// Asks the run's clients `ask` for a client's subagent; `None` when the
+    /// task is no longer waited for.
+    pub async fn delegated_ask(
+        &self,
+        id: &SessionId,
+        delegation: DelegationId,
+        ask: Ask,
+    ) -> Option<Decision> {
+        let run = self.run(id)?;
+        let claimed = run.claimed(delegation)?;
+        Some(run.ask(subagents::labelled(ask, &claimed.label)).await)
+    }
+
+    /// Ends a client's subagent task; false when it was not waited for.
+    pub fn finish(&self, id: &SessionId, delegation: DelegationId, result: TaskResult) -> bool {
+        self.run(id)
+            .is_some_and(|run| run.finish(delegation, result))
+    }
+
     pub fn tools(&self, id: &SessionId) -> Tools {
         let permissions = match self.lock().get(id) {
             Some(thread) => thread.permissions.snapshot(),
@@ -385,8 +443,9 @@ impl Host {
             started: id.started(),
             shared: &self.shared,
             memories: self.memory.as_ref().map(Memory::file),
+            subagents: self.crew.is_some(),
         };
-        let mut builder = agent::builder(model, &thread.seen, live)
+        let mut builder = agent::builder(model, &thread.seen, Place::here(live))
             .dynamic_tools(self.mcp.iter().map(|tool| tool.tool.clone()).collect())
             .name("hey")
             .preamble(system_prompt)
@@ -395,12 +454,15 @@ impl Host {
             .memory(self.sessions.store())
             .add_hook(Approval {
                 permissions: thread.permissions.clone(),
-                run: run.clone(),
+                reporter: run.clone(),
             })
             .add_hook(mcp::ResultLimit {
                 bytes: self.mcp_result_bytes,
                 spill: agent::spill(),
             });
+        if let Some(crew) = &self.crew {
+            builder = builder.tool(self.spawn(crew, id, thread, request, run));
+        }
         if let Some(memories) = memory::preamble(&thread.memories) {
             builder = builder.append_preamble(&memories);
         }
@@ -408,6 +470,29 @@ impl Host {
             builder = builder.max_tokens(max_tokens);
         }
         builder.build()
+    }
+
+    /// The tool that starts subagents for `run`, sharing the thread's tool
+    /// permissions, on the model the config gives them or the run's.
+    fn spawn(
+        &self,
+        crew: &Arc<Crew>,
+        id: &SessionId,
+        thread: &Thread,
+        request: &RunRequest,
+        run: &Arc<Run>,
+    ) -> Spawn {
+        Spawn {
+            crew: crew.clone(),
+            team: crew.team(id, Some(thread.permissions.clone())),
+            run: run.clone(),
+            client: request.client.clone(),
+            model: self
+                .subagent_model
+                .clone()
+                .unwrap_or_else(|| request.options.model.clone()),
+            thinking: request.options.thinking,
+        }
     }
 
     /// Answers `request` into `run` until it ends or is stopped, then learns
@@ -462,7 +547,7 @@ impl Host {
             prompt,
             attachments,
             options,
-            client: _,
+            ..
         } = request;
         let message = self.message(&prompt, &attachments, model, run).await;
         let runner = agent.prompt(message).conversation(id.as_str());

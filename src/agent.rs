@@ -2,6 +2,9 @@
 /*                                  agent.rs                                  */
 /* -------------------------------------------------------------------------- */
 
+use std::path::PathBuf;
+use std::sync::Arc;
+
 use anyhow::{Context, Result, bail};
 use rig_agent::agent::AgentBuilder;
 use rig_core::DynModel;
@@ -10,6 +13,8 @@ use rig_core::operation::{Completion, Embedding};
 use rig_core::providers::ollama::OllamaConfig;
 use rig_core::providers::registry::ConnectOptions;
 use rig_core::tool::Tool;
+use rig_tools::process::Launcher;
+use rig_tools::workspace::{Local, Workspace};
 use rig_tools::{Delete, Edit, List, Live, Move, Read, Search, Seen, Shell, Spill, Write};
 
 use crate::config::{self, Providers};
@@ -107,32 +112,102 @@ pub fn available_models() -> Vec<String> {
         .collect()
 }
 
-/// An agent on `model` with the built-in tools. `edit` and `write` refuse to
-/// clobber a file changed since `read` saw it, which takes all three sharing
-/// what was `seen`; `live` receives a running command's output.
-pub fn builder(model: &Model, seen: &Seen, live: Live) -> AgentBuilder {
+/// Where the built-in tools work.
+pub struct Place {
+    workspace: Arc<dyn Workspace>,
+    /// The directory relative paths start from and commands run in; `None`
+    /// is this process's working directory.
+    base: Option<PathBuf>,
+    /// Whether paths outside `base` are refused.
+    confine: bool,
+    /// Where a running command's output goes as it comes.
+    live: Option<Live>,
+}
+
+impl Place {
+    /// Anywhere on this machine, from the working directory.
+    pub fn here(live: Live) -> Self {
+        Self {
+            workspace: Arc::new(Local),
+            base: None,
+            confine: false,
+            live: Some(live),
+        }
+    }
+
+    /// Only within `dir`, on `workspace`. Commands start there, but what
+    /// they do is not confined.
+    pub fn within(dir: PathBuf, workspace: Arc<dyn Workspace>) -> Self {
+        Self {
+            workspace,
+            base: Some(dir),
+            confine: true,
+            live: None,
+        }
+    }
+}
+
+/// An agent on `model` with the built-in tools, working in `place`. `edit`
+/// and `write` refuse to clobber a file changed since `read` saw it, which
+/// takes all three sharing what was `seen`.
+pub fn builder(model: &Model, seen: &Seen, place: Place) -> AgentBuilder {
+    let Place {
+        workspace,
+        base,
+        confine,
+        live,
+    } = place;
+    let launcher = match &base {
+        Some(dir) => Launcher::default().in_dir(dir),
+        None => Launcher::default(),
+    };
     let shell = Shell {
-        live: Some(live),
+        workspace: workspace.clone(),
+        launcher,
+        live,
         spill: spill(),
+        confine,
         ..Shell::default()
     };
     AgentBuilder::new(model.inner.clone())
         .tool(Read {
+            workspace: workspace.clone(),
+            base: base.clone(),
+            confine,
             seen: seen.clone(),
-            ..Read::default()
         })
         .tool(Write {
+            workspace: workspace.clone(),
+            base: base.clone(),
+            confine,
             seen: seen.clone(),
-            ..Write::default()
         })
         .tool(Edit {
+            workspace: workspace.clone(),
+            base: base.clone(),
+            confine,
             seen: seen.clone(),
-            ..Edit::default()
         })
-        .tool(List::default())
-        .tool(Search::default())
-        .tool(Move::default())
-        .tool(Delete::default())
+        .tool(List {
+            workspace: workspace.clone(),
+            base: base.clone(),
+            confine,
+        })
+        .tool(Search {
+            workspace: workspace.clone(),
+            base: base.clone(),
+            confine,
+        })
+        .tool(Move {
+            workspace: workspace.clone(),
+            base: base.clone(),
+            confine,
+        })
+        .tool(Delete {
+            workspace,
+            base,
+            confine,
+        })
         .tool(shell)
 }
 
@@ -147,4 +222,9 @@ pub async fn summarize(model: &Model, transcript: &str) -> Result<String> {
     let summarizer = AgentBuilder::new(model.inner.clone()).build();
     let request = format!("<conversation>\n{transcript}\n</conversation>\n\n{SUMMARY_PROMPT}");
     Ok(summarizer.prompt(request).await?.output())
+}
+
+/// This process's working directory, or `unknown`.
+pub fn working_directory() -> PathBuf {
+    std::env::current_dir().unwrap_or_else(|_| PathBuf::from("unknown"))
 }

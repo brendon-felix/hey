@@ -67,13 +67,40 @@ pub enum Event {
     Attached {
         name: String,
     },
-    /// A tool call waits until a client decides it.
+    /// The run waits until a client decides `ask`.
     Approval {
         id: ApprovalId,
-        tool: String,
+        ask: Ask,
     },
     Decided {
         id: ApprovalId,
+    },
+    /// A subagent began a task, `label` saying what.
+    AgentStarted {
+        agent: AgentId,
+        label: String,
+        machine: String,
+        /// As the parent asked for it; `None` is the machine's working
+        /// directory.
+        directory: Option<String>,
+    },
+    /// Something a subagent did, shown as part of its parent's run.
+    Agent {
+        agent: AgentId,
+        step: Box<Event>,
+    },
+    AgentEnded {
+        agent: AgentId,
+        error: Option<String>,
+    },
+    /// A subagent's task waits for a client on `task.machine` to run it.
+    Delegated {
+        id: DelegationId,
+        task: Task,
+    },
+    /// A client took up the delegated task.
+    Claimed {
+        id: DelegationId,
     },
     /// Tokens the last model call took in and gave back: how full the
     /// context is.
@@ -98,6 +125,71 @@ pub enum Ending {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct ApprovalId(pub u64);
+
+/// What a client is asked to decide before the run goes on.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum Ask {
+    /// Whether a tool call may run; `agent` is the label of the subagent
+    /// making it.
+    Tool {
+        name: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        agent: Option<String>,
+    },
+    /// Whether subagents may work in `path` on `machine`.
+    Directory { machine: String, path: String },
+}
+
+/// A subagent, for its parent to follow up with.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct AgentId(pub String);
+
+impl AgentId {
+    pub fn new() -> Self {
+        Self(format!("{:06x}", getrandom::u32().unwrap_or_default() & 0xff_ffff))
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl fmt::Display for AgentId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.0.fmt(f)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct DelegationId(pub u64);
+
+impl fmt::Display for DelegationId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.0.fmt(f)
+    }
+}
+
+/// A turn of a subagent's conversation, run on `machine`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Task {
+    pub agent: AgentId,
+    pub label: String,
+    pub machine: String,
+    /// Absolute, `~/`, or relative to the machine's working directory;
+    /// `None` is the working directory itself.
+    pub directory: Option<String>,
+    pub message: String,
+    /// Whether it continues the agent's earlier conversation.
+    pub follow_up: bool,
+    pub model: String,
+    pub thinking: Option<Thinking>,
+}
+
+/// The subagent's final reply, or why it has none.
+pub type TaskResult = Result<String, String>;
 
 /// One run, distinct from every other on the host, even across restarts.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -190,6 +282,10 @@ pub struct ClientInfo {
     pub machine: Machine,
     pub remote: String,
     pub url: String,
+    /// The machine name subagents on the client run under, when it runs
+    /// them; its `[subagents.machines]` rules are keyed by it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subagents: Option<String>,
 }
 
 /// A file or directory a mention attaches, as read where it was found, by
@@ -266,7 +362,8 @@ pub enum ThreadStatus {
     /// An answer ended that no client has shown yet.
     Unseen,
     Running,
-    /// The run waits for a client to approve a tool call.
+    /// The run waits for a client to approve something, or to take up a
+    /// subagent's task.
     Asking,
 }
 

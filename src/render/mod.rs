@@ -21,6 +21,7 @@ use yansi::Paint;
 
 use crate::config::Display;
 use crate::mention;
+use crate::protocol::Event;
 
 pub use reply::{Reply, rows as reply_rows};
 pub use stream::{FRAME, Stream};
@@ -139,6 +140,40 @@ pub fn live_output(text: &str) {
     println!("  {} {}", muted.paint("│"), muted.paint(line));
 }
 
+/// A subagent began its task, `label`, on `machine` in `directory`.
+pub fn agent_started(label: &str, machine: &str, directory: Option<&str>) {
+    let palette = palette();
+    let place = format!("{machine}:{}", directory.unwrap_or("."));
+    println!(
+        "\n{} {} {}",
+        palette.name.paint("◇"),
+        label.bold(),
+        palette.muted.paint(&place)
+    );
+}
+
+/// A tool call or notice of the subagent `label`, on one muted line.
+pub fn agent_event(label: &str, event: &Event) {
+    let line = match event {
+        Event::ToolCall { name, args } => format!("{name} {}", summarize_args(args)),
+        Event::Notice { text } => text.clone(),
+        _ => return,
+    };
+    let muted = palette().muted;
+    let prefix = format!("  {label} ›");
+    let room = terminal_width().saturating_sub(prefix.chars().count() + 1);
+    println!("{} {}", muted.paint(&prefix), muted.paint(&clip(&line, room)));
+}
+
+pub fn agent_ended(label: &str, error: Option<&str>) {
+    let palette = palette();
+    let room = terminal_width().saturating_sub(label.chars().count() + 6);
+    match error {
+        None => println!("  {} {} {}", palette.name.paint("◆"), label, palette.muted.paint("done")),
+        Some(error) => println!("  {} {} {}", "✗".red(), label.red(), clip(error, room).red()),
+    }
+}
+
 /// What a mention attached to the message being sent.
 pub fn attached(target: &dyn std::fmt::Display) {
     let palette = palette();
@@ -216,6 +251,13 @@ fn summarize_args(args: &str) -> String {
 /// the only string argument, else all of them.
 fn summarize(map: &serde_json::Map<String, serde_json::Value>) -> String {
     let field = |key| map.get(key).and_then(serde_json::Value::as_str);
+    if let Some(serde_json::Value::Array(agents)) = map.get("agents") {
+        let labels: Vec<&str> = agents
+            .iter()
+            .filter_map(|agent| agent.get("label")?.as_str())
+            .collect();
+        return labels.join(", ");
+    }
     let mut strings = map.values().filter_map(serde_json::Value::as_str);
     let only_string = match (strings.next(), strings.next()) {
         (Some(only), None) if map.len() == 1 => Some(only),

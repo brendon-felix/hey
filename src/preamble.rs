@@ -37,6 +37,8 @@ pub struct Setting<'a> {
     pub started: Option<NaiveDateTime>,
     pub shared: &'a Path,
     pub memories: Option<&'a Path>,
+    /// Whether the agent can start subagents.
+    pub subagents: bool,
 }
 
 impl Setting<'_> {
@@ -100,15 +102,23 @@ impl Setting<'_> {
         let unreachable = "You cannot reach files on their machine; those they mention with `@` \
                            arrive attached to their message.";
         match (self.hosting, self.client) {
-            (_, Some(ClientInfo { machine, remote, url })) => {
+            (_, Some(ClientInfo { machine, remote, url, subagents })) => {
                 let cwd = machine
                     .cwd
                     .as_deref()
                     .map(|cwd| format!(", working in {cwd},"))
                     .unwrap_or_default();
+                let reach = match subagents.as_deref().filter(|_| self.subagents) {
+                    Some(name) => format!(
+                        "Your own tools cannot reach files on their machine, but subagents you \
+                         start on machine `{name}` can; files they mention with `@` arrive \
+                         attached to their message."
+                    ),
+                    None => unreachable.to_owned(),
+                };
                 Some(format!(
                     "The user is on {}{cwd} and reaches the host as remote `{remote}` at {url}. \
-                     {unreachable}",
+                     {reach}",
                     describe(machine)
                 ))
             }

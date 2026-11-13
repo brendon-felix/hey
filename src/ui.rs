@@ -15,7 +15,7 @@ use dialoguer::{FuzzySelect, Password, theme::ColorfulTheme};
 use futures::StreamExt;
 use yansi::Paint;
 
-use crate::protocol::Decision;
+use crate::protocol::{Ask, Decision};
 use crate::render::{self, Palette, palette};
 
 fn theme() -> ColorfulTheme {
@@ -50,21 +50,32 @@ fn tint(style: Style, color: render::Color) -> Style {
     }
 }
 
-/// Asks whether to run `tool`. Esc declines the call; Ctrl+C stops the run.
-/// Dropped unanswered, as when another client decides first, it takes the
-/// question off the screen.
-pub async fn confirm_tool(tool: &str) -> Decision {
+/// Asks `ask`. Esc declines; Ctrl+C stops the run. Dropped unanswered, as
+/// when another client decides first, it takes the question off the screen.
+pub async fn confirm(ask: &Ask) -> Decision {
     if !std::io::stdin().is_terminal() {
         return Decision::Stop;
     }
     let decisions = [Decision::Once, Decision::Always, Decision::Decline];
-    let labels = vec![
-        "Yes".to_owned(),
-        format!("Always allow `{tool}` in this conversation"),
-        "No".to_owned(),
-    ];
-    let question = format!("Run `{tool}`?");
-    let answer = async { Menu::open(question, labels)?.answer().await };
+    let (question, labels) = match ask {
+        Ask::Tool { name, agent } => {
+            let question = match agent {
+                Some(agent) => format!("Run `{name}` for agent “{agent}”?"),
+                None => format!("Run `{name}`?"),
+            };
+            let always = format!("Always allow `{name}` in this conversation");
+            (question, ["Yes".to_owned(), always, "No".to_owned()])
+        }
+        Ask::Directory { machine, path } => (
+            format!("Let subagents work in {path} on {machine}?"),
+            [
+                "Yes, in this conversation".to_owned(),
+                format!("Always: allow it in {machine}'s config"),
+                "No".to_owned(),
+            ],
+        ),
+    };
+    let answer = async { Menu::open(question, labels.into())?.answer().await };
     match answer.await {
         Ok(Answer::Picked(index)) => decisions[index],
         Ok(Answer::Dismissed) => Decision::Decline,

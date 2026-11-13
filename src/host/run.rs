@@ -14,7 +14,9 @@ use rig_core::message::AssistantContent;
 use rig_core::streaming::{Item, PartKind, StreamEvent};
 use tokio::sync::{Notify, oneshot, watch};
 
-use crate::protocol::{ApprovalId, Decision, Event, RunId, Running};
+use crate::protocol::{
+    AgentId, ApprovalId, Ask, Decision, DelegationId, Event, RunId, Running, Task, TaskResult,
+};
 
 /// A run in progress on a thread. The host owns it, not a client: clients
 /// come and go, replaying and following its events and answering its
@@ -27,10 +29,27 @@ pub struct Run {
     history: usize,
     log: watch::Sender<Vec<Event>>,
     approvals: Mutex<HashMap<ApprovalId, oneshot::Sender<Decision>>>,
-    next_approval: AtomicU64,
+    delegations: Mutex<HashMap<DelegationId, Delegation>>,
+    next_id: AtomicU64,
     stop: Notify,
-    /// Called when whether a tool call waits for a decision changes.
+    /// Called when whether the run waits for a client changes.
     asking_changed: Box<dyn Fn() + Send + Sync>,
+}
+
+/// A subagent's task that a client runs on its own machine.
+struct Delegation {
+    agent: AgentId,
+    label: String,
+    /// Whether a client took it up; until one does, the run waits for one.
+    claimed: bool,
+    done: oneshot::Sender<TaskResult>,
+}
+
+/// The agent and label of a claimed delegation, which a client's reports
+/// about it are shown under.
+pub struct Claimed {
+    pub agent: AgentId,
+    pub label: String,
 }
 
 impl Run {
@@ -48,7 +67,8 @@ impl Run {
             history,
             log: watch::Sender::default(),
             approvals: Mutex::default(),
-            next_approval: AtomicU64::new(0),
+            delegations: Mutex::default(),
+            next_id: AtomicU64::new(0),
             stop: Notify::new(),
             asking_changed: Box::new(asking_changed),
         }
@@ -72,36 +92,94 @@ impl Run {
         &self.prompt
     }
 
-    /// Whether a tool call waits for a client to decide it.
+    /// Whether the run waits for a client: to decide something, or to take
+    /// up a subagent's task.
     pub fn asking(&self) -> bool {
-        !self.lock_approvals().is_empty()
+        !lock(&self.approvals).is_empty()
+            || lock(&self.delegations).values().any(|delegation| !delegation.claimed)
     }
 
     pub fn emit(&self, event: Event) {
         self.log.send_modify(|log| log.push(event));
     }
 
-    /// Waits for a client to decide whether `tool` may run.
-    pub async fn ask(&self, tool: &str) -> Decision {
-        let id = ApprovalId(self.next_approval.fetch_add(1, Ordering::Relaxed));
+    /// Waits for a client to decide `ask`.
+    pub async fn ask(&self, ask: Ask) -> Decision {
+        let id = ApprovalId(self.next_id.fetch_add(1, Ordering::Relaxed));
         let (decide, decision) = oneshot::channel();
-        self.lock_approvals().insert(id, decide);
+        lock(&self.approvals).insert(id, decide);
         (self.asking_changed)();
-        self.emit(Event::Approval {
-            id,
-            tool: tool.to_owned(),
-        });
+        self.emit(Event::Approval { id, ask });
         decision.await.unwrap_or(Decision::Stop)
     }
 
     /// False when `id` is not waiting, as when another client decided first.
     pub fn answer(&self, id: ApprovalId, decision: Decision) -> bool {
-        let Some(decide) = self.lock_approvals().remove(&id) else {
+        let Some(decide) = lock(&self.approvals).remove(&id) else {
             return false;
         };
         (self.asking_changed)();
         self.emit(Event::Decided { id });
         decide.send(decision).is_ok()
+    }
+
+    /// Waits for a client on `task.machine` to run `task` and report how it
+    /// went. Dropped, as when the run stops, it is withdrawn.
+    pub async fn delegate(&self, task: Task) -> TaskResult {
+        let id = DelegationId(self.next_id.fetch_add(1, Ordering::Relaxed));
+        let (done, result) = oneshot::channel();
+        let delegation = Delegation {
+            agent: task.agent.clone(),
+            label: task.label.clone(),
+            claimed: false,
+            done,
+        };
+        lock(&self.delegations).insert(id, delegation);
+        let _withdraw = Withdraw { run: self, id };
+        (self.asking_changed)();
+        self.emit(Event::Delegated { id, task });
+        result
+            .await
+            .unwrap_or_else(|_| Err("the client running it went away".into()))
+    }
+
+    /// Takes up delegation `id` for a client; false when another client took
+    /// it first or it is no longer waiting.
+    pub fn claim(&self, id: DelegationId) -> bool {
+        let claimed = match lock(&self.delegations).get_mut(&id) {
+            Some(delegation) if !delegation.claimed => {
+                delegation.claimed = true;
+                true
+            }
+            _ => false,
+        };
+        if claimed {
+            (self.asking_changed)();
+            self.emit(Event::Claimed { id });
+        }
+        claimed
+    }
+
+    /// The subagent of a claimed delegation, while it is still waited for.
+    pub fn claimed(&self, id: DelegationId) -> Option<Claimed> {
+        lock(&self.delegations)
+            .get(&id)
+            .filter(|delegation| delegation.claimed)
+            .map(|delegation| Claimed {
+                agent: delegation.agent.clone(),
+                label: delegation.label.clone(),
+            })
+    }
+
+    /// Ends a claimed delegation with `result`; false when it was not waited for.
+    pub fn finish(&self, id: DelegationId, result: TaskResult) -> bool {
+        let mut delegations = lock(&self.delegations);
+        if !delegations.get(&id).is_some_and(|delegation| delegation.claimed) {
+            return false;
+        }
+        delegations
+            .remove(&id)
+            .is_some_and(|delegation| delegation.done.send(result).is_ok())
     }
 
     pub fn stop(&self) {
@@ -143,27 +221,48 @@ impl Run {
         .flat_map(stream::iter);
         began.chain(logged)
     }
+}
 
-    fn lock_approvals(
-        &self,
-    ) -> std::sync::MutexGuard<'_, HashMap<ApprovalId, oneshot::Sender<Decision>>> {
-        self.approvals
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
+/// Removes a delegation once nothing waits for it.
+struct Withdraw<'a> {
+    run: &'a Run,
+    id: DelegationId,
+}
+
+impl Drop for Withdraw<'_> {
+    fn drop(&mut self) {
+        let withdrawn = lock(&self.run.delegations).remove(&self.id);
+        if withdrawn.is_some_and(|delegation| !delegation.claimed) {
+            (self.run.asking_changed)();
+        }
     }
 }
 
-/// `events` without the approvals they also show decided, so a client that
-/// joins late is not asked about them.
+fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    mutex.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+/// `events` without the approvals they also show decided and the
+/// delegations they show claimed, so a client that joins late is not asked
+/// about them.
 fn undecided(events: &[Event]) -> Vec<Event> {
     let decided = |id: &ApprovalId| {
         events
             .iter()
             .any(|event| matches!(event, Event::Decided { id: other } if other == id))
     };
+    let claimed = |id: &DelegationId| {
+        events
+            .iter()
+            .any(|event| matches!(event, Event::Claimed { id: other } if other == id))
+    };
     events
         .iter()
-        .filter(|event| !matches!(event, Event::Approval { id, .. } if decided(id)))
+        .filter(|event| match event {
+            Event::Approval { id, .. } => !decided(id),
+            Event::Delegated { id, .. } => !claimed(id),
+            _ => true,
+        })
         .cloned()
         .collect()
 }
@@ -270,7 +369,12 @@ mod tests {
             .map(|event| match event {
                 Event::Began { .. } => "began".into(),
                 Event::Text { text } => text.clone(),
-                Event::Approval { tool, .. } => format!("ask {tool}"),
+                Event::Approval {
+                    ask: Ask::Tool { name, .. },
+                    ..
+                } => format!("ask {name}"),
+                Event::Delegated { task, .. } => format!("delegate {}", task.label),
+                Event::Claimed { .. } => "claimed".into(),
                 Event::Decided { .. } => "decided".into(),
                 Event::End { .. } => "end".into(),
                 Event::Thought { .. } => "thought".into(),
@@ -286,7 +390,13 @@ mod tests {
         run.emit(Event::Text { text: "a".into() });
         let asking = tokio::spawn({
             let run = run.clone();
-            async move { run.ask("shell").await }
+            async move {
+                let ask = Ask::Tool {
+                    name: "shell".into(),
+                    agent: None,
+                };
+                run.ask(ask).await
+            }
         });
         let mut asked = Vec::new();
         while asked.len() < 3 {
@@ -349,5 +459,64 @@ mod tests {
             .flat_map(|event| steps.events(MultiTurnStreamItem::StreamAssistantItem(Item::Event(event))))
             .collect();
         assert_eq!(names(&events), ["Reasoning { text: \"hm\" }", "thought", "hi", "PartEnd"]);
+    }
+
+    #[tokio::test]
+    async fn a_delegation_waits_for_one_client_to_claim_and_finish_it() {
+        let run = std::sync::Arc::new(Run::new("hi".into(), 0, || {}));
+        let task = Task {
+            agent: AgentId("a1".into()),
+            label: "survey".into(),
+            machine: "laptop".into(),
+            directory: None,
+            message: "look around".into(),
+            follow_up: false,
+            model: "openai/gpt-5.5".into(),
+            thinking: None,
+        };
+        let delegated = tokio::spawn({
+            let run = run.clone();
+            async move { run.delegate(task).await }
+        });
+        let mut events = Box::pin(run.events());
+        let id = loop {
+            if let Some(Event::Delegated { id, .. }) = events.next().await {
+                break id;
+            }
+        };
+        assert!(run.asking(), "an unclaimed delegation waits for a client");
+        assert!(run.claimed(id).is_none());
+        assert!(!run.finish(id, Ok("early".into())), "only a claimed one finishes");
+
+        assert!(run.claim(id));
+        assert!(!run.claim(id), "claimed only once");
+        assert!(!run.asking());
+        assert_eq!(run.claimed(id).map(|claimed| claimed.label).as_deref(), Some("survey"));
+        let joined: Vec<Event> = run.events().take(1).collect().await;
+        assert_eq!(names(&joined), ["began"], "a late client is not offered it");
+
+        assert!(run.finish(id, Ok("found it".into())));
+        assert_eq!(delegated.await.unwrap(), Ok("found it".into()));
+        assert!(run.claimed(id).is_none());
+    }
+
+    #[tokio::test]
+    async fn a_withdrawn_delegation_stops_waiting() {
+        let run = Run::new("hi".into(), 0, || {});
+        let task = Task {
+            agent: AgentId("a1".into()),
+            label: "survey".into(),
+            machine: "laptop".into(),
+            directory: None,
+            message: "look around".into(),
+            follow_up: false,
+            model: "openai/gpt-5.5".into(),
+            thinking: None,
+        };
+        let mut delegated = Box::pin(run.delegate(task));
+        assert!(futures::poll!(&mut delegated).is_pending());
+        assert!(run.asking());
+        drop(delegated);
+        assert!(!run.asking(), "withdrawn once its parent's call is dropped");
     }
 }

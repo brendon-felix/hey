@@ -13,6 +13,8 @@ of `hey` is on ease of use, speed, and a pleasant terminal experience.
   live command output
 - [MCP](https://modelcontextprotocol.io) servers, local (stdio) or remote (streamable HTTP)
 - Per-tool permissions: allow, confirm, or deny
+- Subagents that work on tasks in parallel, each in a directory you let it into, on the host or
+  on your own machine
 - Conversations saved automatically, with a list that shows which are answering and which have an
   answer you have not seen, to open, archive, delete or fork them
 - Memory across conversations: lasting facts about you and your work are learned from answers and
@@ -109,7 +111,7 @@ work in one-shot messages too: `hey review @src/main.rs`.
 | Mark | Meaning |
 | --- | --- |
 | spinner | Answering, whether or not any terminal is following it |
-| `?` | Waiting for a tool call to be approved |
+| `?` | Waiting for a tool call to be approved, or for your machine to take up a subagent |
 | `●` | Finished an answer you have not seen yet |
 
 An answer carries on if you close the terminal that asked; its conversation shows `●` until you
@@ -167,9 +169,9 @@ Each tool call is shown as it happens. Whether it runs depends on its permission
 - `confirm` asks first, and offers to allow that tool for the rest of the conversation.
 - `deny` tells the model it is not allowed.
 
-`read`, `list` and `search` are allowed by default; everything else asks. Rules are keyed by tool
-name, or `mcp:<server>:<tool>` and `mcp:<server>` for MCP tools, which the model sees as
-`mcp__<server>__<tool>`.
+`read`, `list`, `search` and `spawn_agents` are allowed by default; everything else asks. Rules are
+keyed by tool name, or `mcp:<server>:<tool>` and `mcp:<server>` for MCP tools, which the model sees
+as `mcp__<server>__<tool>`.
 
 To run every tool without asking, ignoring all rules:
 
@@ -177,6 +179,37 @@ To run every tool without asking, ignoring all rules:
 [tools]
 allow_all = true
 ```
+
+### Subagents
+
+The agent can hand tasks to subagents with its `spawn_agents` tool, several at once. Each works
+on one task in one directory, with the built-in tools, and replies with a report, which is all
+the agent sees; its tool calls show under its label as it works, and its own tool calls are
+permitted as yours are. The agent can follow up with a subagent later in the conversation, which
+remembers its earlier work until hey (or, with a remote, the machine it ran on) restarts.
+Subagents cannot start subagents.
+
+With a remote, a subagent works on the host or on the machine you type on, as the agent
+chooses. One on your machine runs in your `hey`, with your config, model keys and tool
+permissions, and shows in every terminal following the conversation. It waits, marked `?`,
+until a terminal on your machine follows the conversation.
+
+Before a subagent works in a directory, the machine it runs on checks its rules, keyed by its
+name (`hostname -s`, or `HEY_MACHINE`), so one config can serve every machine:
+
+```toml
+[subagents.machines.fermi]
+allow = ["~/Projects"]
+exclude = ["~/Projects/secrets", "~/.ssh"]
+```
+
+A directory inside one in `allow` is used at once. One inside `exclude` is refused, and a
+subagent's file tools refuse anything in an excluded directory, even within its own. For any
+other, you are asked: **No**, **Yes** for this conversation, or **Always**, which adds it to
+`allow` in that machine's config. `tools.allow_all` does not skip the question. A subagent's
+file tools stay inside its directory; its shell commands start there, but what they do is not
+confined, so keep `shell` on `confirm` if that matters. `[subagents] model` picks a cheaper
+model for them, and `enabled = false` turns them off.
 
 ### MCP servers
 
