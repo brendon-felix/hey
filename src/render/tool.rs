@@ -6,7 +6,7 @@ use rig_core::message::ToolResult;
 use rig_tools::{EditArgs, WriteArgs};
 use yansi::Paint;
 
-use super::palette;
+use super::{palette, tool_args};
 
 /// Lines a preview keeps of what a call wrote, printed or gave back.
 pub(super) const PREVIEW_LINES: usize = 5;
@@ -19,13 +19,14 @@ pub(super) fn shows_changes(name: &str) -> bool {
 
 /// The lines a call to `write` or `edit` adds and removes in its file.
 pub(super) fn changes(name: &str, args: &str) -> Option<Vec<(Mark, String)>> {
+    let args = serde_json::Value::Object(tool_args(args)?);
     let lines = match name {
         "write" => {
-            let write = serde_json::from_str::<WriteArgs>(args).ok()?;
+            let write = serde_json::from_value::<WriteArgs>(args).ok()?;
             write.content.lines().map(|line| (Mark::Added, line.to_owned())).collect()
         }
         "edit" => {
-            let edit = serde_json::from_str::<EditArgs>(args).ok()?;
+            let edit = serde_json::from_value::<EditArgs>(args).ok()?;
             edit.edits
                 .iter()
                 .flat_map(|edit| diff(&edit.old_text, &edit.new_text))
@@ -106,5 +107,11 @@ mod tests {
         assert_eq!(diff("fn f() {\n}", "fn f() {\n    x\n}"), [(Added, "    x")]);
         assert_eq!(diff("a\na", "a"), [(Removed, "a")]);
         assert_eq!(diff("same", "same"), []);
+    }
+
+    #[test]
+    fn changes_show_for_calls_routed_to_a_machine() {
+        let args = r#"{"path": "a.md", "content": "hi\n", "machine": "turing"}"#;
+        assert_eq!(changes("write", args), Some(vec![(Mark::Added, "hi".to_owned())]));
     }
 }

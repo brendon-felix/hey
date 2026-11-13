@@ -218,15 +218,22 @@ pub fn conversation(messages: &[Message], style: &Style) {
 }
 
 fn summarize_args(args: &str) -> String {
-    match serde_json::from_str(args) {
-        Ok(serde_json::Value::Object(mut map)) => {
+    match tool_args(args) {
+        Some(map) if map.is_empty() => String::new(),
+        Some(map) => summarize(&map),
+        None => args.to_owned(),
+    }
+}
+
+/// A call's arguments as its tool takes them: without the machine it runs
+/// on, which tools that refuse unknown arguments would reject.
+fn tool_args(args: &str) -> Option<serde_json::Map<String, serde_json::Value>> {
+    match serde_json::from_str(args).ok()? {
+        serde_json::Value::Object(mut map) => {
             map.remove(route::ARG);
-            match map.is_empty() {
-                true => String::new(),
-                false => summarize(&map),
-            }
+            Some(map)
         }
-        _ => args.to_owned(),
+        _ => None,
     }
 }
 

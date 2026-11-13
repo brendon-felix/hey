@@ -10,6 +10,7 @@ use yansi::{Paint, Style};
 
 use super::tool::PREVIEW_LINES;
 use super::{call_line, clip, palette, summarize, wrap};
+use crate::route;
 
 /// Most rows of the text being written the box shows.
 const ROWS: usize = 10;
@@ -239,6 +240,13 @@ impl Call {
         &self.name
     }
 
+    /// Whether this is the call to `name` with `args`, however their JSON
+    /// is spaced.
+    pub fn is(&self, name: &str, args: &str) -> bool {
+        let parse = |json: &str| serde_json::from_str::<serde_json::Value>(json).ok();
+        self.name == name && parse(&self.args).is_some_and(|written| Some(written) == parse(args))
+    }
+
     pub fn push(&mut self, json: &str) {
         self.args.push_str(json);
     }
@@ -248,12 +256,14 @@ impl Call {
     /// the call by its one-line arguments; longer ones show in the box.
     pub fn rows(&self, width: usize, height: usize) -> Vec<String> {
         let mut args = parse_partial_arguments(&self.args);
+        let machine = args.remove(route::ARG);
         args.retain(|_, value| !value.as_str().is_some_and(|text| text.contains('\n')));
         let summary = match args.is_empty() {
             true => String::new(),
             false => summarize(&args),
         };
-        let mut rows = vec![String::new(), call_line(&self.name, None, &summary, width)];
+        let machine = machine.as_ref().and_then(serde_json::Value::as_str);
+        let mut rows = vec![String::new(), call_line(&self.name, machine, &summary, width)];
         if let Some(text) = writing(&self.args).filter(|text| text.contains('\n')) {
             let room = height.saturating_sub(rows.len() + 2);
             rows.extend(boxed(&text, width, room.min(ROWS)));
@@ -263,32 +273,38 @@ impl Call {
     }
 }
 
-/// `text` in a box `width` columns wide, its last `height` rows at most.
+/// `text` in a box `width` columns wide, its last `height` rows at most,
+/// over how many lines it leaves out.
 fn boxed(text: &str, width: usize, height: usize) -> Vec<String> {
     let text = text.replace('\t', "    ").replace('\r', "");
-    let rows: Vec<&str> = text
+    let rows: Vec<(usize, &str)> = text
         .lines()
-        .flat_map(|line| {
+        .enumerate()
+        .flat_map(|(at, line)| {
             wrap::rows(line, inner(width))
                 .into_iter()
-                .map(move |row| &line[wrap::trimmed(line, &row)])
+                .map(move |row| (at, &line[wrap::trimmed(line, &row)]))
         })
         .collect();
     let shown = &rows[rows.len().saturating_sub(height)..];
-    let label = match shown.len() < rows.len() {
-        true => format!("{} lines", text.lines().count()),
-        false => String::new(),
+    let left_out = match shown.first().map_or(0, |&(at, _)| at) {
+        0 => String::new(),
+        1 => "1 more line".to_owned(),
+        lines => format!("{lines} more lines"),
     };
-    let shown = shown.iter().map(|row| Row::new(&[(row, Style::new())]));
-    framed(&label, shown, "", width)
+    let shown = shown.iter().map(|(_, row)| Row::new(&[(row, Style::new())]));
+    framed("", shown, &left_out, width)
 }
 
 /// The text of the string value raw JSON arguments end in, as far as it
-/// has arrived, or else of the last one complete: what the model is
-/// writing, or wrote last.
+/// has arrived: what the model is writing. Between values, that of the last
+/// one with more than a line, else of the last one: what it wrote, rather
+/// than an argument such as the machine after it.
 fn writing(json: &str) -> Option<String> {
-    // Where the last value began, and where it ended once it has.
-    let mut value: Option<(usize, Option<usize>)> = None;
+    // Where each complete value began and ended, and where the one still
+    // being written began.
+    let mut complete: Vec<(usize, usize)> = Vec::new();
+    let mut open: Option<usize> = None;
     let mut string: Option<bool> = None;
     let (mut escaped, mut previous) = (false, None);
     for (at, c) in json.char_indices() {
@@ -299,8 +315,8 @@ fn writing(json: &str) -> Option<String> {
                 (false, '"') => {
                     string = None;
                     previous = Some(c);
-                    if let (true, Some((start, _))) = (is_value, value) {
-                        value = Some((start, Some(at + 1)));
+                    if let (true, Some(start)) = (is_value, open.take()) {
+                        complete.push((start, at + 1));
                     }
                 }
                 _ => {}
@@ -308,7 +324,7 @@ fn writing(json: &str) -> Option<String> {
             None if c == '"' => {
                 let is_value = previous == Some(':');
                 if is_value {
-                    value = Some((at, None));
+                    open = Some(at);
                 }
                 string = Some(is_value);
             }
@@ -316,12 +332,16 @@ fn writing(json: &str) -> Option<String> {
             None => {}
         }
     }
-    let (start, end) = value?;
-    let literal = match end {
-        Some(end) => json[start..end].to_owned(),
-        None => format!("{}\"", complete_escapes(&json[start..])),
-    };
-    serde_json::from_str(&literal).ok()
+    if let Some(start) = open {
+        return serde_json::from_str(&format!("{}\"", complete_escapes(&json[start..]))).ok();
+    }
+    let texts: Vec<String> = complete
+        .iter()
+        .rev()
+        .filter_map(|&(start, end)| serde_json::from_str(&json[start..end]).ok())
+        .collect();
+    let multiline = texts.iter().position(|text| text.contains('\n')).unwrap_or(0);
+    texts.into_iter().nth(multiline)
 }
 
 /// `literal` without an escape it ends partway through.
@@ -348,6 +368,7 @@ mod tests {
             (r#"{"content": "say \"hi\"\"#, Some("say \"hi\"")),
             (r#"{"content": "caf\u00e9 \u00"#, Some("café ")),
             (r#"{"edits": [{"old_text": "a", "new_text": "b\nc"}]}"#, Some("b\nc")),
+            (r#"{"content": "b\nc", "machine": "turing"}"#, Some("b\nc")),
             (r#"{"path""#, None),
         ];
         for (json, expected) in cases {
@@ -410,10 +431,10 @@ mod tests {
         assert_eq!(
             rows,
             [
-                "  ╭─ 3 lines ──────╮",
+                "  ╭────────────────╮",
                 "  │ two            │",
                 "  │ three          │",
-                "  ╰────────────────╯",
+                "  ╰─ 1 more line ──╯",
             ]
         );
         assert!(rows.iter().all(|row| display_width(row) == 20));

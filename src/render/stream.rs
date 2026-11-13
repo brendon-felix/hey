@@ -64,14 +64,34 @@ enum Ending<'a> {
 /// The calls shown whose results have yet to come.
 #[derive(Default)]
 struct Calls {
-    /// Each call as its line names it.
-    named: HashMap<CallId, String>,
+    named: HashMap<CallId, Named>,
     /// The call shown last, until a result comes.
     latest: Option<CallId>,
 }
 
+/// A call as its line names it: its tool, and the argument it is known by.
+struct Named {
+    tool: String,
+    argument: String,
+}
+
+impl Named {
+    fn label(&self) -> String {
+        format!("{} {}", self.tool, self.argument)
+    }
+
+    /// What a result shown apart from this call says: its `summary`, after
+    /// the call it answers unless that names its argument already.
+    fn marker(&self, summary: &str) -> String {
+        match !self.argument.is_empty() && summary.contains(&self.argument) {
+            true => summary.to_owned(),
+            false => format!("{} · {summary}", self.label()),
+        }
+    }
+}
+
 impl Calls {
-    fn called(&mut self, id: Option<CallId>, named: String) {
+    fn called(&mut self, id: Option<CallId>, named: Named) {
         if let Some(id) = &id {
             self.named.insert(id.clone(), named);
         }
@@ -92,7 +112,7 @@ impl Calls {
 enum Placement {
     Under,
     /// Apart from its call, which it names when known.
-    Apart(Option<String>),
+    Apart(Option<Named>),
 }
 
 /// What the spinner says the agent is doing.
@@ -104,7 +124,8 @@ enum Activity {
     /// Reasoning that is not shown.
     Thinking,
     /// The model is writing this call.
-    Preparing(Call),
+    /// The model is writing a call to this tool.
+    Preparing(String),
     Running(String),
 }
 
@@ -113,7 +134,7 @@ impl fmt::Display for Activity {
         match self {
             Activity::Waiting => f.write_str("Waiting for model"),
             Activity::Thinking => f.write_str("Thinking"),
-            Activity::Preparing(call) => write!(f, "Preparing {}", call.name()),
+            Activity::Preparing(tool) => write!(f, "Preparing {tool}"),
             Activity::Running(tool) => write!(f, "Running {tool}"),
         }
     }
@@ -137,6 +158,9 @@ pub struct Stream {
     /// on. Output that is not a terminal gets it once it ends.
     preview: Option<Preview>,
     calls: Calls,
+    /// The calls the model has written, or is writing, that have yet to
+    /// run, in order.
+    writing: Vec<Call>,
     /// Whether the latest call's output showed as it ran.
     ran_live: bool,
     /// Received but not yet shown.
@@ -171,6 +195,7 @@ impl Stream {
             activity: Activity::Waiting,
             preview: None,
             calls: Calls::default(),
+            writing: Vec::new(),
             ran_live: false,
             backlog: VecDeque::new(),
             started: now,
@@ -232,13 +257,14 @@ impl Stream {
     /// The model began writing a call to `tool`, which ends the text before
     /// it.
     pub fn preparing(&mut self, tool: String) {
-        self.activity = Activity::Preparing(Call::new(tool));
+        self.writing.push(Call::new(tool.clone()));
+        self.activity = Activity::Preparing(tool);
         self.end_reply();
     }
 
     /// More of the arguments of the call the model is writing, as raw JSON.
     pub fn arguments(&mut self, json: &str) {
-        if let Activity::Preparing(call) = &mut self.activity {
+        if let Some(call) = self.writing.last_mut() {
             call.push(json);
         }
     }
@@ -247,12 +273,25 @@ impl Stream {
     /// what it changes when it writes to a file. `machine` is the remote
     /// client it runs on, if not the host.
     pub fn call(&mut self, name: &str, args: &str, machine: Option<&str>, id: Option<CallId>) {
+        let written = self.writing.iter().position(|call| call.is(name, args));
+        // Calls run in the order the model wrote them, should its arguments
+        // have changed on the way.
+        let written = written.or_else(|| self.writing.iter().position(|call| call.name() == name));
+        if let Some(at) = written {
+            self.writing.remove(at);
+        }
         self.settle();
         self.activity = Activity::Running(name.to_owned());
         let summary = summarize_args(args);
         let machine = machine.map(str::to_owned).or_else(|| machine_arg(args));
         println!("\n{}", call_line(name, machine.as_deref(), &summary, terminal_width()));
-        self.calls.called(id, format!("{name} {summary}"));
+        self.calls.called(
+            id,
+            Named {
+                tool: name.to_owned(),
+                argument: summary.clone(),
+            },
+        );
         self.ran_live = false;
         let Some(changes) = tool::changes(name, args) else {
             return;
@@ -305,7 +344,7 @@ impl Stream {
             Placement::Under | Placement::Apart(None) => None,
         };
         let marker = |summary: &str| match &called {
-            Some(called) => format!("{called} · {summary}"),
+            Some(called) => called.marker(summary),
             None => summary.to_owned(),
         };
         let room = terminal_width().saturating_sub(5);
@@ -322,7 +361,7 @@ impl Stream {
         match self.style.tool_output {
             Output::Preview if !shown && given.lines().count() > 1 => {
                 let mut preview = Preview::new(source);
-                preview.label(called.clone().unwrap_or_default());
+                preview.label(called.as_ref().map(Named::label).unwrap_or_default());
                 preview.push(given);
                 self.preview = Some(preview);
                 return self.end_preview(Ending::Answered(""));
@@ -498,20 +537,17 @@ impl Stream {
         }
     }
 
-    /// Draws the status: the preview, if there is one, then, once the agent
-    /// has been quiet a while, a call being written, if there is one, over
-    /// the spinner. Each row is narrower than the terminal, so none wraps
-    /// and the rows can be found again to redraw.
+    /// Draws the status: the preview, if there is one, then the calls the
+    /// model has written that have yet to run, then, once the agent has
+    /// been quiet a while, the spinner. Each row is narrower than the
+    /// terminal, so none wraps and the rows can be found again to redraw.
     fn draw_status(&mut self) {
         let mut rows = self
             .preview
             .as_ref()
             .map_or_else(Vec::new, |preview| preview.framed(self.preview_width(), ""));
+        rows.extend(self.written(terminal_height().saturating_sub(rows.len() + 2)));
         if self.quiet_since.elapsed() >= SPINNER_DELAY {
-            let room = terminal_height().saturating_sub(rows.len() + 2);
-            if let Activity::Preparing(call) = &self.activity {
-                rows.extend(call.rows(self.preview_width(), room));
-            }
             rows.push(self.spinner());
         }
         if rows.is_empty() {
@@ -531,6 +567,19 @@ impl Stream {
             text,
             rows: rows.len(),
         });
+    }
+
+    /// The calls the model has written that have yet to run, in at most
+    /// `height` rows: the latest first given room, as the one most likely
+    /// still being written.
+    fn written(&self, mut height: usize) -> Vec<String> {
+        let mut calls: Vec<Vec<String>> = Vec::new();
+        for call in self.writing.iter().rev() {
+            let rows = call.rows(self.preview_width(), height);
+            height -= rows.len();
+            calls.push(rows);
+        }
+        calls.into_iter().rev().flatten().collect()
     }
 
     fn spinner(&self) -> String {
