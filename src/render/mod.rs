@@ -119,7 +119,7 @@ pub fn tool_result(result: &ToolResult) {
         .filter_map(|content| content.as_text())
         .collect::<Vec<_>>()
         .join("\n");
-    let room = terminal_width().saturating_sub(result.name.as_str().chars().count() + 6);
+    let room = terminal_width().saturating_sub(result.name.as_str().chars().count() + 7);
     if result.is_error {
         let first = text.lines().next().unwrap_or("failed");
         println!("  {} {} {}", "✗".red(), result.name.as_str().red(), clip(first, room).red());
@@ -133,7 +133,7 @@ pub fn tool_result(result: &ToolResult) {
     let muted = palette().muted;
     println!(
         "  {} {} {}",
-        muted.paint("↳"),
+        muted.paint("╰─"),
         muted.paint(result.name.as_str()),
         muted.paint(&clip(&summary, room))
     );
