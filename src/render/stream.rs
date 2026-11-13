@@ -13,9 +13,11 @@ use crossterm::terminal::{BeginSynchronizedUpdate, Clear, ClearType, EndSynchron
 
 use super::preview::Call;
 use super::reply::{Part, Reply};
+use super::tool::{Mark, PREVIEW_LINES, line, row};
 use super::{
     Style, animations, clip, clock, show, terminal_height, terminal_width, theme, thought,
 };
+use crate::config::ToolOutput;
 
 /// How often a [`Stream`] wants [`Stream::tick`] called.
 pub const FRAME: Duration = Duration::from_millis(16);
@@ -74,6 +76,62 @@ struct Status {
     rows: usize,
 }
 
+/// How a running command's output shows, per [`ToolOutput`].
+enum Output {
+    Full,
+    Preview(Preview),
+    Hidden,
+}
+
+impl From<ToolOutput> for Output {
+    fn from(setting: ToolOutput) -> Self {
+        match setting {
+            ToolOutput::Full => Output::Full,
+            ToolOutput::Preview => Output::Preview(Preview::default()),
+            ToolOutput::Hidden => Output::Hidden,
+        }
+    }
+}
+
+/// The latest lines of a running command, redrawn in place as more arrive,
+/// and left in place once it ends. Output that is not a terminal gets them
+/// once the command's output ends.
+#[derive(Default)]
+struct Preview {
+    lines: VecDeque<String>,
+    /// Rows the lines take on the terminal, right above the cursor.
+    drawn: usize,
+}
+
+impl Preview {
+    fn push(&mut self, text: String, mode: Mode) {
+        if self.lines.len() == PREVIEW_LINES {
+            self.lines.pop_front();
+        }
+        self.lines.push_back(text);
+        if mode != Mode::Lines {
+            self.draw();
+        }
+    }
+
+    /// Leaves the lines shown and starts a new preview below them.
+    fn end(&mut self, mode: Mode) {
+        if mode == Mode::Lines {
+            self.draw();
+        }
+        *self = Self::default();
+    }
+
+    fn draw(&mut self) {
+        if let Ok(rows @ 1..) = u16::try_from(self.drawn) {
+            show(format!("{}\r{}", MoveUp(rows), Clear(ClearType::FromCursorDown)));
+        }
+        let rows: String = self.lines.iter().map(|text| row(Mark::Printed, text) + "\n").collect();
+        show(rows);
+        self.drawn = self.lines.len();
+    }
+}
+
 /// A run's reply on the terminal, advanced a frame at a time, with a status
 /// while the agent works without saying anything.
 pub struct Stream {
@@ -81,6 +139,7 @@ pub struct Stream {
     reply: Reply,
     show_thinking: bool,
     activity: Activity,
+    output: Output,
     /// Received but not yet shown.
     backlog: VecDeque<Chunk>,
     started: Instant,
@@ -102,6 +161,7 @@ impl Stream {
             reply: Reply::new(style),
             show_thinking: style.show_thinking,
             activity: Activity::Waiting,
+            output: style.tool_output.into(),
             backlog: VecDeque::new(),
             started: now,
             quiet_since: now,
@@ -169,6 +229,19 @@ impl Stream {
         self.activity = Activity::Waiting;
     }
 
+    /// A line of a running command's output.
+    pub fn output(&mut self, text: String) {
+        if let Output::Hidden = self.output {
+            return;
+        }
+        self.flush();
+        match &mut self.output {
+            Output::Full => println!("{}", line(Mark::Printed, &text)),
+            Output::Preview(preview) => preview.push(text, self.mode),
+            Output::Hidden => {}
+        }
+    }
+
     pub fn tick(&mut self) {
         if !self.backlog.is_empty() {
             self.hide_status();
@@ -187,10 +260,23 @@ impl Stream {
     /// Shows everything received and ends the open part, so other output
     /// can follow.
     pub fn settle(&mut self) {
+        self.end_preview();
+        self.flush();
+    }
+
+    /// [`Self::settle`], but a preview carries on: only text revealed
+    /// below it ends it.
+    fn flush(&mut self) {
         self.hide_status();
         self.reveal(usize::MAX);
         self.reply.finish();
         self.quiet_since = Instant::now();
+    }
+
+    fn end_preview(&mut self) {
+        if let Output::Preview(preview) = &mut self.output {
+            preview.end(self.mode);
+        }
     }
 
     fn receive(&mut self, part: Part, text: String) {
@@ -238,6 +324,9 @@ impl Stream {
 
     /// Hands the reply up to `budget` characters of the backlog, in order.
     fn reveal(&mut self, mut budget: usize) {
+        if !self.backlog.is_empty() {
+            self.end_preview();
+        }
         while let Some(chunk) = self.backlog.pop_front() {
             match chunk {
                 Chunk::End => self.reply.finish(),

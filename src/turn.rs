@@ -87,7 +87,7 @@ pub async fn follow(backend: &Backend, thread: &SessionId, mut events: Events, s
     let mut stream = Stream::new(style);
     print!("{}", cursor::Hide);
     let shown = tokio::select! {
-        outcome = show(backend, thread, &mut events, &mut stream, &mut seen) => Some(outcome),
+        outcome = show(backend, thread, &mut events, &mut stream, &mut seen, style) => Some(outcome),
         Ok(()) = tokio::signal::ctrl_c() => None,
     };
     stream.settle();
@@ -149,6 +149,7 @@ async fn show(
     events: &mut Events,
     stream: &mut Stream,
     seen: &mut Seen,
+    style: &Style,
 ) -> Outcome {
     let mut frames = tokio::time::interval(render::FRAME);
     frames.set_missed_tick_behavior(MissedTickBehavior::Skip);
@@ -188,6 +189,7 @@ async fn show(
             Event::Text { text } => stream.text(text),
             Event::Reasoning { text } => stream.reasoning(text),
             Event::PartEnd => stream.end_part(),
+            Event::Output { text } => stream.output(text),
             Event::Thought { duration } => stream.thought(duration),
             Event::ToolCallStart { name } => stream.preparing(name),
             Event::ToolCallArguments { json } => stream.arguments(&json),
@@ -228,7 +230,7 @@ async fn show(
                     Event::End { saved, .. } => seen.saved = Some(*saved),
                     _ => {}
                 }
-                if let Some(outcome) = report(event) {
+                if let Some(outcome) = report(event, style) {
                     return outcome;
                 }
             }
@@ -276,10 +278,9 @@ async fn approve(
 
 /// Prints an event that is not part of the reply's text, and how the run
 /// ended if it did: only its end returns an outcome.
-fn report(event: Event) -> Option<Outcome> {
+fn report(event: Event, style: &Style) -> Option<Outcome> {
     match event {
-        Event::ToolCall { name, args } => render::tool_call(&name, &args),
-        Event::Output { text } => render::live_output(&text),
+        Event::ToolCall { name, args } => render::tool_call(&name, &args, style.tool_output),
         Event::ToolResult { result } => render::tool_result(&result),
         Event::Notice { text } => render::notice(&text),
         Event::Attached { name } => render::attached(&name),
@@ -297,6 +298,7 @@ fn report(event: Event) -> Option<Outcome> {
         | Event::Text { .. }
         | Event::Reasoning { .. }
         | Event::PartEnd
+        | Event::Output { .. }
         | Event::Thought { .. }
         | Event::ToolCallStart { .. }
         | Event::ToolCallArguments { .. }

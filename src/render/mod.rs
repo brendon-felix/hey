@@ -7,6 +7,7 @@ mod preview;
 mod reply;
 mod stream;
 mod theme;
+mod tool;
 mod wrap;
 
 use std::io::{Write, stdout};
@@ -16,10 +17,11 @@ use std::thread::sleep;
 use std::time::Duration;
 
 use rig_core::message::{AssistantContent, Message, ToolResult, UserContent};
+use textwrap::core::display_width;
 use unicode_segmentation::UnicodeSegmentation;
 use yansi::Paint;
 
-use crate::config::Display;
+use crate::config::{Display, ToolOutput};
 use crate::mention;
 use crate::protocol::Event;
 
@@ -62,6 +64,7 @@ pub struct Style {
     /// Most columns a reply takes, when narrower than the terminal.
     pub wrap: Option<usize>,
     pub show_thinking: bool,
+    pub tool_output: ToolOutput,
 }
 
 impl From<&Display> for Style {
@@ -70,6 +73,7 @@ impl From<&Display> for Style {
             highlight: display.syntax_highlighting,
             wrap: (display.wrap_width > 0).then_some(display.wrap_width),
             show_thinking: display.show_thinking,
+            tool_output: display.tool_output,
         }
     }
 }
@@ -89,8 +93,10 @@ pub fn user_line(text: &str, palette: Palette) -> String {
     format!("{}{}", palette.accent.paint("> "), palette.input.paint(text))
 }
 
-pub fn tool_call(name: &str, args: &str) {
+/// A call, and what it will write when it is to a file.
+pub fn tool_call(name: &str, args: &str, shown: ToolOutput) {
     println!("\n{}", call_line(name, &summarize_args(args), terminal_width()));
+    tool::changes(name, args, shown);
 }
 
 /// A tool call as it shows, `width` columns at most: its name and the
@@ -131,13 +137,6 @@ pub fn tool_result(result: &ToolResult) {
         muted.paint(result.name.as_str()),
         muted.paint(&clip(&summary, room))
     );
-}
-
-/// One piece of a running command's output, as the shell tool reports it.
-pub fn live_output(text: &str) {
-    let line = text.strip_suffix('\n').unwrap_or(text);
-    let muted = palette().muted;
-    println!("  {} {}", muted.paint("│"), muted.paint(line));
 }
 
 /// A subagent began its task, `label`, on `machine` in `directory`.
@@ -213,7 +212,10 @@ pub fn conversation(messages: &[Message], style: &Style) {
                 UserContent::Text(text) if !mention::is_context(&text.text) => {
                     user_message(&text.text)
                 }
-                UserContent::ToolResult(result) => tool_result(result),
+                UserContent::ToolResult(result) => {
+                    tool::printed(result, style.tool_output);
+                    tool_result(result)
+                }
                 _ => {}
             }),
             Message::Assistant(assistant) => {
@@ -224,7 +226,7 @@ pub fn conversation(messages: &[Message], style: &Style) {
                         AssistantContent::ToolCall(call) => {
                             reply.finish();
                             let args = serde_json::Value::Object(call.function.arguments.clone());
-                            tool_call(call.function.name.as_str(), &args.to_string());
+                            tool_call(call.function.name.as_str(), &args.to_string(), style.tool_output);
                         }
                         AssistantContent::Reasoning(_) => {
                             reply.finish();
@@ -273,12 +275,20 @@ fn summarize(map: &serde_json::Map<String, serde_json::Value>) -> String {
     }
 }
 
+/// The first line of `text`, cut to `width` columns.
 pub fn clip(text: &str, width: usize) -> String {
     let line = text.lines().next().unwrap_or_default();
-    if line.chars().count() <= width && !text.contains('\n') {
+    if display_width(line) <= width && !text.contains('\n') {
         return line.to_owned();
     }
-    let kept: String = line.chars().take(width.saturating_sub(1)).collect();
+    let mut used = 0;
+    let kept: String = line
+        .chars()
+        .take_while(|c| {
+            used += display_width(c.encode_utf8(&mut [0; 4]));
+            used < width
+        })
+        .collect();
     format!("{kept}…")
 }
 

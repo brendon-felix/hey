@@ -235,6 +235,7 @@ pub struct Display {
     pub colors: bool,
     pub animations: bool,
     pub show_thinking: bool,
+    pub tool_output: ToolOutput,
 }
 
 impl Default for Display {
@@ -246,8 +247,18 @@ impl Default for Display {
             colors: true,
             animations: true,
             show_thinking: false,
+            tool_output: ToolOutput::Preview,
         }
     }
+}
+
+/// How much of what a tool call writes or prints shows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ToolOutput {
+    Full,
+    Preview,
+    Hidden,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
@@ -685,6 +696,7 @@ mod tests {
         assert_eq!(documented.display.theme, built_in.display.theme);
         assert_eq!(documented.display.wrap_width, built_in.display.wrap_width);
         assert_eq!(documented.display.show_thinking, built_in.display.show_thinking);
+        assert_eq!(documented.display.tool_output, built_in.display.tool_output);
         assert_eq!(documented.editor.mode, built_in.editor.mode);
         assert_eq!(documented.editor.history_size, built_in.editor.history_size);
         assert_eq!(documented.editor.right_prompt, built_in.editor.right_prompt);

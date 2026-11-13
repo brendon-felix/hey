@@ -57,6 +57,11 @@ animations = true
 # reads "Thinking" while the model reasons, and "Thought for 12s" stays in
 # its place once it is done.
 show_thinking = false
+# What a tool call writes or prints, under it: a file's new content, an
+# edit's removed and added lines, a command's output. "full" shows all of
+# it, "preview" a few lines (a running command's latest, kept in place as
+# they change), "hidden" none.
+tool_output = "preview"
 
 [editor]
 # "emacs", "vi" or "helix".
