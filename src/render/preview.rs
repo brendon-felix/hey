@@ -51,13 +51,9 @@ pub struct Preview {
 
 impl Preview {
     pub fn new(source: Source) -> Self {
-        let label = match source {
-            Source::Reasoning => "Thinking",
-            _ => "",
-        };
         Self {
             source,
-            label: label.to_owned(),
+            label: String::new(),
             lines: VecDeque::new(),
             total: 0,
         }
@@ -359,7 +355,7 @@ mod tests {
             preview.framed(18, ""),
             [
                 "",
-                "  ╭─ Thinking ───╮",
+                "  ╭──────────────╮",
                 "  │ five six     │",
                 "  │ seven        │",
                 "  │ eight        │",
@@ -376,7 +372,7 @@ mod tests {
         let mut preview = Preview::new(Source::Returned);
         preview.label("read a.rs".into());
         preview.push("1\n2\n3\n4\n5\n6\n7");
-        let framed = preview.framed(22, "read 7 lines");
+        let framed = preview.framed(22, "7 lines");
         assert_eq!(
             framed,
             [
@@ -387,7 +383,7 @@ mod tests {
                 "  │ 4                │",
                 "  │ 5                │",
                 "  │ … 2 more lines   │",
-                "  ╰─ read 7 lines ───╯",
+                "  ╰─ 7 lines ────────╯",
             ]
         );
         assert!(framed.iter().all(|row| display_width(row) == 22));

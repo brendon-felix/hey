@@ -269,31 +269,41 @@ impl Stream {
 
     /// A call's result: what it gave back, where that has not shown as it
     /// ran or with the call, and its marker, which closes the call's box
-    /// when it is still the last thing shown.
+    /// when it is still the last thing shown. A result shown apart from its
+    /// call is set apart as a call is, and names it.
     pub fn result(&mut self, result: &ToolResult) {
         self.activity = Activity::Waiting;
-        let name = result.name.as_str();
         let text = tool::text(result);
         let placement = self.calls.answered(result);
-        if result.is_error {
-            self.settle();
-            let first = text.lines().next().unwrap_or("failed");
-            let room = terminal_width().saturating_sub(name.chars().count() + 5);
-            println!("  {} {} {}", "✗".red(), name.red(), clip(first, room).red());
-            return;
-        }
-        let marker = format!("{name} {}", tool::summary(&text));
-        let own_box = matches!(placement, Placement::Under)
+        let summary = match result.is_error {
+            true => text.lines().next().unwrap_or("failed").to_owned(),
+            false => tool::summary(&text),
+        };
+        let own_box = !result.is_error
+            && matches!(placement, Placement::Under)
             && self.preview.as_ref().is_some_and(|preview| matches!(preview.source(), Source::Command | Source::Changes));
         if own_box {
-            self.end_preview(Ending::Answered(&marker));
+            self.end_preview(Ending::Answered(&summary));
             return self.flush();
         }
         self.settle();
         let called = match placement {
-            Placement::Apart(Some(called)) => Some(called),
+            Placement::Apart(Some(called)) => {
+                println!();
+                Some(called)
+            }
             Placement::Under | Placement::Apart(None) => None,
         };
+        let marker = |summary: &str| match &called {
+            Some(called) => format!("{called} · {summary}"),
+            None => summary.to_owned(),
+        };
+        let room = terminal_width().saturating_sub(5);
+        if result.is_error {
+            println!("  {} {}", "✗".red(), clip(&marker(&summary), room).red());
+            return;
+        }
+        let name = result.name.as_str();
         let (source, given) = match name {
             "shell" => (Source::Command, split_status(&text).0),
             _ => (Source::Returned, text.as_str()),
@@ -302,23 +312,18 @@ impl Stream {
         match self.style.tool_output {
             Output::Preview if !shown && given.lines().count() > 1 => {
                 let mut preview = Preview::new(source);
-                preview.label(called.unwrap_or_default());
+                preview.label(called.clone().unwrap_or_default());
                 preview.push(given);
                 self.preview = Some(preview);
-                return self.end_preview(Ending::Answered(&marker));
+                return self.end_preview(Ending::Answered(&summary));
             }
             Output::Full if !shown => {
                 given.lines().for_each(|text| println!("{}", line(Mark::Printed, text)));
             }
             Output::Full | Output::Preview | Output::Hidden => {}
         }
-        let marker = match called {
-            Some(called) => format!("{called} · {}", tool::summary(&text)),
-            None => marker,
-        };
         let muted = palette().muted;
-        let room = terminal_width().saturating_sub(5);
-        println!("  {} {}", muted.paint("╰─"), muted.paint(&clip(&marker, room)));
+        println!("  {} {}", muted.paint("╰─"), muted.paint(&clip(&marker(&summary), room)));
     }
 
     /// A line of a running command's output.
