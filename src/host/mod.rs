@@ -22,9 +22,10 @@ use tokio_util::task::TaskTracker;
 
 use crate::agent::{self, Model, Place};
 use crate::config::{Config, Providers};
+use crate::gate;
 use crate::mcp;
 use crate::memory::{self, Memory, Recalled};
-use crate::permissions::{Approval, Origin, Permissions};
+use crate::permissions::{Origin, Permissions};
 use crate::preamble::{Hosting, Setting};
 use crate::protocol::{
     Activities, Activity, ApprovalId, Ask, Decision, Defaults, DelegationId, Ending, Event,
@@ -473,19 +474,22 @@ impl Host {
             spill: spill.as_deref(),
             subagents: self.crew.is_some(),
         };
-        let builder = agent::builder(model, &thread.seen, Place::here(live), &self.web)
-            .dynamic_tools(self.mcp.iter().map(|tool| tool.tool.clone()).collect())
-            .name("hey")
-            .preamble(system_prompt)
-            .append_preamble(&setting.render());
+        let builder = agent::builder(
+            model,
+            &thread.seen,
+            Place::here(live),
+            &self.web,
+            thread.permissions.clone(),
+            run.clone(),
+        )
+        .dynamic_tools(self.mcp.iter().map(|tool| tool.tool.clone()).collect())
+        .name("hey")
+        .preamble(system_prompt)
+        .append_preamble(&setting.render());
         let mut builder = skills
             .equip(builder)
             .default_max_turns(self.max_turns)
             .memory(self.sessions.store())
-            .add_hook(Approval {
-                permissions: thread.permissions.clone(),
-                reporter: run.clone(),
-            })
             .add_hook(ResultLimit {
                 bytes: self.result_bytes,
                 spill: agent::spill(),
@@ -582,7 +586,10 @@ impl Host {
             ..
         } = request;
         let message = self.message(&prompt, &attachments, skills, model, run).await;
-        let runner = agent.prompt(message).conversation(id.as_str());
+        let runner = agent
+            .prompt(message)
+            .conversation(id.as_str())
+            .tool_concurrency(gate::CONCURRENCY);
         let mut stream: StreamingResult = match options.thinking {
             Some(thinking) => runner.options(GenerationOptions::default().reasoning(thinking)),
             None => runner,

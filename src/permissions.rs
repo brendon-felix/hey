@@ -5,9 +5,10 @@
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex, PoisonError};
 
-use rig_agent::agent::{AgentHook, DispatchAction, DispatchEvent, HookContext};
+use rig_agent::agent::{AgentHook, DispatchAction, DispatchEvent, HookContext, OutcomeAction, OutcomeEvent};
 use serde::{Deserialize, Serialize};
 
+use crate::gate::Gate;
 use crate::host::Run;
 use crate::protocol::{Ask, Decision, Event};
 
@@ -122,11 +123,28 @@ impl Reporter for Run {
     }
 }
 
-/// Reports every tool call and gates it on its permission, asking the
-/// run's clients when it needs confirming.
+/// Lets each tool call through `gate`, then reports it and gates it on its
+/// permission, asking the run's clients when it needs confirming. A call is
+/// reported only once the gate lets it run, so the output a command shows as
+/// it runs is never shown under a call that came after it.
 pub struct Approval<R> {
-    pub permissions: Arc<Permissions>,
-    pub reporter: Arc<R>,
+    permissions: Arc<Permissions>,
+    reporter: Arc<R>,
+    gate: Gate,
+    /// Held while a call is reported and decided, so each question shows
+    /// right under its own call.
+    deciding: tokio::sync::Mutex<()>,
+}
+
+impl<R> Approval<R> {
+    pub fn new(permissions: Arc<Permissions>, reporter: Arc<R>, gate: Gate) -> Self {
+        Self {
+            permissions,
+            reporter,
+            gate,
+            deciding: tokio::sync::Mutex::default(),
+        }
+    }
 }
 
 impl<R: Reporter> AgentHook for Approval<R> {
@@ -134,9 +152,31 @@ impl<R: Reporter> AgentHook for Approval<R> {
         let Some(name) = event.tool_name() else {
             return DispatchAction::proceed();
         };
+        let admission = self.gate.admit(name).await;
+        let action = {
+            let _deciding = self.deciding.lock().await;
+            self.decide(name, event.tool_args().unwrap_or_default()).await
+        };
+        // Only a call that runs keeps its admission: rig reports no outcome
+        // for one stopped here, whose admission would keep the calls behind
+        // it waiting for good.
+        if matches!(action, DispatchAction::Proceed) {
+            self.gate.hold(event.id, admission);
+        }
+        action
+    }
+
+    async fn on_outcome(&self, _ctx: &HookContext, event: OutcomeEvent<'_>) -> OutcomeAction {
+        self.gate.release(event.id);
+        OutcomeAction::proceed()
+    }
+}
+
+impl<R: Reporter> Approval<R> {
+    async fn decide(&self, name: &str, args: &str) -> DispatchAction {
         let call = Event::ToolCall {
             name: name.to_owned(),
-            args: event.tool_args().unwrap_or_default().to_owned(),
+            args: args.to_owned(),
         };
         self.reporter.emit(call).await;
         match self.permissions.get(name) {

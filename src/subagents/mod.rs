@@ -24,7 +24,8 @@ use rig_tools::Seen;
 
 use crate::agent::{self, Model, Place};
 use crate::config::{Config, Providers};
-use crate::permissions::{Approval, Origin, Permissions, Reporter};
+use crate::gate;
+use crate::permissions::{Origin, Permissions, Reporter};
 use crate::protocol::{AgentId, Ask, Decision, Event, Task, TaskResult};
 use crate::results::ResultLimit;
 use crate::sessions::SessionId;
@@ -138,7 +139,8 @@ impl Crew {
         let agent = self.agent(team, &task.agent, &model, dir, reporter);
         let runner = agent
             .prompt(task.message.clone())
-            .conversation(task.agent.as_str());
+            .conversation(task.agent.as_str())
+            .tool_concurrency(gate::CONCURRENCY);
         let runner = match task.thinking {
             Some(thinking) => runner.options(GenerationOptions::default().reasoning(thinking)),
             None => runner,
@@ -209,18 +211,21 @@ impl Crew {
         let environment = environment(&dir, self.machine());
         let skills = skills::find(&dir);
         let place = Place::within(dir, Arc::new(Fenced::new(self.access.excluded())));
-        let builder = agent::builder(model, &team.seen(agent), place, &self.web)
-            .name("hey subagent")
-            .preamble(PROMPT)
-            .append_preamble(&environment);
+        let builder = agent::builder(
+            model,
+            &team.seen(agent),
+            place,
+            &self.web,
+            team.permissions.clone(),
+            Arc::new(reporter),
+        )
+        .name("hey subagent")
+        .preamble(PROMPT)
+        .append_preamble(&environment);
         let mut builder = skills
             .equip(builder)
             .default_max_turns(self.max_turns)
             .memory(team.store.clone())
-            .add_hook(Approval {
-                permissions: team.permissions.clone(),
-                reporter: Arc::new(reporter),
-            })
             .add_hook(ResultLimit {
                 bytes: self.result_bytes,
                 spill: agent::spill(),

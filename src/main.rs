@@ -7,6 +7,7 @@ mod backend;
 mod browser;
 mod client;
 mod config;
+mod gate;
 mod host;
 mod mcp;
 mod memory;

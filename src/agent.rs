@@ -7,6 +7,7 @@ use std::sync::Arc;
 
 use anyhow::{Context, Result, bail};
 use rig_agent::agent::AgentBuilder;
+use rig_agent::tool::server::ToolServer;
 use rig_core::DynModel;
 use rig_core::catalog::Catalog;
 use rig_core::operation::{Completion, Embedding};
@@ -18,6 +19,8 @@ use rig_tools::workspace::{Local, Workspace};
 use rig_tools::{Delete, Edit, List, Live, Move, Read, Search, Seen, Shell, Spill, Write};
 
 use crate::config::{self, Providers};
+use crate::gate::Gate;
+use crate::permissions::{Approval, Permissions, Reporter};
 use crate::protocol::ModelInfo;
 use crate::skills;
 use crate::web::Web;
@@ -160,8 +163,17 @@ impl Place {
 /// An agent on `model` with the built-in tools, working in `place` and
 /// reading the web through `web`. `edit` and `write` refuse to clobber a
 /// file changed since `read` saw it, which takes all three sharing what was
-/// `seen`.
-pub fn builder(model: &Model, seen: &Seen, place: Place, web: &Web) -> AgentBuilder {
+/// `seen`. Its tool calls ask as `permissions` say, through `reporter`, and
+/// run side by side where that is safe: the gate sees every tool the agent
+/// ends up with, however it was added.
+pub fn builder<R: Reporter>(
+    model: &Model,
+    seen: &Seen,
+    place: Place,
+    web: &Web,
+    permissions: Arc<Permissions>,
+    reporter: Arc<R>,
+) -> AgentBuilder {
     let Place {
         workspace,
         base,
@@ -180,7 +192,11 @@ pub fn builder(model: &Model, seen: &Seen, place: Place, web: &Web) -> AgentBuil
         confine,
         ..Shell::default()
     };
+    let tools = ToolServer::new().run();
+    let approval = Approval::new(permissions, reporter, Gate::new(tools.clone()));
     let builder = AgentBuilder::new(model.inner.clone())
+        .tool_server_handle(tools)
+        .add_hook(approval)
         .tool(Read {
             workspace: workspace.clone(),
             base: base.clone(),
