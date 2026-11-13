@@ -40,8 +40,9 @@ pub use run::Run;
 
 pub type Events = BoxStream<'static, Event>;
 
-/// How often the activity stream repeats itself when nothing changes, so a
-/// client can tell a quiet host from a lost connection.
+/// How often a stream to a client says something when nothing happens, so a
+/// client can tell a quiet host from a lost connection, and proxies between
+/// them keep it open.
 pub const HEARTBEAT: Duration = Duration::from_secs(30);
 
 /// Runs the agent and keeps its threads: in-process for a local `hey`, or

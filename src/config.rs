@@ -528,6 +528,9 @@ impl TryFrom<RawMcpServer> for McpServer {
 pub struct Remote {
     pub url: String,
     pub token: TokenSource,
+    /// Sent with every request, for a proxy in front of the host that wants
+    /// its own credentials, such as Cloudflare Access.
+    pub headers: BTreeMap<String, String>,
 }
 
 #[derive(Deserialize)]
@@ -536,6 +539,8 @@ struct RawRemote {
     url: String,
     token: Option<String>,
     token_file: Option<String>,
+    #[serde(default)]
+    headers: BTreeMap<String, String>,
 }
 
 impl TryFrom<RawRemote> for Remote {
@@ -545,6 +550,7 @@ impl TryFrom<RawRemote> for Remote {
         Ok(Self {
             url: raw.url,
             token: TokenSource::new(raw.token, raw.token_file)?,
+            headers: raw.headers,
         })
     }
 }
@@ -644,6 +650,23 @@ pub fn expand(text: &str) -> Result<String> {
     shellexpand::full(text)
         .map(|expanded| expanded.into_owned())
         .with_context(|| format!("cannot expand {text:?}"))
+}
+
+/// Configured `headers`, with their values expanded.
+pub fn expand_headers<C>(headers: &BTreeMap<String, String>) -> Result<C>
+where
+    C: FromIterator<(http::HeaderName, http::HeaderValue)>,
+{
+    headers
+        .iter()
+        .map(|(name, value)| {
+            let name = http::HeaderName::try_from(name.as_str())
+                .with_context(|| format!("invalid header name {name:?}"))?;
+            let value = http::HeaderValue::try_from(expand(value)?)
+                .with_context(|| format!("invalid value for header {name}"))?;
+            Ok((name, value))
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -756,13 +779,15 @@ mod tests {
             token = "${HEY_TOKEN}"
 
             [remotes.work]
-            url = "http://work:7700"
+            url = "https://work.example.com"
+            headers = { CF-Access-Client-Id = "${ACCESS_ID}" }
             "#,
         )
         .unwrap();
         assert_eq!(config.server.token, TokenSource::File("~/Vault/hey-token".into()));
         assert_eq!(config.remotes["home"].token, TokenSource::Value("${HEY_TOKEN}".into()));
         assert_eq!(config.remotes["work"].token, TokenSource::Kept);
+        assert_eq!(config.remotes["work"].headers["CF-Access-Client-Id"], "${ACCESS_ID}");
         assert_eq!(Config::default().server.token, TokenSource::Kept);
     }
 }

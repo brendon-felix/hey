@@ -8,8 +8,8 @@ use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
 use futures::stream::BoxStream;
-use futures::{Stream, StreamExt, TryStreamExt};
-use reqwest::{RequestBuilder, Response, StatusCode, Url};
+use futures::{Stream, StreamExt, TryStreamExt, future};
+use reqwest::{RequestBuilder, Response, StatusCode, Url, header, redirect};
 use serde::de::DeserializeOwned;
 use tokio_util::codec::{FramedRead, LinesCodec};
 use tokio_util::io::StreamReader;
@@ -52,6 +52,9 @@ impl Client {
         let base = Url::parse(&url).with_context(|| format!("invalid url for remote `{name}`"))?;
         let http = reqwest::Client::builder()
             .connect_timeout(Duration::from_secs(10))
+            .default_headers(config::expand_headers(&remote.headers)?)
+            // A host never redirects, so a redirect comes from a proxy's sign-in.
+            .redirect(redirect::Policy::none())
             .build()?;
         let mut client = Self {
             name: name.to_owned(),
@@ -106,9 +109,9 @@ impl Client {
     /// Whether the host accepts the token.
     async fn accepted(&self) -> Result<bool> {
         let response = self.send(self.get("v1/defaults")?).await?;
-        match response.status() {
-            StatusCode::UNAUTHORIZED => Ok(false),
-            _ => self.check(response).await.map(|_| true),
+        match refused_token(&response) {
+            true => Ok(false),
+            false => self.check(response).await.map(|_| true),
         }
     }
 
@@ -320,6 +323,14 @@ impl Client {
         if status.is_success() {
             return Ok(response);
         }
+        let proxied = status == StatusCode::UNAUTHORIZED && !refused_token(&response);
+        if status.is_redirection() || proxied {
+            bail!(
+                "remote `{0}` answered {status}, as a sign-in proxy in front of it does; \
+                 give its credentials in `headers` in `[remotes.{0}]`",
+                self.name
+            );
+        }
         let reason = response.text().await.unwrap_or_default();
         match reason.trim() {
             "" => bail!("remote `{}` answered {status}", self.name),
@@ -332,10 +343,21 @@ fn delegation_path(id: &SessionId, delegation: DelegationId) -> String {
     format!("v1/threads/{}/delegations/{delegation}", id.as_str())
 }
 
+/// The host's own refusal, told apart by its challenge from a proxy's in front of it.
+fn refused_token(response: &Response) -> bool {
+    response.status() == StatusCode::UNAUTHORIZED
+        && response
+            .headers()
+            .get(header::WWW_AUTHENTICATE)
+            .is_some_and(|challenge| challenge == "Bearer")
+}
+
+/// The stream's lines, without the blank ones the host sends to keep it open.
 fn lines(response: Response) -> impl Stream<Item = Result<String>> + Send + Unpin + 'static {
     let bytes = response.bytes_stream().map_err(io::Error::other);
     FramedRead::new(StreamReader::new(bytes), LinesCodec::new())
         .map(|line| line.context("lost the connection to the host"))
+        .try_filter(|line| future::ready(!line.is_empty()))
 }
 
 fn events(lines: impl Stream<Item = Result<String>> + Send + 'static) -> Events {

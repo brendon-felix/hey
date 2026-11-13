@@ -362,5 +362,16 @@ so it does not look for your files on the server; mention them with `@` to attac
 The server runs tools for anyone holding the token and does not use TLS. Reach it over a private
 network such as Tailscale, WireGuard or an SSH tunnel, or behind an HTTPS reverse proxy.
 
+A proxy that wants its own credentials, such as Cloudflare Access in front of a Cloudflare Tunnel,
+gets them from `headers`, sent with every request. Like `token`, they may name environment
+variables. A quiet stream carries a blank line every 30 seconds, so proxies keep it open through
+long tool calls.
+
+```toml
+[remotes.fermi]
+url = "https://hey.example.com"
+headers = { CF-Access-Client-Id = "${HEY_ACCESS_ID}", CF-Access-Client-Secret = "${HEY_ACCESS_SECRET}" }
+```
+
 A run lives in the server's memory until it finishes and is saved. Restarting the server loses an
 answer in progress, but not the conversation before it.

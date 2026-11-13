@@ -3,7 +3,8 @@
 /* -------------------------------------------------------------------------- */
 
 //! `hey --serve`: the host's operations over HTTP. Streams are
-//! newline-delimited JSON, so a run can be followed with `curl -N`.
+//! newline-delimited JSON, so a run can be followed with `curl -N`. A blank
+//! line keeps a quiet stream open.
 
 use std::sync::Arc;
 
@@ -19,7 +20,7 @@ use futures::{Stream, StreamExt, stream};
 use serde::{Deserialize, Serialize};
 
 use crate::{config, token};
-use crate::host::{Host, ThreadError};
+use crate::host::{HEARTBEAT, Host, ThreadError};
 use crate::protocol::{ApprovalId, Ask, Decision, DelegationId, Event, RunRequest, TaskResult};
 use crate::sessions::SessionId;
 
@@ -64,7 +65,12 @@ async fn authorize(State(token): State<Arc<str>>, request: Request, next: Next) 
         .and_then(|value| value.strip_prefix("Bearer "));
     match presented {
         Some(presented) if same(presented.as_bytes(), token.as_bytes()) => next.run(request).await,
-        _ => (StatusCode::UNAUTHORIZED, "a valid token is required").into_response(),
+        _ => (
+            StatusCode::UNAUTHORIZED,
+            [(header::WWW_AUTHENTICATE, "Bearer")],
+            "a valid token is required",
+        )
+            .into_response(),
     }
 }
 
@@ -274,7 +280,22 @@ fn ndjson_response(
 ) -> Response {
     (
         [(header::CONTENT_TYPE, "application/x-ndjson")],
-        Body::from_stream(lines),
+        Body::from_stream(kept_open(lines)),
     )
         .into_response()
+}
+
+/// `lines`, with a blank line whenever they pause for a `HEARTBEAT`: proxies
+/// such as Cloudflare's close a response that is silent for 100 seconds, as
+/// a run is during a long tool call.
+fn kept_open(
+    lines: impl Stream<Item = serde_json::Result<String>> + Send + 'static,
+) -> impl Stream<Item = serde_json::Result<String>> + Send + 'static {
+    stream::unfold(lines.boxed(), |mut lines| async move {
+        let line = tokio::select! {
+            line = lines.next() => line?,
+            () = tokio::time::sleep(HEARTBEAT) => Ok("\n".to_owned()),
+        };
+        Some((line, lines))
+    })
 }

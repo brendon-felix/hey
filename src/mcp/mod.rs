@@ -2,7 +2,7 @@
 /*                                 mcp/mod.rs                                 */
 /* -------------------------------------------------------------------------- */
 
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet};
 use std::process::Stdio;
 use std::time::Duration;
 
@@ -18,7 +18,7 @@ use rmcp::transport::streamable_http_client::{
 };
 use rmcp::transport::{StreamableHttpClientTransport, TokioChildProcess};
 
-use crate::config::{McpServer, McpTransport, expand};
+use crate::config::{McpServer, McpTransport, expand, expand_headers};
 use crate::permissions::Origin;
 
 mod results;
@@ -79,7 +79,7 @@ async fn connect(server: &str, config: &McpServer) -> Result<Vec<Tool>> {
         }
         McpTransport::Http { url, headers } => {
             let config = StreamableHttpClientTransportConfig::with_uri(expand(url)?)
-                .custom_headers(header_map(headers)?);
+                .custom_headers(expand_headers(headers)?);
             let transport = StreamableHttpClientTransport::from_config(config);
             let client = client.serve(transport).await.map_err(initialize_error);
             client.map_err(explain_sign_in)?.into()
@@ -159,20 +159,5 @@ fn model_name(server: &str, tool: &str) -> String {
         .chars()
         .map(|c| if c.is_ascii_alphanumeric() || c == '-' { c } else { '_' })
         .take(64)
-        .collect()
-}
-
-fn header_map(
-    headers: &BTreeMap<String, String>,
-) -> Result<HashMap<http::HeaderName, http::HeaderValue>> {
-    headers
-        .iter()
-        .map(|(name, value)| {
-            let name = http::HeaderName::try_from(name.as_str())
-                .with_context(|| format!("invalid header name {name:?}"))?;
-            let value = http::HeaderValue::try_from(expand(value)?)
-                .with_context(|| format!("invalid value for header {name}"))?;
-            Ok((name, value))
-        })
         .collect()
 }

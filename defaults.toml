@@ -195,11 +195,16 @@ enabled = true
 # or `token_file`, a file holding just the token. With neither, hey asks for
 # it the first time and keeps it in the system keychain, or a private file in
 # the data directory where there is none.
+#
+# `headers`, which may name environment variables too, go with every request,
+# for a proxy in front of the host that wants its own credentials, such as
+# Cloudflare Access.
 # remote = "fermi"
 #
 # [remotes.fermi]
 # url = "http://fermi:7700"
 # token_file = "~/Sync/hey-token"
+# headers = { CF-Access-Client-Id = "${HEY_ACCESS_ID}", CF-Access-Client-Secret = "${HEY_ACCESS_SECRET}" }
 
 # How `hey --serve` hosts the agent for remote clients. It runs tools on this
 # machine for anyone holding the token. There is no TLS: reach it over a
