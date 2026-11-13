@@ -199,7 +199,7 @@ fn summarize_args(args: &str) -> String {
     }
 }
 
-fn clip(text: &str, width: usize) -> String {
+pub fn clip(text: &str, width: usize) -> String {
     let line = text.lines().next().unwrap_or_default();
     if line.chars().count() <= width && !text.contains('\n') {
         return line.to_owned();

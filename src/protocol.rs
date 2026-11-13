@@ -4,6 +4,7 @@
 
 use std::collections::BTreeMap;
 use std::fmt;
+use std::time::Duration;
 
 use rig_core::message::{Message, ToolResult};
 use serde::{Deserialize, Serialize};
@@ -17,9 +18,13 @@ use crate::sessions::{SessionId, Summary};
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "event", rename_all = "snake_case")]
 pub enum Event {
-    /// The first event of every run.
+    /// The first event of every run, and of every client's view of it.
     Began {
         run: RunId,
+        /// How long the run had gone when the host sent this, so a client
+        /// that joins late keeps the same clock as one that was there.
+        #[serde(default)]
+        elapsed: Duration,
     },
     Text {
         text: String,
@@ -152,6 +157,17 @@ pub enum Attachment {
         /// Whether there were more than `entries`.
         truncated: bool,
     },
+}
+
+impl Attachment {
+    /// How clients show it: its path, a directory's ending in `/`.
+    pub fn name(&self) -> String {
+        match self {
+            Attachment::File { path, .. } => path.clone(),
+            Attachment::Directory { path, .. } if path.ends_with('/') => path.clone(),
+            Attachment::Directory { path, .. } => format!("{path}/"),
+        }
+    }
 }
 
 /// The host's configured model and thinking level.

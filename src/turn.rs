@@ -2,13 +2,15 @@
 /*                                  turn.rs                                   */
 /* -------------------------------------------------------------------------- */
 
+use std::collections::VecDeque;
+
 use crossterm::cursor;
 use futures::StreamExt;
 use tokio::time::MissedTickBehavior;
 
 use crate::backend::{Backend, Events};
 use crate::mention;
-use crate::protocol::{Attachment, Ending, Event, RunId, RunOptions, RunRequest};
+use crate::protocol::{ApprovalId, Attachment, Ending, Event, RunId, RunOptions, RunRequest};
 use crate::render::{self, Stream, Style};
 use crate::sessions::SessionId;
 use crate::ui;
@@ -31,12 +33,12 @@ pub struct Turn {
 }
 
 /// A request to answer `prompt`, with the files and directories it mentions
-/// in the user's working directory; the host attaches the rest.
+/// in the user's working directory; the host attaches the rest, and tells
+/// every client following the run what was attached.
 pub fn request(prompt: String, options: RunOptions) -> RunRequest {
     let attachments = mention::local(&prompt)
         .into_iter()
         .filter_map(|item| {
-            render::attached(&item);
             item.load()
                 .inspect_err(|error| render::notice(&format!("{item} not attached: {error:#}")))
                 .ok()
@@ -126,6 +128,9 @@ struct Seen {
     saved: Option<usize>,
 }
 
+/// What the run's events gave next: an event, a failure, or their end.
+type Received = Option<anyhow::Result<Event>>;
+
 async fn show(
     backend: &Backend,
     thread: &SessionId,
@@ -135,13 +140,18 @@ async fn show(
 ) -> Outcome {
     let mut frames = tokio::time::interval(render::FRAME);
     frames.set_missed_tick_behavior(MissedTickBehavior::Skip);
+    // What arrived while an approval was asked, shown once it is decided.
+    let mut held = VecDeque::new();
     loop {
-        let event = tokio::select! {
-            event = events.next() => event,
-            _ = frames.tick() => {
-                stream.tick();
-                continue;
-            }
+        let event = match held.pop_front() {
+            Some(received) => received,
+            None => tokio::select! {
+                event = events.next() => event,
+                _ = frames.tick() => {
+                    stream.tick();
+                    continue;
+                }
+            },
         };
         let event = match event {
             Some(Ok(event)) => event,
@@ -157,18 +167,25 @@ async fn show(
             }
         };
         match event {
-            Event::Began { run } => seen.run = Some(run),
+            Event::Began { run, elapsed } => {
+                seen.run = Some(run);
+                stream.began(elapsed);
+            }
             Event::Text { text } => stream.text(text),
             Event::Reasoning { text } => stream.reasoning(text),
             Event::PartEnd => stream.end_part(),
             Event::Decided { .. } => {}
             Event::Context { tokens } => seen.context = Some(tokens),
+            Event::Approval { id, tool } => {
+                stream.settle();
+                held.extend(approve(backend, thread, events, id, &tool).await);
+            }
             event => {
                 stream.settle();
                 if let Event::End { saved, .. } = event {
                     seen.saved = Some(saved);
                 }
-                if let Some(outcome) = report(backend, thread, event).await {
+                if let Some(outcome) = report(event) {
                     return outcome;
                 }
             }
@@ -176,23 +193,53 @@ async fn show(
     }
 }
 
+/// Asks whether `tool` may run until this client or another decides, so
+/// every client stops asking at once. Returns what arrived meanwhile.
+async fn approve(
+    backend: &Backend,
+    thread: &SessionId,
+    events: &mut Events,
+    id: ApprovalId,
+    tool: &str,
+) -> Vec<Received> {
+    let mut held = Vec::new();
+    let ask = ui::confirm_tool(tool);
+    tokio::pin!(ask);
+    let decision = loop {
+        tokio::select! {
+            decision = &mut ask => break Some(decision),
+            received = events.next() => {
+                let settled = match &received {
+                    Some(Ok(Event::Decided { id: decided })) => *decided == id,
+                    Some(Ok(Event::End { .. }) | Err(_)) | None => true,
+                    Some(Ok(_)) => false,
+                };
+                held.push(received);
+                if settled {
+                    break None;
+                }
+            }
+        }
+    };
+    if let Some(decision) = decision {
+        match backend.answer(thread, id, decision).await {
+            Ok(true) => {}
+            Ok(false) => render::notice("already decided elsewhere"),
+            Err(error) => render::error(&format!("{error:#}")),
+        }
+    }
+    held
+}
+
 /// Prints an event that is not part of the reply's text, and how the run
 /// ended if it did: only its end returns an outcome.
-async fn report(backend: &Backend, thread: &SessionId, event: Event) -> Option<Outcome> {
+fn report(event: Event) -> Option<Outcome> {
     match event {
         Event::ToolCall { name, args } => render::tool_call(&name, &args),
         Event::Output { text } => render::live_output(&text),
         Event::ToolResult { result } => render::tool_result(&result),
         Event::Notice { text } => render::notice(&text),
         Event::Attached { name } => render::attached(&name),
-        Event::Approval { id, tool } => {
-            let decision = ui::confirm_tool(tool).await;
-            match backend.answer(thread, id, decision).await {
-                Ok(true) => {}
-                Ok(false) => render::notice("already decided elsewhere"),
-                Err(error) => render::error(&format!("{error:#}")),
-            }
-        }
         Event::End { ending, .. } => {
             return Some(match ending {
                 Ending::Answered => Outcome::Answered,
@@ -207,6 +254,7 @@ async fn report(backend: &Backend, thread: &SessionId, event: Event) -> Option<O
         | Event::Text { .. }
         | Event::Reasoning { .. }
         | Event::PartEnd
+        | Event::Approval { .. }
         | Event::Decided { .. }
         | Event::Context { .. } => {}
     }
@@ -224,7 +272,7 @@ async fn stop(backend: &Backend, thread: &SessionId, mut events: Events, seen: &
     }
     while let Some(Ok(event)) = events.next().await {
         match event {
-            Event::Began { run } => seen.run = Some(run),
+            Event::Began { run, .. } => seen.run = Some(run),
             Event::End { saved, .. } => {
                 seen.saved = Some(saved);
                 break;

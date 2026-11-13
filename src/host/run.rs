@@ -5,6 +5,7 @@
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, PoisonError};
+use std::time::Instant;
 
 use futures::{Stream, StreamExt, stream};
 use rig_agent::agent::MultiTurnStreamItem;
@@ -19,6 +20,7 @@ use crate::protocol::{ApprovalId, Decision, Event, RunId, Running};
 /// approvals, while it carries on.
 pub struct Run {
     id: RunId,
+    started: Instant,
     prompt: String,
     /// How many messages the thread held when the run began.
     history: usize,
@@ -40,9 +42,10 @@ impl Run {
         }));
         Self {
             id,
+            started: Instant::now(),
             prompt,
             history,
-            log: watch::Sender::new(vec![Event::Began { run: id }]),
+            log: watch::Sender::default(),
             approvals: Mutex::default(),
             next_approval: AtomicU64::new(0),
             stop: Notify::new(),
@@ -110,8 +113,15 @@ impl Run {
 
     /// The events so far, then each as it happens, until the run ends.
     pub fn events(&self) -> impl Stream<Item = Event> + Send + 'static {
+        let (run, started) = (self.id, self.started);
+        let began = stream::once(async move {
+            Event::Began {
+                run,
+                elapsed: started.elapsed(),
+            }
+        });
         let log = self.log.subscribe();
-        stream::unfold(Some((log, 0)), |state| async move {
+        let logged = stream::unfold(Some((log, 0)), |state| async move {
             let (mut log, mut read) = state?;
             loop {
                 let (batch, len) = {
@@ -129,7 +139,8 @@ impl Run {
                 log.changed().await.ok()?;
             }
         })
-        .flat_map(stream::iter)
+        .flat_map(stream::iter);
+        began.chain(logged)
     }
 
     fn lock_approvals(
@@ -223,7 +234,7 @@ mod tests {
             asked.extend(early.next().await);
         }
         assert_eq!(names(&asked), ["began", "a", "ask shell"]);
-        assert!(matches!(asked[0], Event::Began { run: id } if id == run.id()));
+        assert!(matches!(asked[0], Event::Began { run: id, .. } if id == run.id()));
         let joined: Vec<Event> = run.events().take(3).collect().await;
         assert_eq!(
             names(&joined),
@@ -246,5 +257,16 @@ mod tests {
         assert_eq!(names(&rest), ["decided", "end"]);
         let late: Vec<Event> = run.events().collect().await;
         assert_eq!(names(&late), ["began", "a", "decided", "end"]);
+    }
+
+    #[tokio::test]
+    async fn every_client_times_the_run_from_when_it_began() {
+        let run = Run::new("hi".into(), 0, || {});
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        let joined = Box::pin(run.events()).next().await;
+        assert!(
+            matches!(joined, Some(Event::Began { elapsed, .. }) if elapsed.as_millis() >= 20),
+            "{joined:?}"
+        );
     }
 }

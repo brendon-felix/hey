@@ -38,7 +38,7 @@ impl fmt::Display for Target {
 impl Host {
     /// `prompt` as the model gets it: what was typed, then what the client
     /// attached and what the host's mentions attach, a conversation as
-    /// `model` sums it up. Tells `run` of each the host attaches.
+    /// `model` sums it up. Tells `run` of each, so every client shows them.
     pub(super) async fn message(
         &self,
         prompt: &str,
@@ -47,7 +47,12 @@ impl Host {
         run: &Run,
     ) -> Message {
         let mut context = Context::default();
-        attachments.iter().for_each(|attachment| context.attach(attachment));
+        for attachment in attachments {
+            run.emit(Event::Attached {
+                name: attachment.name(),
+            });
+            context.attach(attachment);
+        }
         for target in self.targets(prompt) {
             run.emit(Event::Attached {
                 name: target.to_string(),

@@ -88,6 +88,12 @@ impl Stream {
         }
     }
 
+    /// Times the spinner from when the run began, not from when this
+    /// client started following it.
+    pub fn began(&mut self, elapsed: Duration) {
+        self.started = Instant::now().checked_sub(elapsed).unwrap_or(self.started);
+    }
+
     pub fn text(&mut self, text: String) {
         self.activity = Activity::Working;
         self.receive(Part::Text, text);
