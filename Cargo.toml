@@ -64,3 +64,10 @@ yansi = "1"
 [[bin]]
 name = "hey"
 path = "src/main.rs"
+
+# crossterm 0.29 answers a cursor-position query with any reply still queued
+# from an earlier one, so a single late reply leaves every later prompt drawn
+# on a stale row. Backports crossterm-rs/crossterm#1024; drop once a release
+# includes it.
+[patch.crates-io]
+crossterm = { git = "https://github.com/brendon-felix/crossterm", rev = "f189dc40ebfcf337c1da4107704898af92807250" }
