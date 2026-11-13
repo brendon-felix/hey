@@ -13,7 +13,7 @@ use fuzzy_matcher::skim::SkimMatcherV2;
 use nu_ansi_term::{Color, Style};
 use reedline::{
     ColumnarMenu, Completer, CompletionResult, CursorConfig, DefaultHinter, EditCommand,
-    EditMode, Emacs, FileBackedHistory, Helix, Highlighter, KeyCode, KeyModifiers,
+    EditMode, Emacs, FileBackedHistory, Helix, Highlighter, Hinter, History, KeyCode, KeyModifiers,
     Keybindings, MenuBuilder, Prompt, PromptEditMode, PromptHistorySearch,
     PromptHistorySearchStatus, PromptHelixMode, PromptViMode, Reedline, ReedlineEvent,
     ReedlineMenu, RepaintSignal, Signal, Span, StatusLine, StyledText, Suggestion, Vi,
@@ -195,7 +195,10 @@ impl Editor {
 fn styled(line_editor: Reedline, palette: Palette) -> Reedline {
     line_editor
         .with_menu(ReedlineMenu::EngineCompleter(Box::new(completion_menu(palette))))
-        .with_hinter(Box::new(DefaultHinter::default().with_style(fg(palette.muted))))
+        .with_hinter(Box::new(MessageHinter {
+            history: DefaultHinter::default().with_style(fg(palette.muted)),
+            command: false,
+        }))
         .with_visual_selection_style(Style::new().reverse())
 }
 
@@ -287,6 +290,49 @@ fn with_menu_bindings(mut keybindings: Keybindings) -> Keybindings {
         ReedlineEvent::MenuPrevious,
     );
     keybindings
+}
+
+/// History hints on messages only. Tab takes a hint before opening the menu,
+/// and on a command line the commands and their arguments are the better
+/// completion.
+struct MessageHinter {
+    history: DefaultHinter,
+    command: bool,
+}
+
+impl Hinter for MessageHinter {
+    fn handle(
+        &mut self,
+        line: &str,
+        pos: usize,
+        history: &dyn History,
+        use_ansi_coloring: bool,
+        cwd: &str,
+    ) -> String {
+        self.command = line.starts_with('/');
+        match self.command {
+            true => String::new(),
+            false => self.history.handle(line, pos, history, use_ansi_coloring, cwd),
+        }
+    }
+
+    fn complete_hint(&self) -> String {
+        match self.command {
+            true => String::new(),
+            false => self.history.complete_hint(),
+        }
+    }
+
+    fn next_hint_token(&self) -> String {
+        match self.command {
+            true => String::new(),
+            false => self.history.next_hint_token(),
+        }
+    }
+
+    fn continues_text_before_cursor(&self) -> bool {
+        self.history.continues_text_before_cursor()
+    }
 }
 
 /// `$VISUAL`, else `$EDITOR`, else `vi`, split into program and arguments so
