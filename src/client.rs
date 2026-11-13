@@ -17,8 +17,9 @@ use tokio_util::io::StreamReader;
 use crate::backend::{Events, Opened};
 use crate::config::{self, Remote};
 use crate::protocol::{
-    Activities, ApprovalId, Ask, ClientInfo, Decision, Defaults, DelegationId, Event, Machine,
-    ModelInfo, Revision, RunRequest, Snapshot, TaskResult, ThreadInfo, Tools,
+    Activities, ApprovalId, Ask, CallId, CallResult, ClientInfo, Decision, Defaults, Event,
+    FollowerId, Lent, MACHINE_HEADER, Machine, ModelInfo, Revision, RunRequest, Snapshot,
+    ThreadInfo, Tools,
 };
 use crate::sessions::SessionId;
 use crate::skills::Found;
@@ -38,21 +39,21 @@ pub struct Client {
 impl Client {
     /// Connects with the token `remote` configures, else the one hey kept,
     /// else one the user enters, which hey keeps once the host accepts it.
-    /// `subagents` names this machine when it runs subagents for the host.
-    pub async fn connect(
-        name: &str,
-        remote: &Remote,
-        machine: Machine,
-        subagents: Option<String>,
-    ) -> Result<Self> {
+    /// The host's agents can call the tools this machine `lent` while one of
+    /// its runs is followed from here.
+    pub async fn connect(name: &str, remote: &Remote, machine: Machine, lent: Lent) -> Result<Self> {
         let mut url = config::expand(&remote.url)?;
         if !url.ends_with('/') {
             url.push('/');
         }
         let base = Url::parse(&url).with_context(|| format!("invalid url for remote `{name}`"))?;
+        let mut headers: header::HeaderMap = config::expand_headers(&remote.headers)?;
+        let machine_name = header::HeaderValue::from_str(&lent.machine)
+            .with_context(|| format!("machine name `{}` cannot be sent", lent.machine))?;
+        headers.insert(MACHINE_HEADER, machine_name);
         let http = reqwest::Client::builder()
             .connect_timeout(Duration::from_secs(10))
-            .default_headers(config::expand_headers(&remote.headers)?)
+            .default_headers(headers)
             // A host never redirects, so a redirect comes from a proxy's sign-in.
             .redirect(redirect::Policy::none())
             .build()?;
@@ -64,7 +65,7 @@ impl Client {
                 machine,
                 remote: name.to_owned(),
                 url: base.to_string(),
-                subagents,
+                lent: Some(lent),
             }),
             base,
         };
@@ -220,47 +221,35 @@ impl Client {
             .await
     }
 
-    /// Takes up a subagent's task; false when another client took it first,
-    /// or it is no longer waited for.
-    pub async fn claim(&self, id: &SessionId, delegation: DelegationId) -> Result<bool> {
-        let path = format!("{}/claim", delegation_path(id, delegation));
-        self.done(self.http.post(self.url(&path)?), StatusCode::CONFLICT)
-            .await
+    /// Takes up call `call` for `follower`, this terminal's view of the
+    /// run; false when another terminal took it first, or it is no longer
+    /// waited for.
+    pub async fn claim(&self, id: &SessionId, call: CallId, follower: FollowerId) -> Result<bool> {
+        let path = format!("{}/claim", call_path(id, call));
+        self.done(
+            self.http.post(self.url(&path)?).json(&follower),
+            StatusCode::CONFLICT,
+        )
+        .await
     }
 
-    /// Shows `event` of the task's subagent to every client following the run.
-    pub async fn delegated_event(
-        &self,
-        id: &SessionId,
-        delegation: DelegationId,
-        event: &Event,
-    ) -> Result<()> {
-        let path = format!("{}/events", delegation_path(id, delegation));
+    /// Shows `event` of the call to every client following the run.
+    pub async fn call_event(&self, id: &SessionId, call: CallId, event: &Event) -> Result<()> {
+        let path = format!("{}/events", call_path(id, call));
         self.ok(self.http.post(self.url(&path)?).json(event))
             .await
             .map(drop)
     }
 
-    /// Waits for a client following the run to decide `ask` for the task's
-    /// subagent.
-    pub async fn delegated_ask(
-        &self,
-        id: &SessionId,
-        delegation: DelegationId,
-        ask: &Ask,
-    ) -> Result<Decision> {
-        let path = format!("{}/asks", delegation_path(id, delegation));
+    /// Waits for a client following the run to decide `ask` for the call.
+    pub async fn call_ask(&self, id: &SessionId, call: CallId, ask: &Ask) -> Result<Decision> {
+        let path = format!("{}/asks", call_path(id, call));
         self.json(self.http.post(self.url(&path)?).json(ask)).await
     }
 
-    /// Reports how the task went; false when it was no longer waited for.
-    pub async fn finish(
-        &self,
-        id: &SessionId,
-        delegation: DelegationId,
-        result: &TaskResult,
-    ) -> Result<bool> {
-        let path = delegation_path(id, delegation);
+    /// Reports how the call went; false when it was no longer waited for.
+    pub async fn finish(&self, id: &SessionId, call: CallId, result: &CallResult) -> Result<bool> {
+        let path = call_path(id, call);
         self.done(
             self.http.post(self.url(&path)?).json(result),
             StatusCode::NOT_FOUND,
@@ -353,8 +342,8 @@ impl Client {
     }
 }
 
-fn delegation_path(id: &SessionId, delegation: DelegationId) -> String {
-    format!("v1/threads/{}/delegations/{delegation}", id.as_str())
+fn call_path(id: &SessionId, call: CallId) -> String {
+    format!("v1/threads/{}/calls/{call}", id.as_str())
 }
 
 /// The host's own refusal, told apart by its challenge from a proxy's in front of it.

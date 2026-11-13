@@ -58,16 +58,21 @@ pub async fn confirm(ask: &Ask) -> Decision {
     }
     let decisions = [Decision::Once, Decision::Always, Decision::Decline];
     let (question, labels) = match ask {
-        Ask::Tool { name, agent } => {
+        Ask::Tool {
+            name,
+            agent,
+            machine,
+        } => {
+            let on = machine.as_ref().map(|machine| format!(" on {machine}")).unwrap_or_default();
             let question = match agent {
-                Some(agent) => format!("Run `{name}` for agent “{agent}”?"),
-                None => format!("Run `{name}`?"),
+                Some(agent) => format!("Run `{name}`{on} for agent “{agent}”?"),
+                None => format!("Run `{name}`{on}?"),
             };
-            let always = format!("Always allow `{name}` in this conversation");
+            let always = format!("Always allow `{name}`{on} in this conversation");
             (question, ["Yes".to_owned(), always, "No".to_owned()])
         }
         Ask::Directory { machine, path } => (
-            format!("Let subagents work in {path} on {machine}?"),
+            format!("Let the agent use {path} on {machine}?"),
             [
                 "Yes, in this conversation".to_owned(),
                 format!("Always: allow it in {machine}'s config"),

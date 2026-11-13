@@ -1,5 +1,5 @@
 /* -------------------------------------------------------------------------- */
-/*                             subagents/fence.rs                             */
+/*                             workbench/fence.rs                             */
 /* -------------------------------------------------------------------------- */
 
 use std::ffi::{OsStr, OsString};
@@ -29,7 +29,7 @@ impl Fenced {
             Some(excluded) => Err(io::Error::new(
                 ErrorKind::PermissionDenied,
                 format!(
-                    "{} is in {}, which the user's configuration keeps subagents out of",
+                    "{} is in {}, which the user's configuration keeps the host's agents out of",
                     path.display(),
                     excluded.display()
                 ),

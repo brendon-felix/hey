@@ -1,5 +1,5 @@
 /* -------------------------------------------------------------------------- */
-/*                            subagents/access.rs                             */
+/*                            workbench/access.rs                             */
 /* -------------------------------------------------------------------------- */
 
 use std::path::{Path, PathBuf};
@@ -10,22 +10,8 @@ use toml_edit::Array;
 
 use crate::config::{self, Directories};
 
-/// This machine's name: `HEY_MACHINE`, else its host name without the
-/// domain, as `hostname -s` prints it. Rules in a config shared between
-/// machines are kept apart by it.
-pub fn machine_name() -> String {
-    if let Some(name) = std::env::var("HEY_MACHINE").ok().filter(|name| !name.is_empty()) {
-        return name;
-    }
-    let host = gethostname::gethostname().to_string_lossy().into_owned();
-    match host.split('.').next() {
-        Some(short) if !short.is_empty() => short.to_owned(),
-        _ => "localhost".into(),
-    }
-}
-
-/// Where subagents may work on this machine, as its config says and as
-/// the user has since allowed.
+/// Where a remote host's agents may work on this machine, as its config
+/// says and as the user has since allowed.
 #[derive(Debug)]
 pub struct Access {
     machine: String,
@@ -57,9 +43,9 @@ impl Access {
         };
         let rules = Rules {
             allow: paths(&directories.allow)
-                .with_context(|| format!("in `subagents.machines.{machine}.allow`"))?,
+                .with_context(|| format!("in `machines.{machine}.allow`"))?,
             exclude: paths(&directories.exclude)
-                .with_context(|| format!("in `subagents.machines.{machine}.exclude`"))?,
+                .with_context(|| format!("in `machines.{machine}.exclude`"))?,
         };
         Ok(Self {
             machine,
@@ -72,8 +58,8 @@ impl Access {
         &self.machine
     }
 
-    /// Whether subagents may work in `dir`, a canonical path, given the
-    /// directories this conversation already `granted`. Exclusion wins.
+    /// Whether the host's agents may work in `dir`, a canonical path, given
+    /// the directories this conversation already `granted`. Exclusion wins.
     pub fn verdict(&self, dir: &Path, granted: &[PathBuf]) -> Verdict {
         let rules = self.lock();
         if let Some(excluded) = rules.exclude.iter().find(|excluded| dir.starts_with(excluded)) {
@@ -85,7 +71,8 @@ impl Access {
         }
     }
 
-    /// The directories subagents are kept out of, even within their own.
+    /// The directories the host's agents are kept out of, even within
+    /// allowed ones.
     pub fn excluded(&self) -> Vec<PathBuf> {
         self.lock().exclude.clone()
     }
@@ -110,17 +97,16 @@ impl Access {
 }
 
 /// A configured directory, expanded and, if it exists, canonical, so it
-/// compares with the canonical directories subagents ask for.
+/// compares with the canonical directories calls ask for.
 fn rule_path(rule: &str) -> Result<PathBuf> {
     let path = config::expand_path(rule)?;
     Ok(path.canonicalize().unwrap_or(path))
 }
 
-/// Adds `dir` to `subagents.machines.<machine>.allow` in the config at
-/// `file`.
+/// Adds `dir` to `machines.<machine>.allow` in the config at `file`.
 fn save_allowed(file: &Path, machine: &str, dir: &Path) -> Result<()> {
     config::edit(file, |document| {
-        let allow = &mut document["subagents"]["machines"][machine]["allow"];
+        let allow = &mut document["machines"][machine]["allow"];
         if allow.is_none() {
             *allow = toml_edit::value(Array::new());
         }
@@ -174,7 +160,7 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("hey-access-{}", std::process::id()));
         fs::create_dir_all(&dir).unwrap();
         let file = dir.join("hey.toml");
-        fs::write(&file, "# mine\nmodel = \"openai/gpt-5.5\"\n\n[subagents.machines.box]\nexclude = [\"/srv/secrets\"]\n").unwrap();
+        fs::write(&file, "# mine\nmodel = \"openai/gpt-5.5\"\n\n[machines.box]\nexclude = [\"/srv/secrets\"]\n").unwrap();
         let access = access(&[], &["/srv/secrets"], Some(file.clone()));
 
         access.allow_always(Path::new("/srv/app")).unwrap();
@@ -184,7 +170,7 @@ mod tests {
         let saved = fs::read_to_string(&file).unwrap();
         assert!(saved.starts_with("# mine\n"), "{saved}");
         let config: crate::config::Config = toml::from_str(&saved).unwrap();
-        let rules = &config.subagents.machines["box"];
+        let rules = &config.machines["box"];
         assert_eq!(rules.allow, ["/srv/app", "/opt/data"]);
         assert_eq!(rules.exclude, ["/srv/secrets"]);
         fs::remove_dir_all(dir).unwrap();

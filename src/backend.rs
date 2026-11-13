@@ -11,12 +11,12 @@ use futures::stream::BoxStream;
 use crate::client::Client;
 use crate::host::{self, Host};
 use crate::protocol::{
-    Activities, ApprovalId, Decision, Defaults, DelegationId, Event, ModelInfo, Revision,
-    RunRequest, Snapshot, Task, ThreadInfo, Tools,
+    Activities, ApprovalId, Call, CallId, Decision, Defaults, Event, FollowerId, ModelInfo,
+    Revision, RunRequest, Snapshot, ThreadInfo, Tools,
 };
 use crate::sessions::SessionId;
 use crate::skills::Found;
-use crate::subagents::{self, Crew};
+use crate::workbench::{self, Workbench};
 
 pub type Events = BoxStream<'static, Result<Event>>;
 
@@ -31,11 +31,11 @@ pub struct Opened {
 }
 
 /// Where the agent runs and threads are kept: in this process, or on a
-/// remote host, for which this machine may run subagents too.
+/// remote host, which this machine runs tool calls for.
 #[derive(Clone)]
 pub enum Backend {
     Local(Arc<Host>),
-    Remote(Client, Option<Arc<Crew>>),
+    Remote(Client, Arc<Workbench>),
 }
 
 impl Backend {
@@ -135,7 +135,7 @@ impl Backend {
     pub async fn open(&self, id: &SessionId) -> Result<Opened> {
         match self {
             Backend::Local(host) => {
-                let host::Opened { snapshot, events } = host.open(id)?;
+                let host::Opened { snapshot, events } = host.open(id, None)?;
                 Ok(Opened {
                     snapshot,
                     events: events.map(|events| events.map(Ok).boxed()),
@@ -147,18 +147,26 @@ impl Backend {
 
     pub async fn start(&self, id: &SessionId, request: RunRequest) -> Result<Events> {
         match self {
-            Backend::Local(host) => Ok(host.start(id.clone(), request).await?.map(Ok).boxed()),
+            Backend::Local(host) => Ok(host.start(id.clone(), request, None).await?.map(Ok).boxed()),
             Backend::Remote(client, _) => client.start(id, request).await,
         }
     }
 
-    /// Runs a subagent's task delegated to this machine, in the background,
-    /// unless it is for another machine or another client takes it up first.
-    pub fn take_up(&self, thread: &SessionId, id: DelegationId, task: Task) -> Option<impl Future<Output = ()> + Send + 'static> {
+    /// Runs a tool call the host gave this machine, which this view of the
+    /// run, `follower`, takes up unless another terminal here does first;
+    /// `None` when the call is for another machine.
+    pub fn lend(
+        &self,
+        thread: &SessionId,
+        follower: FollowerId,
+        id: CallId,
+        call: Call,
+    ) -> Option<impl Future<Output = ()> + Send + 'static> {
         match self {
-            Backend::Remote(client, Some(crew)) if task.machine == crew.machine() => Some(
-                subagents::take_up(client.clone(), crew.clone(), thread.clone(), id, task),
-            ),
+            Backend::Remote(client, workbench) if call.machine == workbench.machine() => {
+                let (client, workbench) = (client.clone(), workbench.clone());
+                Some(workbench::take_up(client, workbench, thread.clone(), follower, id, call))
+            }
             _ => None,
         }
     }

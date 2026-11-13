@@ -11,7 +11,7 @@ use std::sync::Arc;
 use anyhow::{Context, Result};
 use axum::body::Body;
 use axum::extract::{Path, Query, Request, State};
-use axum::http::{StatusCode, header};
+use axum::http::{HeaderMap, StatusCode, header};
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post, put};
@@ -22,7 +22,8 @@ use serde::{Deserialize, Serialize};
 use crate::{config, token};
 use crate::host::{HEARTBEAT, Host, ThreadError};
 use crate::protocol::{
-    ApprovalId, Ask, Decision, DelegationId, Event, Revision, RunRequest, TaskResult,
+    ApprovalId, Ask, CallId, CallResult, Decision, Event, FollowerId, MACHINE_HEADER, Revision,
+    RunRequest,
 };
 use crate::sessions::SessionId;
 
@@ -42,10 +43,10 @@ pub async fn serve(host: Arc<Host>, config: &config::Server) -> Result<()> {
         .route("/v1/threads/{id}/archived", put(archive))
         .route("/v1/threads/{id}/fork", post(fork))
         .route("/v1/threads/{id}/approvals/{approval}", post(answer))
-        .route("/v1/threads/{id}/delegations/{delegation}", post(finish))
-        .route("/v1/threads/{id}/delegations/{delegation}/claim", post(claim))
-        .route("/v1/threads/{id}/delegations/{delegation}/events", post(delegated_event))
-        .route("/v1/threads/{id}/delegations/{delegation}/asks", post(delegated_ask))
+        .route("/v1/threads/{id}/calls/{call}", post(finish))
+        .route("/v1/threads/{id}/calls/{call}/claim", post(claim))
+        .route("/v1/threads/{id}/calls/{call}/events", post(call_event))
+        .route("/v1/threads/{id}/calls/{call}/asks", post(call_ask))
         .route("/v1/threads/{id}/tools", get(tools))
         .route("/v1/memories", get(memories).post(remember).put(revise).delete(forget))
         .layer(middleware::from_fn_with_state(token, authorize))
@@ -139,10 +140,20 @@ async fn skills(State(host): State<Arc<Host>>) -> impl IntoResponse {
     Json(host.skills())
 }
 
+/// The machine a client that runs tool calls for the host names.
+fn machine(headers: &HeaderMap) -> Option<String> {
+    let name = headers.get(MACHINE_HEADER)?.to_str().ok()?;
+    Some(name.to_owned()).filter(|name| !name.is_empty())
+}
+
 /// The thread's snapshot on the first line, then its run's events, if one is
 /// in progress.
-async fn open(State(host): State<Arc<Host>>, Path(id): Path<SessionId>) -> Reply<Response> {
-    let opened = host.open(&id)?;
+async fn open(
+    State(host): State<Arc<Host>>,
+    Path(id): Path<SessionId>,
+    headers: HeaderMap,
+) -> Reply<Response> {
+    let opened = host.open(&id, machine(&headers))?;
     let snapshot = stream::once(async move { opened.snapshot });
     let lines = ndjson(snapshot).chain(ndjson(
         opened.events.unwrap_or_else(|| stream::empty().boxed()),
@@ -153,9 +164,10 @@ async fn open(State(host): State<Arc<Host>>, Path(id): Path<SessionId>) -> Reply
 async fn start(
     State(host): State<Arc<Host>>,
     Path(id): Path<SessionId>,
+    headers: HeaderMap,
     Json(request): Json<RunRequest>,
 ) -> Reply<Response> {
-    let events = host.start(id, request).await.map_err(|error| match error {
+    let events = host.start(id, request, machine(&headers)).await.map_err(|error| match error {
         ThreadError::Busy => Failure(StatusCode::CONFLICT, error.to_string()),
         ThreadError::Other(_) => Failure(StatusCode::BAD_REQUEST, error.to_string()),
     })?;
@@ -213,48 +225,49 @@ async fn tools(State(host): State<Arc<Host>>, Path(id): Path<SessionId>) -> impl
     Json(host.tools(&id))
 }
 
-/// Takes up a subagent's task for the client; 409 when another client took
-/// it, or it is no longer waited for.
+/// Takes up a call for the client's view of the run named in the body;
+/// 409 when another took it, or it is no longer waited for.
 async fn claim(
     State(host): State<Arc<Host>>,
-    Path((id, delegation)): Path<(SessionId, u64)>,
+    Path((id, call)): Path<(SessionId, u64)>,
+    Json(follower): Json<FollowerId>,
 ) -> StatusCode {
-    match host.claim(&id, DelegationId(delegation)) {
+    match host.claim(&id, CallId(call), follower) {
         true => StatusCode::NO_CONTENT,
         false => StatusCode::CONFLICT,
     }
 }
 
-async fn delegated_event(
+async fn call_event(
     State(host): State<Arc<Host>>,
-    Path((id, delegation)): Path<(SessionId, u64)>,
+    Path((id, call)): Path<(SessionId, u64)>,
     Json(event): Json<Event>,
 ) -> StatusCode {
-    match host.delegated_event(&id, DelegationId(delegation), event) {
+    match host.call_event(&id, CallId(call), event) {
         true => StatusCode::NO_CONTENT,
         false => StatusCode::NOT_FOUND,
     }
 }
 
 /// The decision, once a client makes it.
-async fn delegated_ask(
+async fn call_ask(
     State(host): State<Arc<Host>>,
-    Path((id, delegation)): Path<(SessionId, u64)>,
+    Path((id, call)): Path<(SessionId, u64)>,
     Json(ask): Json<Ask>,
 ) -> Reply<impl IntoResponse> {
     let decision = host
-        .delegated_ask(&id, DelegationId(delegation), ask)
+        .call_ask(&id, CallId(call), ask)
         .await
-        .ok_or_else(|| Failure(StatusCode::NOT_FOUND, "the task is no longer waited for".into()))?;
+        .ok_or_else(|| Failure(StatusCode::NOT_FOUND, "the call is no longer waited for".into()))?;
     Ok(Json(decision))
 }
 
 async fn finish(
     State(host): State<Arc<Host>>,
-    Path((id, delegation)): Path<(SessionId, u64)>,
-    Json(result): Json<TaskResult>,
+    Path((id, call)): Path<(SessionId, u64)>,
+    Json(result): Json<CallResult>,
 ) -> StatusCode {
-    match host.finish(&id, DelegationId(delegation), result) {
+    match host.finish(&id, CallId(call), result) {
         true => StatusCode::NO_CONTENT,
         false => StatusCode::NOT_FOUND,
     }

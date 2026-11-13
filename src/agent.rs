@@ -13,17 +13,14 @@ use rig_core::catalog::Catalog;
 use rig_core::operation::{Completion, Embedding};
 use rig_core::providers::ollama::OllamaConfig;
 use rig_core::providers::registry::ConnectOptions;
-use rig_core::tool::Tool;
-use rig_tools::process::Launcher;
-use rig_tools::workspace::{Local, Workspace};
-use rig_tools::{Delete, Edit, List, Live, Move, Read, Search, Seen, Shell, Spill, Write};
+use rig_core::tool::DynamicTool;
+use rig_tools::Spill;
 
 use crate::config::{self, Providers};
 use crate::gate::Gate;
 use crate::permissions::{Approval, Permissions, Reporter};
 use crate::protocol::ModelInfo;
-use crate::skills;
-use crate::web::Web;
+use crate::route::Routes;
 
 pub const DEFAULT_SYSTEM_PROMPT: &str = "You are hey, an assistant in the user's terminal. \
 Use your tools to read, search and edit files and to run commands whenever the answer depends \
@@ -37,25 +34,6 @@ const SUMMARY_PROMPT: &str = "Generate a detailed summary of this conversation. 
 3. Outcomes or conclusions reached
 4. Any action items or next steps if any
 Format it in Markdown with headings and bullet points.";
-
-/// The tools every agent has, by the names their permissions are keyed by:
-/// `skill` is offered only when there are skills to load, and the web tools
-/// as `web` offers them.
-pub fn builtin_tools(web: &Web) -> impl Iterator<Item = &'static str> {
-    [
-        Read::NAME,
-        List::NAME,
-        Search::NAME,
-        Write::NAME,
-        Edit::NAME,
-        Move::NAME,
-        Delete::NAME,
-        Shell::NAME,
-        skills::TOOL,
-    ]
-    .into_iter()
-    .chain(web.tools())
-}
 
 /// A completion model named by its catalog reference, `vendor/model`.
 #[derive(Clone)]
@@ -125,122 +103,23 @@ pub fn available_models() -> Vec<String> {
         .collect()
 }
 
-/// Where the built-in tools work.
-pub struct Place {
-    workspace: Arc<dyn Workspace>,
-    /// The directory relative paths start from and commands run in; `None`
-    /// is this process's working directory.
-    base: Option<PathBuf>,
-    /// Whether paths outside `base` are refused.
-    confine: bool,
-    /// Where a running command's output goes as it comes.
-    live: Option<Live>,
-}
-
-impl Place {
-    /// Anywhere on this machine, from the working directory.
-    pub fn here(live: Live) -> Self {
-        Self {
-            workspace: Arc::new(Local),
-            base: None,
-            confine: false,
-            live: Some(live),
-        }
-    }
-
-    /// Only within `dir`, on `workspace`. Commands start there, but what
-    /// they do is not confined.
-    pub fn within(dir: PathBuf, workspace: Arc<dyn Workspace>) -> Self {
-        Self {
-            workspace,
-            base: Some(dir),
-            confine: true,
-            live: None,
-        }
-    }
-}
-
-/// An agent on `model` with the built-in tools, working in `place` and
-/// reading the web through `web`. `edit` and `write` refuse to clobber a
-/// file changed since `read` saw it, which takes all three sharing what was
-/// `seen`. Its tool calls ask as `permissions` say, through `reporter`, and
-/// run side by side where that is safe: the gate sees every tool the agent
-/// ends up with, however it was added.
+/// An agent on `model` with `tools`, each running where `routes` says. Its
+/// tool calls ask as `permissions` say, through `reporter`, and run side by
+/// side where that is safe: the gate sees every tool the agent ends up
+/// with, however it was added.
 pub fn builder<R: Reporter>(
     model: &Model,
-    seen: &Seen,
-    place: Place,
-    web: &Web,
+    tools: Vec<DynamicTool>,
+    routes: Arc<Routes>,
     permissions: Arc<Permissions>,
     reporter: Arc<R>,
 ) -> AgentBuilder {
-    let Place {
-        workspace,
-        base,
-        confine,
-        live,
-    } = place;
-    let launcher = match &base {
-        Some(dir) => Launcher::default().in_dir(dir),
-        None => Launcher::default(),
-    };
-    let shell = Shell {
-        workspace: workspace.clone(),
-        launcher,
-        live,
-        spill: spill(),
-        confine,
-        ..Shell::default()
-    };
-    let tools = ToolServer::new().run();
-    let approval = Approval::new(permissions, reporter, Gate::new(tools.clone()));
-    let builder = AgentBuilder::new(model.inner.clone())
-        .tool_server_handle(tools)
+    let server = ToolServer::new().run();
+    let approval = Approval::new(permissions, reporter, Gate::new(server.clone()), routes);
+    AgentBuilder::new(model.inner.clone())
+        .tool_server_handle(server)
         .add_hook(approval)
-        .tool(Read {
-            workspace: workspace.clone(),
-            base: base.clone(),
-            confine,
-            seen: seen.clone(),
-        })
-        .tool(Write {
-            workspace: workspace.clone(),
-            base: base.clone(),
-            confine,
-            seen: seen.clone(),
-        })
-        .tool(Edit {
-            workspace: workspace.clone(),
-            base: base.clone(),
-            confine,
-            seen: seen.clone(),
-        })
-        .tool(List {
-            workspace: workspace.clone(),
-            base: base.clone(),
-            confine,
-        })
-        .tool(Search {
-            workspace: workspace.clone(),
-            base: base.clone(),
-            confine,
-        })
-        .tool(Move {
-            workspace: workspace.clone(),
-            base: base.clone(),
-            confine,
-        })
-        .tool(Delete {
-            workspace,
-            base,
-            confine,
-        })
-        .tool(shell)
-        .tool(web.fetch());
-    match web.search() {
-        Some(search) => builder.tool(search),
-        None => builder,
-    }
+        .dynamic_tools(tools)
 }
 
 /// Where tools keep whole the output they cut.

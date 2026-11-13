@@ -31,6 +31,8 @@ pub struct Config {
     pub memory: Memory,
     pub tools: Tools,
     pub subagents: Subagents,
+    /// Where a remote host's agents may work on each machine, by its name.
+    pub machines: BTreeMap<String, Directories>,
     pub mcp_servers: BTreeMap<String, McpServer>,
     pub remote: Option<String>,
     pub remotes: BTreeMap<String, Remote>,
@@ -57,6 +59,7 @@ impl Default for Config {
             memory: Memory::default(),
             tools: Tools::default(),
             subagents: Subagents::default(),
+            machines: BTreeMap::new(),
             mcp_servers: BTreeMap::new(),
             remote: None,
             remotes: BTreeMap::new(),
@@ -412,8 +415,6 @@ pub struct Subagents {
     pub enabled: bool,
     /// The model subagents use; else their parent's.
     pub model: Option<String>,
-    /// Where subagents may work on each machine, by its name.
-    pub machines: BTreeMap<String, Directories>,
 }
 
 impl Default for Subagents {
@@ -421,13 +422,12 @@ impl Default for Subagents {
         Self {
             enabled: true,
             model: None,
-            machines: BTreeMap::new(),
         }
     }
 }
 
-/// Directories subagents may work in without asking, and those they are
-/// kept out of, which win.
+/// Directories a remote host's agents may use on a machine without asking,
+/// and those they are kept out of, which win.
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Directories {

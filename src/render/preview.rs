@@ -46,7 +46,7 @@ impl Call {
             true => String::new(),
             false => summarize(&args),
         };
-        let mut rows = vec![String::new(), call_line(&self.name, &summary, width)];
+        let mut rows = vec![String::new(), call_line(&self.name, None, &summary, width)];
         if let Some(text) = writing(&self.args).filter(|text| text.contains('\n')) {
             let room = height.saturating_sub(rows.len() + 2);
             rows.extend(boxed(&text, width, room.min(ROWS)));

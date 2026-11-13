@@ -24,6 +24,7 @@ use yansi::Paint;
 use crate::config::{Display, ToolOutput};
 use crate::mention;
 use crate::protocol::Event;
+use crate::route;
 
 pub use reply::{Reply, rows as reply_rows};
 pub use stream::{FRAME, Stream};
@@ -93,23 +94,33 @@ pub fn user_line(text: &str, palette: Palette) -> String {
     format!("{}{}", palette.accent.paint("> "), palette.input.paint(text))
 }
 
-/// A call, and what it will write when it is to a file.
-pub fn tool_call(name: &str, args: &str, shown: ToolOutput) {
-    println!("\n{}", call_line(name, &summarize_args(args), terminal_width()));
+/// A call, the remote client it runs on if not the host, and what it will
+/// write when it is to a file.
+pub fn tool_call(name: &str, args: &str, machine: Option<&str>, shown: ToolOutput) {
+    let named = machine.map(str::to_owned).or_else(|| machine_arg(args));
+    println!("\n{}", call_line(name, named.as_deref(), &summarize_args(args), terminal_width()));
     tool::changes(name, args, shown);
 }
 
-/// A tool call as it shows, `width` columns at most: its name and the
-/// argument that identifies it.
-fn call_line(name: &str, summary: &str, width: usize) -> String {
+/// A tool call as it shows, `width` columns at most: its name, the machine
+/// it runs on when that is named, and the argument that identifies it.
+fn call_line(name: &str, machine: Option<&str>, summary: &str, width: usize) -> String {
     let palette = palette();
-    let room = width.saturating_sub(name.chars().count() + 3);
+    let on = machine.map(|machine| format!(" on {machine}")).unwrap_or_default();
+    let room = width.saturating_sub(name.chars().count() + on.chars().count() + 3);
     format!(
-        "{} {} {}",
+        "{} {}{} {}",
         palette.name.paint("●"),
         name.bold(),
+        palette.muted.paint(&on),
         palette.muted.paint(&clip(&summary.replace('\t', " "), room))
     )
+}
+
+/// The machine a call's `machine` argument names.
+fn machine_arg(args: &str) -> Option<String> {
+    let args: serde_json::Value = serde_json::from_str(args).ok()?;
+    args.get(route::ARG)?.as_str().map(str::to_owned)
 }
 
 pub fn tool_result(result: &ToolResult) {
@@ -139,22 +150,19 @@ pub fn tool_result(result: &ToolResult) {
     );
 }
 
-/// A subagent began its task, `label`, on `machine` in `directory`.
-pub fn agent_started(label: &str, machine: &str, directory: Option<&str>) {
-    let palette = palette();
-    let place = format!("{machine}:{}", directory.unwrap_or("."));
-    println!(
-        "\n{} {} {}",
-        palette.name.paint("◇"),
-        label.bold(),
-        palette.muted.paint(&place)
-    );
+/// A subagent began its task, `label`.
+pub fn agent_started(label: &str) {
+    println!("\n{} {}", palette().name.paint("◇"), label.bold());
 }
 
 /// A tool call or notice of the subagent `label`, on one muted line.
 pub fn agent_event(label: &str, event: &Event) {
     let line = match event {
-        Event::ToolCall { name, args } => format!("{name} {}", summarize_args(args)),
+        Event::ToolCall { name, args, machine } => {
+            let on = machine.clone().or_else(|| machine_arg(args));
+            let on = on.map(|machine| format!(" on {machine}")).unwrap_or_default();
+            format!("{name}{on} {}", summarize_args(args))
+        }
         Event::Notice { text } => text.clone(),
         _ => return,
     };
@@ -226,7 +234,7 @@ pub fn conversation(messages: &[Message], style: &Style) {
                         AssistantContent::ToolCall(call) => {
                             reply.finish();
                             let args = serde_json::Value::Object(call.function.arguments.clone());
-                            tool_call(call.function.name.as_str(), &args.to_string(), style.tool_output);
+                            tool_call(call.function.name.as_str(), &args.to_string(), None, style.tool_output);
                         }
                         AssistantContent::Reasoning(_) => {
                             reply.finish();
@@ -244,7 +252,13 @@ pub fn conversation(messages: &[Message], style: &Style) {
 
 fn summarize_args(args: &str) -> String {
     match serde_json::from_str(args) {
-        Ok(serde_json::Value::Object(map)) => summarize(&map),
+        Ok(serde_json::Value::Object(mut map)) => {
+            map.remove(route::ARG);
+            match map.is_empty() {
+                true => String::new(),
+                false => summarize(&map),
+            }
+        }
         _ => args.to_owned(),
     }
 }

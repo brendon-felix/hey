@@ -17,8 +17,9 @@ of `hey` is on ease of use, speed, and a pleasant terminal experience.
 - [Agent Skills](https://agentskills.io): instructions for particular tasks that the model loads
   when a task calls for one, or that you invoke with `/name`
 - Per-tool permissions: allow, confirm, or deny
-- Subagents that work on tasks in parallel, each in a directory you let it into, on the host or
-  on your own machine
+- Subagents that work on tasks in parallel
+- With a remote, tools that run on the server or on your own machine, in the directories you let
+  them into
 - Conversations saved automatically, with a list that shows which are answering and which have an
   answer you have not seen, to open, archive, delete or fork them
 - Memory across conversations: lasting facts about you and your work are learned from answers and
@@ -129,7 +130,7 @@ work in one-shot messages too: `hey review @src/main.rs`.
 | Mark | Meaning |
 | --- | --- |
 | spinner | Answering, whether or not any terminal is following it |
-| `?` | Waiting for a tool call to be approved, or for your machine to take up a subagent |
+| `?` | Waiting for a tool call to be approved |
 | `●` | Finished an answer you have not seen yet |
 
 An answer carries on if you close the terminal that asked; its conversation shows `●` until you
@@ -201,33 +202,42 @@ allow_all = true
 ### Subagents
 
 The agent can hand tasks to subagents with its `spawn_agents` tool, several at once. Each works
-on one task in one directory, with the built-in tools, and replies with a report, which is all
-the agent sees; its tool calls show under its label as it works, and its own tool calls are
-permitted as yours are. The agent can follow up with a subagent later in the conversation, which
-remembers its earlier work until hey (or, with a remote, the machine it ran on) restarts.
-Subagents cannot start subagents.
+on one task with the agent's own tools and replies with a report, which is all the agent sees;
+its tool calls show under its label as it works, and are permitted as the agent's are. The agent
+can follow up with a subagent later in the conversation, which remembers its earlier work until
+hey (or, with a remote, the host) restarts. Subagents cannot start subagents.
+`[subagents] model` picks a cheaper model for them, and `enabled = false` turns them off.
 
-With a remote, a subagent works on the host or on the machine you type on, as the agent
-chooses. One on your machine runs in your `hey`, with your config, model keys and tool
-permissions, and shows in every terminal following the conversation. It waits, marked `?`,
-until a terminal on your machine follows the conversation.
+### Your machine's tools, with a remote
 
-Before a subagent works in a directory, the machine it runs on checks its rules, keyed by its
-name (`hostname -s`, or `HEY_MACHINE`), so one config can serve every machine:
+With a remote, the agent and its subagents run on the host, but they can call your machine's
+tools too: its built-in tools, its web tools and its MCP servers, run inside your `hey`. A tool
+both machines have takes a `machine` argument and runs on the host unless the call names your
+machine; one only your machine has, such as an MCP server only your config lists, runs there.
+Calls that run on your machine show as `● read on laptop …` in every terminal following the
+conversation.
+
+Such a call needs a terminal on your machine showing the conversation; without one, or if that
+terminal closes during the call, the call fails and the agent is told why, as with any other
+failed tool call. It runs under your config's `[tools]` permissions, and its questions show in
+every terminal following the conversation.
+
+Before a call uses a directory on your machine, your machine checks its rules, keyed by its name
+(`hostname -s`, or `HEY_MACHINE`), so one config can serve every machine:
 
 ```toml
-[subagents.machines.fermi]
+[machines.laptop]
 allow = ["~/Projects"]
 exclude = ["~/Projects/secrets", "~/.ssh"]
 ```
 
-A directory inside one in `allow` is used at once. One inside `exclude` is refused, and a
-subagent's file tools refuse anything in an excluded directory, even within its own. For any
-other, you are asked: **No**, **Yes** for this conversation, or **Always**, which adds it to
-`allow` in that machine's config. `tools.allow_all` does not skip the question. A subagent's
-file tools stay inside its directory; its shell commands start there, but what they do is not
-confined, so keep `shell` on `confirm` if that matters. `[subagents] model` picks a cheaper
-model for them, and `enabled = false` turns them off.
+A directory inside one in `allow` is used at once. One inside `exclude` is refused, and file
+tools refuse anything in an excluded directory, even within an allowed one. For any other, you
+are asked: **No**, **Yes** for this conversation, or **Always**, which adds it to `allow` in
+that machine's config. A path inside the directory you ran `hey` in asks for that directory.
+`tools.allow_all` does not skip the question. Shell commands start in an allowed directory, but
+what they do is not confined, so keep `shell` on `confirm` if that matters. MCP and web tools
+have no directory to check; their permissions alone decide them.
 
 ### Web
 
@@ -298,8 +308,7 @@ anywhere in a message; built-in commands win over skills of the same name. A ski
 Skills are read afresh for every answer, so adding or editing one takes effect at once. One
 whose `SKILL.md` breaks the spec, such as a `name` that is not lowercase-hyphenated or differs
 from its folder's, is not loaded; `/skills` lists the skills and why any did not load. With a
-remote, skills are the host's, from where `hey --serve` runs; a subagent has the skills of the
-machine and directory it works in.
+remote, skills are the host's, from where `hey --serve` runs, and subagents have the same.
 
 ## Memory
 

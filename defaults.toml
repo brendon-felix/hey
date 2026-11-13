@@ -146,23 +146,28 @@ spawn_agents = "allow"
 
 [subagents]
 # Let the agent start subagents (the `spawn_agents` tool): agents that each
-# work on one task in a directory, several at once, and report back. With a
-# remote, they can work on the host or on your machine; each machine runs its
-# own with its own config, model keys and tool permissions.
+# work on one task, several at once, and report back. They run where the
+# agent does, with its tools, so with a remote they work on the host or on
+# your machine as their calls say.
 enabled = true
 # Model subagents use, as `vendor/model`. When unset, their parent's.
 # model = "openai/gpt-5.4-mini"
 
-# Where subagents may work on each machine, keyed by its name: its host name
-# as `hostname -s` prints it, or `HEY_MACHINE` when set. A directory inside
-# one in `allow` is used without asking; one inside `exclude` is refused, and
-# subagents' file tools refuse anything in it even within an allowed
-# directory. For any other, you are asked: no, yes (for the conversation), or
-# always, which adds it to `allow` here. `tools.allow_all` does not skip this.
-# Shell commands start in the agent's directory, but what they do is not
-# confined. Paths may use `~` and `$VAR`.
+# With a remote, the host's agents can also call this machine's tools (its
+# built-in ones, the web's and its MCP servers'), while a terminal here shows
+# their conversation. Each call runs here under this machine's `[tools]`
+# permissions. Before one uses a directory here, its rules are checked, keyed
+# by this machine's name: its host name as `hostname -s` prints it, or
+# `HEY_MACHINE` when set, so one config can serve every machine. A directory
+# inside one in `allow` is used without asking; one inside `exclude` is
+# refused, and file tools refuse anything in it even within an allowed
+# directory. For any other you are asked: no, yes (for the conversation), or
+# always, which adds it to `allow` here. Paths inside the working directory
+# ask for the working directory. `tools.allow_all` does not skip this. Shell
+# commands start in an allowed directory, but what they do is not confined.
+# Paths may use `~` and `$VAR`.
 #
-# [subagents.machines.fermi]
+# [machines.laptop]
 # allow = ["~/Projects"]
 # exclude = ["~/Projects/secrets", "~/.ssh"]
 

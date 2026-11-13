@@ -19,15 +19,18 @@ mod protocol;
 mod render;
 mod repl;
 mod results;
+mod route;
 mod server;
 mod sessions;
 mod skills;
 mod subagents;
 mod token;
+mod toolbox;
 mod transcript;
 mod turn;
 mod ui;
 mod web;
+mod workbench;
 
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -45,7 +48,7 @@ use preamble::Hosting;
 use protocol::Machine;
 use repl::Repl;
 use sessions::SessionId;
-use subagents::Crew;
+use workbench::Workbench;
 
 /// A minimal command-line agent.
 #[derive(Parser, Debug)]
@@ -218,14 +221,10 @@ async fn connect(args: &Args, config: &Config) -> Result<Backend> {
                 .remotes
                 .get(name)
                 .with_context(|| format!("no remote `{name}` in `[remotes]`"))?;
-            let crew = match config.subagents.enabled {
-                true => Some(Arc::new(Crew::new(config)?)),
-                false => None,
-            };
+            let workbench = Workbench::new(config).await?;
             let machine = Machine::here(config.file.as_deref());
-            let subagents = crew.as_ref().map(|crew| crew.machine().to_owned());
-            let client = Client::connect(name, remote, machine, subagents).await?;
-            Ok(Backend::Remote(client, crew))
+            let client = Client::connect(name, remote, machine, workbench.lent()).await?;
+            Ok(Backend::Remote(client, Arc::new(workbench)))
         }
         None => Ok(Backend::Local(Arc::new(
             Host::new(config, Hosting::Local).await?,

@@ -11,6 +11,7 @@ use serde::{Deserialize, Serialize};
 use crate::gate::Gate;
 use crate::host::Run;
 use crate::protocol::{Ask, Decision, Event};
+use crate::route::{Routes, Target};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -21,10 +22,9 @@ pub enum Permission {
 }
 
 pub fn default_rules() -> BTreeMap<String, Permission> {
-    // Starting a subagent asks for its directory, and its tools ask as
-    // their own rules say, so the call itself need not ask too. Loading a
-    // skill only reads instructions the user installed, which `read` could
-    // read anyway; what following them does asks as usual.
+    // Starting a subagent asks nothing, as its tools ask as their own rules
+    // say. Loading a skill only reads instructions the user installed,
+    // which `read` could read anyway; what following them does asks as usual.
     ["read", "list", "search", crate::subagents::TOOL, crate::skills::TOOL]
         .map(|tool| (tool.to_owned(), Permission::Allow))
         .into()
@@ -88,7 +88,7 @@ impl Permissions {
         Self(Mutex::new(self.snapshot()))
     }
 
-    fn allow(&self, tool: &str) {
+    pub fn allow(&self, tool: &str) {
         self.lock().insert(tool.to_owned(), Permission::Allow);
     }
 
@@ -124,24 +124,27 @@ impl Reporter for Run {
 }
 
 /// Lets each tool call through `gate`, then reports it and gates it on its
-/// permission, asking the run's clients when it needs confirming. A call is
-/// reported only once the gate lets it run, so the output a command shows as
-/// it runs is never shown under a call that came after it.
+/// permission, asking the run's clients when it needs confirming. A call
+/// `routes` sends to a client is gated there, by the client's own config.
+/// A call is reported only once the gate lets it run, so the output a
+/// command shows as it runs is never shown under a call that came after it.
 pub struct Approval<R> {
     permissions: Arc<Permissions>,
     reporter: Arc<R>,
     gate: Gate,
+    routes: Arc<Routes>,
     /// Held while a call is reported and decided, so each question shows
     /// right under its own call.
     deciding: tokio::sync::Mutex<()>,
 }
 
 impl<R> Approval<R> {
-    pub fn new(permissions: Arc<Permissions>, reporter: Arc<R>, gate: Gate) -> Self {
+    pub fn new(permissions: Arc<Permissions>, reporter: Arc<R>, gate: Gate, routes: Arc<Routes>) -> Self {
         Self {
             permissions,
             reporter,
             gate,
+            routes,
             deciding: tokio::sync::Mutex::default(),
         }
     }
@@ -174,11 +177,22 @@ impl<R: Reporter> AgentHook for Approval<R> {
 
 impl<R: Reporter> Approval<R> {
     async fn decide(&self, name: &str, args: &str) -> DispatchAction {
+        let target = self.routes.target_of(name, args);
+        let machine = match &target {
+            Ok(Target::Client(machine)) => Some(machine.clone()),
+            _ => None,
+        };
         let call = Event::ToolCall {
             name: name.to_owned(),
             args: args.to_owned(),
+            machine,
         };
         self.reporter.emit(call).await;
+        match target {
+            Ok(Target::Host) => {}
+            Ok(Target::Client(_)) => return DispatchAction::proceed(),
+            Err(error) => return DispatchAction::skip(error),
+        }
         match self.permissions.get(name) {
             Permission::Allow => DispatchAction::proceed(),
             Permission::Deny => {
@@ -192,6 +206,7 @@ impl<R: Reporter> Approval<R> {
                 let ask = Ask::Tool {
                     name: name.to_owned(),
                     agent: None,
+                    machine: None,
                 };
                 match self.reporter.ask(ask).await {
                     Decision::Once => DispatchAction::proceed(),

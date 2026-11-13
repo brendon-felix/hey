@@ -9,22 +9,24 @@ use rig_core::tool::{Tool, ToolContext, ToolErrorKind, ToolExecutionError, args_
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use super::{Assignment, Crew, TOOL, Team};
-use crate::agent;
+use super::{Crew, TOOL, Team, Turn};
 use crate::config::Thinking;
 use crate::host::Run;
 use crate::permissions::Reporter;
-use crate::protocol::{AgentId, Ask, ClientInfo, Decision, Event, Task, TaskResult};
+use crate::protocol::{AgentId, Ask, Decision, Event};
+use crate::route::Kit;
 
 /// Most agents one call starts.
 const MAX_AGENTS: usize = 8;
 
 /// Based on Zed's guidance for its `spawn_agent` tool.
-const GUIDANCE: &str = "Starts subagents: agents that each work on one task in a directory, \
-on this machine or another, and reply with a report. Several tasks in one call run at the same time.
+const GUIDANCE: &str = "Starts subagents: agents that each work on one task with the tools you \
+have, on the same machines, and reply with a report. Several tasks in one call run at the same \
+time.
 
 - A subagent does not see this conversation. Give each a self-contained message with all the \
-context it needs (paths, requirements, constraints) and say what to report.
+context it needs (paths, the machine they are on, requirements, constraints) and say what to \
+report.
 - Delegate concrete, well-scoped tasks that materially advance the main task, not what one or two \
 tool calls would do.
 - Put independent tasks in one call so they run in parallel. Give agents that edit files disjoint \
@@ -32,18 +34,15 @@ sets of files.
 - Do not repeat work you delegated: coordinate, and combine what the agents report.
 - To follow up with an agent, pass its `agent` id and only the new message; it remembers its \
 earlier work.
-- The user may be asked to let an agent into its directory, and may refuse.
 
 You get only each agent's final reply, with its id.";
 
-/// The tool that starts subagents for a run on this host: here, or on the
-/// remote client following the run, which takes up the task itself.
+/// The tool that starts subagents for a run, on the host, with the run's
+/// tools.
 pub struct Spawn {
     pub crew: Arc<Crew>,
     pub team: Arc<Team>,
-    pub run: Arc<Run>,
-    /// The remote client that started the run.
-    pub client: Option<ClientInfo>,
+    pub kit: Kit,
     pub model: String,
     pub thinking: Option<Thinking>,
 }
@@ -63,43 +62,21 @@ pub struct TaskArgs {
     /// What to do. A new agent knows nothing else, so give it all the context it needs; a
     /// follow-up needs only the new message.
     pub message: String,
-    /// The id of an agent from an earlier call, to continue its conversation where it
-    /// works; leave it out to start a new agent.
+    /// The id of an agent from an earlier call, to continue its conversation; leave it out
+    /// to start a new agent.
     #[serde(default)]
     pub agent: Option<String>,
-    /// The machine it works on; default the one you run on.
-    #[serde(default)]
-    pub machine: Option<String>,
-    /// The directory it works in: absolute, `~/...`, or relative to the machine's working
-    /// directory; default the working directory.
-    #[serde(default)]
-    pub directory: Option<String>,
 }
 
 /// How one agent's task went, as the model gets it.
 #[derive(Debug, Serialize)]
 pub struct Report {
-    agent: Option<AgentId>,
+    agent: AgentId,
     label: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     output: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     error: Option<String>,
-}
-
-impl Report {
-    fn new(agent: Option<AgentId>, label: String, result: TaskResult) -> Self {
-        let (output, error) = match result {
-            Ok(output) => (Some(output), None),
-            Err(error) => (None, Some(error)),
-        };
-        Self {
-            agent,
-            label,
-            output,
-            error,
-        }
-    }
 }
 
 impl Tool for Spawn {
@@ -109,11 +86,7 @@ impl Tool for Spawn {
     type Error = ToolExecutionError;
 
     fn description(&self) -> String {
-        let machines: String = self
-            .machines()
-            .map(|(name, directory, role)| format!("\n- `{name}`: {role}; working directory {directory}"))
-            .collect();
-        format!("{GUIDANCE}\n\nMachines:{machines}")
+        GUIDANCE.into()
     }
 
     fn parameters(&self) -> serde_json::Value {
@@ -132,91 +105,58 @@ impl Tool for Spawn {
 }
 
 impl Spawn {
-    /// Each machine an agent can work on: its name, working directory and
-    /// what it is to the model.
-    fn machines(&self) -> impl Iterator<Item = (String, String, &'static str)> {
-        let host = (
-            self.crew.machine().to_owned(),
-            agent::working_directory().display().to_string(),
-            "where you run",
-        );
-        let client = self.client.as_ref().and_then(|client| {
-            let name = client.subagents.clone().filter(|name| name != self.crew.machine())?;
-            let directory = client.machine.cwd.clone().unwrap_or_else(|| "unknown".into());
-            Some((name, directory, "the user's"))
-        });
-        std::iter::once(host).chain(client)
+    async fn start(&self, args: TaskArgs) -> Report {
+        let (agent, result) = match args.agent.map(AgentId) {
+            Some(agent) if !self.team.remembers(&agent) => {
+                let error = format!("no agent `{agent}` in this conversation; leave `agent` out to start one");
+                (agent, Err(error))
+            }
+            named => {
+                let agent = named.unwrap_or_else(AgentId::new);
+                let result = self.work(&agent, &args.label, &args.message).await;
+                (agent, result)
+            }
+        };
+        let (output, error) = match result {
+            Ok(output) => (Some(output), None),
+            Err(error) => (None, Some(error)),
+        };
+        Report {
+            agent,
+            label: args.label,
+            output,
+            error,
+        }
     }
 
-    async fn start(&self, args: TaskArgs) -> Report {
-        let (agent, assignment, follow_up) = match self.assign(&args) {
-            Ok(assigned) => assigned,
-            Err(error) => return Report::new(None, args.label, Err(error)),
-        };
-        self.run.emit(Event::AgentStarted {
+    async fn work(&self, agent: &AgentId, label: &str, message: &str) -> Result<String, String> {
+        let run = &self.kit.run;
+        run.emit(Event::AgentStarted {
             agent: agent.clone(),
-            label: args.label.clone(),
-            machine: assignment.machine.clone(),
-            directory: assignment.directory.clone(),
+            label: label.to_owned(),
         });
-        let task = Task {
-            agent: agent.clone(),
-            label: args.label,
-            machine: assignment.machine,
-            directory: assignment.directory,
-            message: args.message,
-            follow_up,
-            model: self.model.clone(),
+        let turn = Turn {
+            agent,
+            label,
+            message,
+            model: &self.model,
             thinking: self.thinking,
         };
-        let result = match task.machine == self.crew.machine() {
-            true => {
-                let reporter = Tagged {
-                    run: self.run.clone(),
-                    agent: agent.clone(),
-                    label: task.label.clone(),
-                };
-                self.crew.run(&self.team, &task, reporter).await
-            }
-            false => self.run.delegate(task.clone()).await,
+        let reporter = Tagged {
+            run: run.clone(),
+            agent: agent.clone(),
+            label: label.to_owned(),
         };
-        self.run.emit(Event::AgentEnded {
+        let result = self.crew.run(&self.team, &self.kit, turn, reporter).await;
+        run.emit(Event::AgentEnded {
             agent: agent.clone(),
             error: result.as_ref().err().cloned(),
         });
-        Report::new(Some(agent), task.label, result)
-    }
-
-    /// The agent `args` continues, else a new one where they say; and
-    /// whether it continues one.
-    fn assign(&self, args: &TaskArgs) -> Result<(AgentId, Assignment, bool), String> {
-        if let Some(agent) = &args.agent {
-            let agent = AgentId(agent.clone());
-            let assignment = self
-                .team
-                .assignment(&agent)
-                .ok_or_else(|| format!("no agent `{agent}` in this conversation; leave `agent` out to start one"))?;
-            return Ok((agent, assignment, true));
-        }
-        let machine = args
-            .machine
-            .clone()
-            .unwrap_or_else(|| self.crew.machine().to_owned());
-        if !self.machines().any(|(name, ..)| name == machine) {
-            let names: Vec<String> = self.machines().map(|(name, ..)| format!("`{name}`")).collect();
-            return Err(format!("no machine `{machine}`; use {}", names.join(" or ")));
-        }
-        let assignment = Assignment {
-            machine,
-            directory: args.directory.clone(),
-        };
-        let agent = AgentId::new();
-        self.team.assign(agent.clone(), assignment.clone());
-        Ok((agent, assignment, false))
+        result
     }
 }
 
-/// Shows a subagent on this host as part of its parent's run.
+/// Shows a subagent as part of its parent's run.
 struct Tagged {
     run: Arc<Run>,
     agent: AgentId,
@@ -232,21 +172,18 @@ impl Reporter for Tagged {
     }
 
     async fn ask(&self, ask: Ask) -> Decision {
-        self.run.ask(labelled(ask, &self.label)).await
+        let ask = match ask {
+            Ask::Tool { name, machine, .. } => Ask::Tool {
+                name,
+                agent: Some(self.label.clone()),
+                machine,
+            },
+            directory => directory,
+        };
+        self.run.ask(ask).await
     }
 
     async fn stop(&self) {
         self.run.stop();
-    }
-}
-
-/// `ask`, saying which subagent's tool call it is about.
-pub fn labelled(ask: Ask, label: &str) -> Ask {
-    match ask {
-        Ask::Tool { name, .. } => Ask::Tool {
-            name,
-            agent: Some(label.to_owned()),
-        },
-        directory => directory,
     }
 }

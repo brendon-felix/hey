@@ -7,7 +7,8 @@ use std::fmt;
 use std::path::Path;
 use std::time::Duration;
 
-use rig_core::message::{Message, ToolResult};
+use rig_core::completion::ToolDefinition;
+use rig_core::message::{Message, ToolResult, ToolResultContent};
 use serde::{Deserialize, Serialize};
 
 use crate::config::Thinking;
@@ -26,6 +27,9 @@ pub enum Event {
         /// that joins late keeps the same clock as one that was there.
         #[serde(default)]
         elapsed: Duration,
+        /// This view, when its client runs tool calls for the host.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        follower: Option<FollowerId>,
     },
     Text {
         text: String,
@@ -52,6 +56,9 @@ pub enum Event {
     ToolCall {
         name: String,
         args: String,
+        /// The remote client it runs on; `None` is the host.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        machine: Option<String>,
     },
     /// A piece of a running command's output.
     Output {
@@ -79,10 +86,6 @@ pub enum Event {
     AgentStarted {
         agent: AgentId,
         label: String,
-        machine: String,
-        /// As the parent asked for it; `None` is the machine's working
-        /// directory.
-        directory: Option<String>,
     },
     /// Something a subagent did, shown as part of its parent's run.
     Agent {
@@ -93,14 +96,15 @@ pub enum Event {
         agent: AgentId,
         error: Option<String>,
     },
-    /// A subagent's task waits for a client on `task.machine` to run it.
-    Delegated {
-        id: DelegationId,
-        task: Task,
+    /// A tool call for a client on `call.machine` to run, which fails at
+    /// once when none follows the run.
+    ClientCall {
+        id: CallId,
+        call: Call,
     },
-    /// A client took up the delegated task.
+    /// A client took up the tool call.
     Claimed {
-        id: DelegationId,
+        id: CallId,
     },
     /// Tokens the last model call took in and gave back: how full the
     /// context is.
@@ -131,13 +135,15 @@ pub struct ApprovalId(pub u64);
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Ask {
     /// Whether a tool call may run; `agent` is the label of the subagent
-    /// making it.
+    /// making it, `machine` the remote client it runs on.
     Tool {
         name: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         agent: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        machine: Option<String>,
     },
-    /// Whether subagents may work in `path` on `machine`.
+    /// Whether the host's agents may use `path` on the client `machine`.
     Directory { machine: String, path: String },
 }
 
@@ -162,34 +168,49 @@ impl fmt::Display for AgentId {
     }
 }
 
+/// The header a client names its machine by, so the host knows which runs
+/// it follows can call its tools.
+pub const MACHINE_HEADER: &str = "x-hey-machine";
+
+/// A tool call a remote client runs on its own machine for the host.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(transparent)]
-pub struct DelegationId(pub u64);
+pub struct CallId(pub u64);
 
-impl fmt::Display for DelegationId {
+impl fmt::Display for CallId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         self.0.fmt(f)
     }
 }
 
-/// A turn of a subagent's conversation, run on `machine`.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Task {
-    pub agent: AgentId,
-    pub label: String,
+/// One client's view of a run: the events stream it follows, which the
+/// tool calls it takes up are tied to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct FollowerId(pub u64);
+
+/// A tool call for a client on `machine` to run.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Call {
     pub machine: String,
-    /// Absolute, `~/`, or relative to the machine's working directory;
-    /// `None` is the working directory itself.
-    pub directory: Option<String>,
-    pub message: String,
-    /// Whether it continues the agent's earlier conversation.
-    pub follow_up: bool,
-    pub model: String,
-    pub thinking: Option<Thinking>,
+    pub tool: String,
+    /// The call's arguments, as JSON.
+    pub args: String,
+    /// The label of the subagent making it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent: Option<String>,
 }
 
-/// The subagent's final reply, or why it has none.
-pub type TaskResult = Result<String, String>;
+/// What a client's tool call gave, or why it gave nothing.
+pub type CallResult = Result<Vec<ToolResultContent>, String>;
+
+/// The tools a remote client offers the host's agents, on its machine.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Lent {
+    /// The machine's name, as the model and `[machines]` rules know it.
+    pub machine: String,
+    pub tools: Vec<ToolDefinition>,
+}
 
 /// One run, distinct from every other on the host, even across restarts.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -282,10 +303,9 @@ pub struct ClientInfo {
     pub machine: Machine,
     pub remote: String,
     pub url: String,
-    /// The machine name subagents on the client run under, when it runs
-    /// them; its `[subagents.machines]` rules are keyed by it.
+    /// The tools the client runs for the host's agents, when it lends any.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub subagents: Option<String>,
+    pub lent: Option<Lent>,
 }
 
 /// A file or directory a mention attaches, as read where it was found, by
@@ -362,8 +382,7 @@ pub enum ThreadStatus {
     /// An answer ended that no client has shown yet.
     Unseen,
     Running,
-    /// The run waits for a client to approve something, or to take up a
-    /// subagent's task.
+    /// The run waits for a client to approve something.
     Asking,
 }
 

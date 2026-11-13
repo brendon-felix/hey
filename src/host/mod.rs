@@ -20,24 +20,24 @@ use rig_tools::{Live, Seen};
 use tokio::sync::watch;
 use tokio_util::task::TaskTracker;
 
-use crate::agent::{self, Model, Place};
+use crate::agent::{self, Model};
 use crate::config::{Config, Providers};
 use crate::gate;
-use crate::mcp;
 use crate::memory::{self, Memory, Recalled};
 use crate::permissions::{Origin, Permissions};
 use crate::preamble::{Hosting, Setting};
 use crate::protocol::{
-    Activities, Activity, ApprovalId, Ask, Decision, Defaults, DelegationId, Ending, Event,
-    Machine, ModelInfo, Revision, RunId, RunRequest, ServerReport, Snapshot, TaskResult, ThreadInfo,
+    Activities, Activity, ApprovalId, Ask, CallId, CallResult, Decision, Defaults, Ending, Event,
+    FollowerId, Machine, ModelInfo, Revision, RunId, RunRequest, Snapshot, ThreadInfo,
     ThreadStatus, Tools,
 };
 use crate::render;
 use crate::results::ResultLimit;
+use crate::route::Kit;
 use crate::sessions::{Mark, SessionId, Sessions, Summary};
 use crate::skills::{self, Found};
 use crate::subagents::{self, Crew, Spawn};
-use crate::web::Web;
+use crate::toolbox::{Toolbox, machine_name};
 
 pub use run::Run;
 
@@ -55,12 +55,14 @@ pub struct Host {
     hosting: Hosting,
     /// This machine, as the model is told of it.
     machine: Machine,
+    /// This machine's name, as calls name it.
+    name: String,
     defaults: Defaults,
     system_prompt: String,
     max_turns: usize,
     max_tokens: Option<u64>,
     result_bytes: usize,
-    web: Web,
+    toolbox: Arc<Toolbox>,
     providers: Providers,
     sessions: Sessions,
     /// The repository `@shared:` mentions attach from.
@@ -68,8 +70,6 @@ pub struct Host {
     memory: Option<Memory>,
     /// The last time memory failed, until a client is told.
     memory_failure: Mutex<Option<String>>,
-    mcp: Vec<mcp::Tool>,
-    servers: Vec<ServerReport>,
     permissions: Permissions,
     /// Runs subagents here, when the config offers them.
     crew: Option<Arc<Crew>>,
@@ -132,20 +132,16 @@ impl Host {
     /// Opens the sessions store and connects every MCP server.
     pub async fn new(config: &Config, hosting: Hosting) -> Result<Self> {
         let sessions = Sessions::open(config.sessions.dir()?)?;
-        let (mcp, servers) = connect_mcp(config).await;
-        let crew = match config.subagents.enabled {
-            true => Some(Arc::new(Crew::new(config)?)),
-            false => None,
-        };
-        let web = Web::new(config.tools.result_bytes)?;
-        let spawn = crew.as_ref().map(|_| (subagents::TOOL, &Origin::Builtin));
-        let builtin = agent::builtin_tools(&web).map(|name| (name, &Origin::Builtin));
-        let external = mcp.iter().map(|tool| (tool.name.as_str(), &tool.origin));
-        let tools = builtin.chain(spawn).chain(external);
-        let permissions = Permissions::resolve(tools, &config.tools);
+        let toolbox = Toolbox::new(config).await?;
+        let crew = config.subagents.enabled.then(|| Arc::new(Crew::new(config)));
+        let spawn = crew.as_ref().map(|_| subagents::TOOL);
+        let host_only = std::iter::once(skills::TOOL).chain(spawn);
+        let host_only = host_only.map(|name| (name, &Origin::Builtin));
+        let permissions = Permissions::resolve(toolbox.origins().chain(host_only), &config.tools);
         Ok(Self {
             hosting,
             machine: Machine::here(config.file.as_deref()),
+            name: machine_name(),
             defaults: Defaults {
                 model: config.model.clone(),
                 thinking: config.thinking,
@@ -157,14 +153,12 @@ impl Host {
             max_turns: config.max_turns,
             max_tokens: config.max_tokens,
             result_bytes: config.tools.result_bytes,
-            web,
+            toolbox: Arc::new(toolbox),
             providers: config.providers.clone(),
             sessions,
             shared: config.shared.dir()?,
             memory: Memory::open(&config.memory, &config.providers)?,
             memory_failure: Mutex::default(),
-            mcp,
-            servers,
             permissions,
             crew,
             subagent_model: config.subagents.model.clone(),
@@ -266,7 +260,9 @@ impl Host {
         Ok(())
     }
 
-    pub fn open(&self, id: &SessionId) -> Result<Opened> {
+    /// The thread as saved and its run's events; a client on `machine`
+    /// that runs tool calls follows the run while it holds them.
+    pub fn open(&self, id: &SessionId, machine: Option<String>) -> Result<Opened> {
         let threads = self.lock();
         let run = threads.get(id).and_then(|thread| thread.run.clone());
         let mut messages = self.sessions.messages(id)?;
@@ -279,16 +275,18 @@ impl Host {
                 messages,
                 running: run.as_ref().map(|run| run.running()),
             },
-            events: run.map(|run| run.events().boxed()),
+            events: run.map(|run| run.events(machine).boxed()),
         })
     }
 
-    /// Starts answering `request` in thread `id`, returning the run's events.
+    /// Starts answering `request` in thread `id`, returning the run's events,
+    /// which a client on `machine` that runs tool calls follows the run by.
     /// A thread new to this host first recalls what it should know.
     pub async fn start(
         self: &Arc<Self>,
         id: SessionId,
         request: RunRequest,
+        machine: Option<String>,
     ) -> Result<Events, ThreadError> {
         let model = Model::connect(&request.options.model, &self.providers)
             .map_err(ThreadError::Other)?;
@@ -326,7 +324,7 @@ impl Host {
         }
         let skills = self.skills();
         let agent = self.agent(&id, thread, &model, &request, &skills, &run);
-        let events = run.events().boxed();
+        let events = run.events(machine).boxed();
         thread.run = Some(run.clone());
         thread.last = Some(run.id());
         self.publish(&threads);
@@ -347,45 +345,42 @@ impl Host {
         self.run(id).inspect(|run| run.stop()).is_some()
     }
 
-    /// Takes up a subagent's task for a client; false when another took it
-    /// first, or it is no longer waited for.
-    pub fn claim(&self, id: &SessionId, delegation: DelegationId) -> bool {
-        self.run(id).is_some_and(|run| run.claim(delegation))
+    /// Takes up call `call` for `follower`; false when another client took
+    /// it first, or it is no longer waited for.
+    pub fn claim(&self, id: &SessionId, call: CallId, follower: FollowerId) -> bool {
+        self.run(id).is_some_and(|run| run.claim(call, follower))
     }
 
-    /// Shows `event` of a client's subagent as part of the run; false when
-    /// the task is no longer waited for.
-    pub fn delegated_event(&self, id: &SessionId, delegation: DelegationId, event: Event) -> bool {
+    /// Shows `event` of a client's call as part of the run, under the
+    /// subagent making it; false when the call is no longer waited for.
+    pub fn call_event(&self, id: &SessionId, call: CallId, event: Event) -> bool {
         let Some(run) = self.run(id) else {
             return false;
         };
-        let Some(claimed) = run.claimed(delegation) else {
+        let Some(claimed) = run.claimed(call) else {
             return false;
         };
-        run.emit(Event::Agent {
-            agent: claimed.agent,
-            step: Box::new(event),
+        run.emit(match claimed.agent {
+            Some(agent) => Event::Agent {
+                agent,
+                step: Box::new(event),
+            },
+            None => event,
         });
         true
     }
 
-    /// Asks the run's clients `ask` for a client's subagent; `None` when the
-    /// task is no longer waited for.
-    pub async fn delegated_ask(
-        &self,
-        id: &SessionId,
-        delegation: DelegationId,
-        ask: Ask,
-    ) -> Option<Decision> {
+    /// Asks the run's clients `ask` for a client's call; `None` when the
+    /// call is no longer waited for.
+    pub async fn call_ask(&self, id: &SessionId, call: CallId, ask: Ask) -> Option<Decision> {
         let run = self.run(id)?;
-        let claimed = run.claimed(delegation)?;
-        Some(run.ask(subagents::labelled(ask, &claimed.label)).await)
+        run.claimed(call)?;
+        Some(run.ask(ask).await)
     }
 
-    /// Ends a client's subagent task; false when it was not waited for.
-    pub fn finish(&self, id: &SessionId, delegation: DelegationId, result: TaskResult) -> bool {
-        self.run(id)
-            .is_some_and(|run| run.finish(delegation, result))
+    /// Ends a client's call; false when it was not waited for.
+    pub fn finish(&self, id: &SessionId, call: CallId, result: CallResult) -> bool {
+        self.run(id).is_some_and(|run| run.finish(call, result))
     }
 
     pub fn tools(&self, id: &SessionId) -> Tools {
@@ -395,7 +390,7 @@ impl Host {
         };
         Tools {
             permissions,
-            servers: self.servers.clone(),
+            servers: self.toolbox.servers().to_vec(),
         }
     }
 
@@ -472,17 +467,15 @@ impl Host {
             memories: self.memory.as_ref().map(Memory::file),
             skills: &skills.roots,
             spill: spill.as_deref(),
-            subagents: self.crew.is_some(),
         };
-        let builder = agent::builder(
-            model,
-            &thread.seen,
-            Place::here(live),
-            &self.web,
-            thread.permissions.clone(),
-            run.clone(),
-        )
-        .dynamic_tools(self.mcp.iter().map(|tool| tool.tool.clone()).collect())
+        let kit = Kit {
+            toolbox: self.toolbox.clone(),
+            host: self.name.clone(),
+            lent: request.client.as_ref().and_then(|client| client.lent.clone()),
+            run: run.clone(),
+        };
+        let (tools, routes) = kit.tools(&thread.seen, Some(live), None);
+        let builder = agent::builder(model, tools, routes, thread.permissions.clone(), run.clone())
         .name("hey")
         .preamble(system_prompt)
         .append_preamble(&setting.render());
@@ -495,7 +488,7 @@ impl Host {
                 spill: agent::spill(),
             });
         if let Some(crew) = &self.crew {
-            builder = builder.tool(self.spawn(crew, id, thread, request, run));
+            builder = builder.tool(self.spawn(crew, id, thread, request, kit));
         }
         if let Some(memories) = memory::preamble(&thread.memories) {
             builder = builder.append_preamble(&memories);
@@ -506,21 +499,14 @@ impl Host {
         builder.build()
     }
 
-    /// The tool that starts subagents for `run`, sharing the thread's tool
-    /// permissions, on the model the config gives them or the run's.
-    fn spawn(
-        &self,
-        crew: &Arc<Crew>,
-        id: &SessionId,
-        thread: &Thread,
-        request: &RunRequest,
-        run: &Arc<Run>,
-    ) -> Spawn {
+    /// The tool that starts subagents with the run's tools, sharing the
+    /// thread's tool permissions, on the model the config gives them or the
+    /// run's.
+    fn spawn(&self, crew: &Arc<Crew>, id: &SessionId, thread: &Thread, request: &RunRequest, kit: Kit) -> Spawn {
         Spawn {
             crew: crew.clone(),
-            team: crew.team(id, Some(thread.permissions.clone())),
-            run: run.clone(),
-            client: request.client.clone(),
+            team: crew.team(id, thread.permissions.clone()),
+            kit,
             model: self
                 .subagent_model
                 .clone()
@@ -701,28 +687,4 @@ impl Host {
     fn lock(&self) -> MutexGuard<'_, HashMap<SessionId, Thread>> {
         self.threads.lock().unwrap_or_else(PoisonError::into_inner)
     }
-}
-
-/// The tools of every server that connected, and how each connection went.
-async fn connect_mcp(config: &Config) -> (Vec<mcp::Tool>, Vec<ServerReport>) {
-    let mut tools = Vec::new();
-    let mut reports = Vec::new();
-    for server in mcp::connect_all(&config.mcp_servers).await {
-        let outcome = server.tools.map(|server_tools| {
-            let count = server_tools.len();
-            tools.extend(server_tools);
-            count
-        });
-        if let Err(error) = &outcome {
-            render::notice(&format!(
-                "MCP server `{}` unavailable: {error:#}",
-                server.name
-            ));
-        }
-        reports.push(ServerReport {
-            name: server.name,
-            tools: outcome.map_err(|error| format!("{error:#}")),
-        });
-    }
-    (tools, reports)
 }

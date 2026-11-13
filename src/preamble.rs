@@ -47,8 +47,6 @@ pub struct Setting<'a> {
     pub skills: &'a [(Source, PathBuf)],
     /// Where tools keep whole the output they cut.
     pub spill: Option<&'a Path>,
-    /// Whether the agent can start subagents.
-    pub subagents: bool,
 }
 
 impl Setting<'_> {
@@ -148,7 +146,7 @@ impl Setting<'_> {
             ),
             Hosting::Served { listen } => format!(
                 "You run on a hey host, {host}, served by `hey --serve` listening on {listen}. \
-                 Your tools act on the host, from {cwd}, not on the user's machine."
+                 Your tools act on the host, from {cwd}, unless a call names the user's machine."
             ),
         }
     }
@@ -157,17 +155,19 @@ impl Setting<'_> {
         let unreachable = "You cannot reach files on their machine; those they mention with `@` \
                            arrive attached to their message.";
         match (self.hosting, self.client) {
-            (_, Some(ClientInfo { machine, remote, url, subagents })) => {
+            (_, Some(ClientInfo { machine, remote, url, lent })) => {
                 let cwd = machine
                     .cwd
                     .as_deref()
                     .map(|cwd| format!(", working in {cwd},"))
                     .unwrap_or_default();
-                let reach = match subagents.as_deref().filter(|_| self.subagents) {
-                    Some(name) => format!(
-                        "Your own tools cannot reach files on their machine, but subagents you \
-                         start on machine `{name}` can; files they mention with `@` arrive \
-                         attached to their message."
+                let reach = match lent {
+                    Some(lent) => format!(
+                        "Tools with a `machine` argument also run on their machine, `{}`, \
+                         while they have this conversation open there, and tools described as \
+                         running there run only there; files they mention with `@` arrive \
+                         attached to their message.",
+                        lent.machine
                     ),
                     None => unreachable.to_owned(),
                 };

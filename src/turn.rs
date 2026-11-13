@@ -12,7 +12,7 @@ use tokio::time::MissedTickBehavior;
 use crate::backend::{Backend, Events};
 use crate::mention;
 use crate::protocol::{
-    AgentId, ApprovalId, Ask, Attachment, Ending, Event, RunId, RunOptions, RunRequest,
+    AgentId, ApprovalId, Ask, Attachment, Ending, Event, FollowerId, RunId, RunOptions, RunRequest,
 };
 use crate::render::{self, Stream, Style};
 use crate::sessions::SessionId;
@@ -132,6 +132,8 @@ struct Seen {
     saved: Option<usize>,
     /// The labels of the run's subagents, which their events are shown under.
     agents: HashMap<AgentId, String>,
+    /// This terminal's view of the run, when it runs tool calls for the host.
+    follower: Option<FollowerId>,
 }
 
 impl Seen {
@@ -155,8 +157,8 @@ async fn show(
     frames.set_missed_tick_behavior(MissedTickBehavior::Skip);
     // What arrived while an approval was asked, shown once it is decided.
     let mut held = VecDeque::new();
-    // Subagents this machine runs for the run, stopped if it is let go.
-    let mut delegated = JoinSet::new();
+    // Tool calls this machine runs for the run, stopped if it is let go.
+    let mut lent_calls = JoinSet::new();
     loop {
         let event = match held.pop_front() {
             Some(received) => received,
@@ -182,8 +184,13 @@ async fn show(
             }
         };
         match event {
-            Event::Began { run, elapsed } => {
+            Event::Began {
+                run,
+                elapsed,
+                follower,
+            } => {
                 seen.run = Some(run);
+                seen.follower = follower;
                 stream.began(elapsed);
             }
             Event::Text { text } => stream.text(text),
@@ -199,19 +206,15 @@ async fn show(
                 stream.settle();
                 held.extend(approve(backend, thread, events, id, &ask).await);
             }
-            Event::Delegated { id, task } => {
-                if let Some(task) = backend.take_up(thread, id, task) {
-                    delegated.spawn(task);
+            Event::ClientCall { id, call } => {
+                let lent = seen.follower.and_then(|follower| backend.lend(thread, follower, id, call));
+                if let Some(call) = lent {
+                    lent_calls.spawn(call);
                 }
             }
-            Event::AgentStarted {
-                agent,
-                label,
-                machine,
-                directory,
-            } => {
+            Event::AgentStarted { agent, label } => {
                 stream.settle();
-                render::agent_started(&label, &machine, directory.as_deref());
+                render::agent_started(&label);
                 seen.agents.insert(agent, label);
             }
             Event::Agent { agent, step } => {
@@ -280,7 +283,11 @@ async fn approve(
 /// ended if it did: only its end returns an outcome.
 fn report(event: Event, style: &Style) -> Option<Outcome> {
     match event {
-        Event::ToolCall { name, args } => render::tool_call(&name, &args, style.tool_output),
+        Event::ToolCall {
+            name,
+            args,
+            machine,
+        } => render::tool_call(&name, &args, machine.as_deref(), style.tool_output),
         Event::ToolResult { result } => render::tool_result(&result),
         Event::Notice { text } => render::notice(&text),
         Event::Attached { name } => render::attached(&name),
@@ -308,7 +315,7 @@ fn report(event: Event, style: &Style) -> Option<Outcome> {
         | Event::AgentStarted { .. }
         | Event::Agent { .. }
         | Event::AgentEnded { .. }
-        | Event::Delegated { .. }
+        | Event::ClientCall { .. }
         | Event::Claimed { .. } => {}
     }
     None
