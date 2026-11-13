@@ -56,7 +56,8 @@ enum Ending<'a> {
     Interrupted,
     /// The reasoning it shows took this long.
     Thought(Duration),
-    /// The result of the call it belongs to, which its marker sums up.
+    /// The result of the call it belongs to, which came to this where the
+    /// box does not show it.
     Answered(&'a str),
 }
 
@@ -279,11 +280,20 @@ impl Stream {
             true => text.lines().next().unwrap_or("failed").to_owned(),
             false => tool::summary(&text),
         };
-        let own_box = !result.is_error
-            && matches!(placement, Placement::Under)
-            && self.preview.as_ref().is_some_and(|preview| matches!(preview.source(), Source::Command | Source::Changes));
-        if own_box {
-            self.end_preview(Ending::Answered(&summary));
+        let own_box = match &self.preview {
+            Some(preview) if !result.is_error && matches!(placement, Placement::Under) => {
+                Some(preview.source()).filter(|source| matches!(source, Source::Command | Source::Changes))
+            }
+            _ => None,
+        };
+        if let Some(source) = own_box {
+            // A command's box shows what its result holds; what a file's
+            // changes came to shows nowhere else.
+            let outcome = match source {
+                Source::Changes => summary.as_str(),
+                _ => "",
+            };
+            self.end_preview(Ending::Answered(outcome));
             return self.flush();
         }
         self.settle();
@@ -315,7 +325,7 @@ impl Stream {
                 preview.label(called.clone().unwrap_or_default());
                 preview.push(given);
                 self.preview = Some(preview);
-                return self.end_preview(Ending::Answered(&summary));
+                return self.end_preview(Ending::Answered(""));
             }
             Output::Full if !shown => {
                 given.lines().for_each(|text| println!("{}", line(Mark::Printed, text)));

@@ -92,13 +92,33 @@ impl Preview {
         }
     }
 
-    /// The box, `width` columns wide, with `bottom` set in its lower border.
-    /// Reasoning has a row to itself above it, as text the reply begins.
-    pub fn framed(&self, width: usize, bottom: &str) -> Vec<String> {
-        let framed = framed(&self.label, self.rows(inner(width)), bottom, width);
+    /// The box, `width` columns wide. Its lower border says how many lines
+    /// it leaves out, then `outcome`. Reasoning has a row to itself above
+    /// it, as text the reply begins.
+    pub fn framed(&self, width: usize, outcome: &str) -> Vec<String> {
+        let bottom = [self.left_out(), outcome.to_owned()]
+            .into_iter()
+            .filter(|part| !part.is_empty())
+            .collect::<Vec<_>>()
+            .join(" · ");
+        let framed = framed(&self.label, self.rows(inner(width)), &bottom, width);
         match self.source {
             Source::Reasoning => std::iter::once(String::new()).chain(framed).collect(),
             _ => framed,
+        }
+    }
+
+    /// How many of the lines it was given it leaves out, where they are
+    /// counted: reasoning's rows are wrapped, and subagents' steps go on.
+    fn left_out(&self) -> String {
+        let more = match self.source {
+            Source::Command | Source::Changes | Source::Returned => self.total - self.lines.len(),
+            Source::Reasoning | Source::Agents => 0,
+        };
+        match more {
+            0 => String::new(),
+            1 => "1 more line".to_owned(),
+            more => format!("{more} more lines"),
         }
     }
 
@@ -117,16 +137,7 @@ impl Preview {
                 .flat_map(|line| reasoning(&line, width))
                 .collect(),
         };
-        if self.source.keeps_first() {
-            let more = self.total - self.lines.len();
-            if more > 0 {
-                let muted = Style::new().fg(palette().muted.into());
-                let lines = if more == 1 { "line" } else { "lines" };
-                rows.push(Row::new(&[(&format!("… {more} more {lines}"), muted)]));
-            }
-        } else {
-            rows.drain(..rows.len().saturating_sub(PREVIEW_LINES));
-        }
+        rows.drain(..rows.len().saturating_sub(PREVIEW_LINES));
         rows
     }
 }
@@ -367,12 +378,12 @@ mod tests {
     }
 
     #[test]
-    fn previews_the_first_lines_given_back_over_the_result() {
+    fn previews_the_first_lines_given_back_and_counts_the_rest_below() {
         yansi::disable();
         let mut preview = Preview::new(Source::Returned);
         preview.label("read a.rs".into());
         preview.push("1\n2\n3\n4\n5\n6\n7");
-        let framed = preview.framed(22, "7 lines");
+        let framed = preview.framed(22, "");
         assert_eq!(
             framed,
             [
@@ -382,11 +393,14 @@ mod tests {
                 "  │ 3                │",
                 "  │ 4                │",
                 "  │ 5                │",
-                "  │ … 2 more lines   │",
-                "  ╰─ 7 lines ────────╯",
+                "  ╰─ 2 more lines ───╯",
             ]
         );
         assert!(framed.iter().all(|row| display_width(row) == 22));
+        let mut changes = Preview::new(Source::Changes);
+        changes.push("+ a\n");
+        let bottom = changes.framed(30, "wrote 1 line").pop().unwrap();
+        assert!(bottom.starts_with("  ╰─ wrote 1 line ─") && display_width(&bottom) == 30);
     }
 
     #[test]
