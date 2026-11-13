@@ -378,8 +378,10 @@ pub struct Tools {
     pub default: Permission,
     #[serde(deserialize_with = "over_default_rules")]
     pub permissions: BTreeMap<String, Permission>,
-    /// Most bytes of an MCP tool's result the model reads.
-    pub mcp_result_bytes: usize,
+    /// Most bytes of a result from an MCP tool, `fetch` or `web_search` the
+    /// model reads.
+    #[serde(alias = "mcp_result_bytes")]
+    pub result_bytes: usize,
 }
 
 impl Default for Tools {
@@ -388,7 +390,7 @@ impl Default for Tools {
             allow_all: false,
             default: Permission::Confirm,
             permissions: permissions::default_rules(),
-            mcp_result_bytes: 16 * 1024,
+            result_bytes: 16 * 1024,
         }
     }
 }
@@ -680,6 +682,9 @@ mod tests {
             model = "anthropic/claude-opus-5-5"
             thinking = "high"
 
+            [tools]
+            mcp_result_bytes = 8192
+
             [tools.permissions]
             shell = "allow"
             "mcp:github" = "deny"
@@ -698,6 +703,7 @@ mod tests {
         .unwrap();
 
         assert_eq!(config.tools.default, Permission::Confirm);
+        assert_eq!(config.tools.result_bytes, 8192);
         assert_eq!(config.thinking, Some(Thinking::High));
         assert_eq!(config.tools.permissions["read"], Permission::Allow);
         assert_eq!(config.tools.permissions["shell"], Permission::Allow);
@@ -729,7 +735,7 @@ mod tests {
         assert_eq!(documented.tools.allow_all, built_in.tools.allow_all);
         assert_eq!(documented.tools.default, built_in.tools.default);
         assert_eq!(documented.tools.permissions, built_in.tools.permissions);
-        assert_eq!(documented.tools.mcp_result_bytes, built_in.tools.mcp_result_bytes);
+        assert_eq!(documented.tools.result_bytes, built_in.tools.result_bytes);
         assert_eq!(documented.subagents.enabled, built_in.subagents.enabled);
         assert_eq!(documented.subagents.model, built_in.subagents.model);
         assert_eq!(documented.server.listen, built_in.server.listen);

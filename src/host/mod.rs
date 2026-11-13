@@ -20,7 +20,7 @@ use rig_tools::{Live, Seen};
 use tokio::sync::watch;
 use tokio_util::task::TaskTracker;
 
-use crate::agent::{self, BUILTIN_TOOLS, Model, Place};
+use crate::agent::{self, Model, Place};
 use crate::config::{Config, Providers};
 use crate::mcp;
 use crate::memory::{self, Memory, Recalled};
@@ -32,9 +32,11 @@ use crate::protocol::{
     ThreadStatus, Tools,
 };
 use crate::render;
+use crate::results::ResultLimit;
 use crate::sessions::{Mark, SessionId, Sessions, Summary};
 use crate::skills::{self, Found};
 use crate::subagents::{self, Crew, Spawn};
+use crate::web::Web;
 
 pub use run::Run;
 
@@ -56,7 +58,8 @@ pub struct Host {
     system_prompt: String,
     max_turns: usize,
     max_tokens: Option<u64>,
-    mcp_result_bytes: usize,
+    result_bytes: usize,
+    web: Web,
     providers: Providers,
     sessions: Sessions,
     /// The repository `@shared:` mentions attach from.
@@ -133,10 +136,11 @@ impl Host {
             true => Some(Arc::new(Crew::new(config)?)),
             false => None,
         };
+        let web = Web::new(config.tools.result_bytes)?;
         let spawn = crew.as_ref().map(|_| (subagents::TOOL, &Origin::Builtin));
-        let builtin = BUILTIN_TOOLS.map(|name| (name, &Origin::Builtin));
+        let builtin = agent::builtin_tools(&web).map(|name| (name, &Origin::Builtin));
         let external = mcp.iter().map(|tool| (tool.name.as_str(), &tool.origin));
-        let tools = builtin.into_iter().chain(spawn).chain(external);
+        let tools = builtin.chain(spawn).chain(external);
         let permissions = Permissions::resolve(tools, &config.tools);
         Ok(Self {
             hosting,
@@ -151,7 +155,8 @@ impl Host {
                 .unwrap_or_else(|| agent::DEFAULT_SYSTEM_PROMPT.into()),
             max_turns: config.max_turns,
             max_tokens: config.max_tokens,
-            mcp_result_bytes: config.tools.mcp_result_bytes,
+            result_bytes: config.tools.result_bytes,
+            web,
             providers: config.providers.clone(),
             sessions,
             shared: config.shared.dir()?,
@@ -459,7 +464,7 @@ impl Host {
             spill: spill.as_deref(),
             subagents: self.crew.is_some(),
         };
-        let builder = agent::builder(model, &thread.seen, Place::here(live))
+        let builder = agent::builder(model, &thread.seen, Place::here(live), &self.web)
             .dynamic_tools(self.mcp.iter().map(|tool| tool.tool.clone()).collect())
             .name("hey")
             .preamble(system_prompt)
@@ -472,8 +477,8 @@ impl Host {
                 permissions: thread.permissions.clone(),
                 reporter: run.clone(),
             })
-            .add_hook(mcp::ResultLimit {
-                bytes: self.mcp_result_bytes,
+            .add_hook(ResultLimit {
+                bytes: self.result_bytes,
                 spill: agent::spill(),
             });
         if let Some(crew) = &self.crew {

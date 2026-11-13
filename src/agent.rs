@@ -20,6 +20,7 @@ use rig_tools::{Delete, Edit, List, Live, Move, Read, Search, Seen, Shell, Spill
 use crate::config::{self, Providers};
 use crate::protocol::ModelInfo;
 use crate::skills;
+use crate::web::Web;
 
 pub const DEFAULT_SYSTEM_PROMPT: &str = "You are hey, an assistant in the user's terminal. \
 Use your tools to read, search and edit files and to run commands whenever the answer depends \
@@ -34,19 +35,24 @@ const SUMMARY_PROMPT: &str = "Generate a detailed summary of this conversation. 
 4. Any action items or next steps if any
 Format it in Markdown with headings and bullet points.";
 
-/// The tools every agent has, by the names their permissions are keyed by;
-/// `skill` is offered only when there are skills to load.
-pub const BUILTIN_TOOLS: [&str; 9] = [
-    Read::NAME,
-    List::NAME,
-    Search::NAME,
-    Write::NAME,
-    Edit::NAME,
-    Move::NAME,
-    Delete::NAME,
-    Shell::NAME,
-    skills::TOOL,
-];
+/// The tools every agent has, by the names their permissions are keyed by:
+/// `skill` is offered only when there are skills to load, and the web tools
+/// as `web` offers them.
+pub fn builtin_tools(web: &Web) -> impl Iterator<Item = &'static str> {
+    [
+        Read::NAME,
+        List::NAME,
+        Search::NAME,
+        Write::NAME,
+        Edit::NAME,
+        Move::NAME,
+        Delete::NAME,
+        Shell::NAME,
+        skills::TOOL,
+    ]
+    .into_iter()
+    .chain(web.tools())
+}
 
 /// A completion model named by its catalog reference, `vendor/model`.
 #[derive(Clone)]
@@ -151,10 +157,11 @@ impl Place {
     }
 }
 
-/// An agent on `model` with the built-in tools, working in `place`. `edit`
-/// and `write` refuse to clobber a file changed since `read` saw it, which
-/// takes all three sharing what was `seen`.
-pub fn builder(model: &Model, seen: &Seen, place: Place) -> AgentBuilder {
+/// An agent on `model` with the built-in tools, working in `place` and
+/// reading the web through `web`. `edit` and `write` refuse to clobber a
+/// file changed since `read` saw it, which takes all three sharing what was
+/// `seen`.
+pub fn builder(model: &Model, seen: &Seen, place: Place, web: &Web) -> AgentBuilder {
     let Place {
         workspace,
         base,
@@ -173,7 +180,7 @@ pub fn builder(model: &Model, seen: &Seen, place: Place) -> AgentBuilder {
         confine,
         ..Shell::default()
     };
-    AgentBuilder::new(model.inner.clone())
+    let builder = AgentBuilder::new(model.inner.clone())
         .tool(Read {
             workspace: workspace.clone(),
             base: base.clone(),
@@ -213,6 +220,11 @@ pub fn builder(model: &Model, seen: &Seen, place: Place) -> AgentBuilder {
             confine,
         })
         .tool(shell)
+        .tool(web.fetch());
+    match web.search() {
+        Some(search) => builder.tool(search),
+        None => builder,
+    }
 }
 
 /// Where tools keep whole the output they cut.

@@ -1,5 +1,5 @@
 /* -------------------------------------------------------------------------- */
-/*                              mcp/results.rs                                */
+/*                                 results.rs                                 */
 /* -------------------------------------------------------------------------- */
 
 use std::io::{self, Write};
@@ -10,13 +10,13 @@ use rig_core::message::ToolResultContent;
 use rig_core::tool::ToolOutput;
 use rig_tools::Spill;
 
-use super::PREFIX;
+use crate::{mcp, web};
 
-/// Cuts an MCP tool's result to at most `bytes` before the model reads it,
+/// Cuts the result of a tool whose results know no bound, an MCP server's
+/// or one reading the web, to at most `bytes` before the model reads it,
 /// keeping the whole in a file it can `read` or `search`. The model reads
 /// every byte of a result before it can answer, at a few seconds a page on a
-/// local model, and a server's results know no bound; the built-in tools
-/// bound their own.
+/// local model; the other built-in tools bound their own.
 pub struct ResultLimit {
     pub bytes: usize,
     pub spill: Option<Spill>,
@@ -27,7 +27,7 @@ impl AgentHook for ResultLimit {
         let (Some(tool), Some(result)) = (event.tool_name(), event.tool_result()) else {
             return OutcomeAction::proceed();
         };
-        match tool.starts_with(PREFIX).then(|| self.cut(tool, result.output())) {
+        match unbounded(tool).then(|| self.cut(tool, result.output())) {
             Some(Some(output)) => OutcomeAction::rewrite_tool_output(&event, output),
             _ => OutcomeAction::proceed(),
         }
@@ -81,6 +81,10 @@ impl ResultLimit {
         file.write_all(whole.as_bytes())?;
         Ok(path)
     }
+}
+
+fn unbounded(tool: &str) -> bool {
+    tool.starts_with(mcp::PREFIX) || web::TOOLS.contains(&tool)
 }
 
 /// Bytes of text the model reads of `blocks`, JSON as the provider sends it.

@@ -11,6 +11,8 @@ of `hey` is on ease of use, speed, and a pleasant terminal experience.
 - Any model [rig](https://rig.rs) supports: OpenAI, Anthropic, Gemini, Ollama, OpenRouter, and more
 - Built-in tools to read, list, search, write, edit, move and delete files and run shell commands, with
   live command output
+- Web tools: `fetch` reads a page as Markdown in a fraction of a second, and `web_search` searches
+  with Brave
 - [MCP](https://modelcontextprotocol.io) servers, local (stdio) or remote (streamable HTTP)
 - [Agent Skills](https://agentskills.io): instructions for particular tasks that the model loads
   when a task calls for one, or that you invoke with `/name`
@@ -219,6 +221,26 @@ file tools stay inside its directory; its shell commands start there, but what t
 confined, so keep `shell` on `confirm` if that matters. `[subagents] model` picks a cheaper
 model for them, and `enabled = false` turns them off.
 
+### Web
+
+`fetch` downloads a page and gives the model its main content as Markdown, found as Firefox's
+Reader View finds it, or the whole page when asked. It takes about as long as the download, but
+does not run JavaScript, so pages built by their scripts come back nearly empty; an MCP server
+such as Firecrawl's can render those.
+
+`web_search` is offered when `BRAVE_API_KEY` is set to a
+[Brave Search API](https://brave.com/search/api/) key. It uses Brave's LLM Context endpoint, which
+answers with passages already taken from the pages it found, so one call often does without a
+`fetch`. Brave includes $5 of searches a month, about 1,000.
+
+Both ask before each call unless allowed:
+
+```toml
+[tools.permissions]
+fetch = "allow"
+web_search = "allow"
+```
+
 ### MCP servers
 
 A server is local (`command`, `args`, `env`) or remote (`url`, `headers`). Entries copied from
@@ -233,8 +255,9 @@ tools = ["firecrawl_search", "firecrawl_scrape"]
 ```
 
 Every tool a server offers is described to the model on every call; Firecrawl's 36 come to about
-21,000 tokens. `tools` offers only those named. A result longer than `[tools] mcp_result_bytes`
-(16 KiB) is cut, and kept whole in a file the model can `read` or `search`.
+21,000 tokens. `tools` offers only those named. A result longer than `[tools] result_bytes`
+(16 KiB) is cut, and kept whole in a file the model can `read` or `search`; so is a `fetch` or
+`web_search` result.
 
 ## Skills
 

@@ -21,14 +21,10 @@ use rmcp::transport::{StreamableHttpClientTransport, TokioChildProcess};
 use crate::config::{McpServer, McpTransport, expand, expand_headers};
 use crate::permissions::Origin;
 
-mod results;
-
-pub use results::ResultLimit;
-
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// What every MCP tool's name starts with, as the model sees it.
-const PREFIX: &str = "mcp__";
+pub const PREFIX: &str = "mcp__";
 
 /// A tool from an MCP server, offered to the model under a name that cannot
 /// collide with the built-in tools or another server's.

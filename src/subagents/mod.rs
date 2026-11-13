@@ -22,12 +22,14 @@ use rig_core::completion::GenerationOptions;
 use rig_memory::MemoryStore;
 use rig_tools::Seen;
 
-use crate::agent::{self, BUILTIN_TOOLS, Model, Place};
+use crate::agent::{self, Model, Place};
 use crate::config::{Config, Providers};
 use crate::permissions::{Approval, Origin, Permissions, Reporter};
 use crate::protocol::{AgentId, Ask, Decision, Event, Task, TaskResult};
+use crate::results::ResultLimit;
 use crate::sessions::SessionId;
 use crate::skills;
+use crate::web::Web;
 
 pub use access::machine_name;
 use access::{Access, Verdict};
@@ -53,6 +55,8 @@ pub struct Crew {
     providers: Providers,
     max_turns: usize,
     max_tokens: Option<u64>,
+    result_bytes: usize,
+    web: Web,
     /// The permissions of a conversation that brings none of its own.
     permissions: Permissions,
     teams: Mutex<HashMap<SessionId, Arc<Team>>>,
@@ -85,13 +89,16 @@ impl Crew {
         let machine = machine_name();
         let directories = config.subagents.machines.get(&machine);
         let access = Access::new(machine, directories, config.file.clone())?;
-        let builtin = BUILTIN_TOOLS.map(|name| (name, &Origin::Builtin));
+        let web = Web::new(config.tools.result_bytes)?;
+        let builtin = agent::builtin_tools(&web).map(|name| (name, &Origin::Builtin));
         Ok(Self {
             access,
             providers: config.providers.clone(),
             max_turns: config.max_turns,
             max_tokens: config.max_tokens,
+            result_bytes: config.tools.result_bytes,
             permissions: Permissions::resolve(builtin, &config.tools),
+            web,
             teams: Mutex::default(),
         })
     }
@@ -202,7 +209,7 @@ impl Crew {
         let environment = environment(&dir, self.machine());
         let skills = skills::find(&dir);
         let place = Place::within(dir, Arc::new(Fenced::new(self.access.excluded())));
-        let builder = agent::builder(model, &team.seen(agent), place)
+        let builder = agent::builder(model, &team.seen(agent), place, &self.web)
             .name("hey subagent")
             .preamble(PROMPT)
             .append_preamble(&environment);
@@ -213,6 +220,10 @@ impl Crew {
             .add_hook(Approval {
                 permissions: team.permissions.clone(),
                 reporter: Arc::new(reporter),
+            })
+            .add_hook(ResultLimit {
+                bytes: self.result_bytes,
+                spill: agent::spill(),
             });
         if let Some(max_tokens) = self.max_tokens {
             builder = builder.max_tokens(max_tokens);

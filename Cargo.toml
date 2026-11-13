@@ -22,16 +22,20 @@ clap = { version = "4.6", features = ["derive"] }
 crossterm = { version = "0.29", features = ["event-stream"] }
 dialoguer = { version = "0.12", features = ["fuzzy-select"] }
 dirs = "7"
+dom_smoothie = "0.19"
+encoding_rs = "0.8"
 futures = "0.3"
 fuzzy-matcher = "0.3"
 gethostname = "1"
 getrandom = "0.3"
+htmd = "0.5"
 http = "1"
 ignore = "0.4"
 keyring = "4"
+mime = "0.3"
 nu-ansi-term = "0.50"
 reedline = "0.53"
-reqwest = { version = "0.13", default-features = false, features = ["http2", "json", "query", "rustls", "stream"] }
+reqwest = { version = "0.13", default-features = false, features = ["brotli", "charset", "gzip", "http2", "json", "query", "rustls", "stream"] }
 rig-agent = "0.46"
 rig-core = { version = "0.46", features = ["reqwest"] }
 rig-memory = { version = "0.46", features = ["fs"] }

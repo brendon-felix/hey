@@ -16,6 +16,7 @@ mod preamble;
 mod protocol;
 mod render;
 mod repl;
+mod results;
 mod server;
 mod sessions;
 mod skills;
@@ -23,6 +24,7 @@ mod subagents;
 mod token;
 mod turn;
 mod ui;
+mod web;
 
 use std::path::PathBuf;
 use std::process::ExitCode;
