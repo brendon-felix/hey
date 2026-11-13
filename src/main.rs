@@ -73,6 +73,10 @@ struct Args {
     #[arg(long, short = 'l', conflicts_with_all = ["resume", "interactive", "message"])]
     threads: bool,
 
+    /// List what hey remembers, to write, edit or forget memories
+    #[arg(long, conflicts_with_all = ["resume", "threads", "interactive", "message"])]
+    memories: bool,
+
     /// Stay in the REPL after answering MESSAGE
     #[arg(long, short)]
     interactive: bool,
@@ -88,7 +92,7 @@ struct Args {
     /// Host the agent for remote clients, as `[server]` configures
     #[arg(
         long,
-        conflicts_with_all = ["prompt_path", "model", "think", "resume", "threads", "interactive", "remote", "local", "message"],
+        conflicts_with_all = ["prompt_path", "model", "think", "resume", "threads", "memories", "interactive", "remote", "local", "message"],
     )]
     serve: bool,
 
@@ -128,11 +132,15 @@ async fn run(args: Args) -> Result<ExitCode> {
         None => None,
     };
     let backend = connect(&args, &config).await?;
+    if args.memories {
+        browser::memories::browse(&backend).await?;
+        return Ok(ExitCode::SUCCESS);
+    }
     let defaults = backend.defaults().await?;
     let model = backend.model(args.model.as_deref().unwrap_or(&defaults.model)).await?;
     let thinking = args.think.or(defaults.thinking);
     let thread = match (args.threads, args.resume) {
-        (true, _) => match browser::browse(&backend, None).await?.open {
+        (true, _) => match browser::threads::browse(&backend, None).await?.open {
             Some(thread) => thread,
             None => return Ok(ExitCode::SUCCESS),
         },

@@ -18,7 +18,7 @@ use crate::backend::{Events, Opened};
 use crate::config::{self, Remote};
 use crate::protocol::{
     Activities, ApprovalId, Ask, ClientInfo, Decision, Defaults, DelegationId, Event, Machine,
-    ModelInfo, RunRequest, Snapshot, TaskResult, ThreadInfo, Tools,
+    ModelInfo, Revision, RunRequest, Snapshot, TaskResult, ThreadInfo, Tools,
 };
 use crate::sessions::SessionId;
 use crate::skills::Found;
@@ -278,6 +278,20 @@ impl Client {
             StatusCode::NOT_FOUND,
         )
         .await
+    }
+
+    pub async fn remember(&self, memory: &str) -> Result<bool> {
+        self.done(
+            self.http.post(self.url("v1/memories")?).json(memory),
+            StatusCode::CONFLICT,
+        )
+        .await
+    }
+
+    pub async fn revise(&self, revision: &Revision) -> Result<()> {
+        self.ok(self.http.put(self.url("v1/memories")?).json(revision))
+            .await
+            .map(drop)
     }
 
     fn url(&self, path: &str) -> Result<Url> {

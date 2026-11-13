@@ -50,6 +50,7 @@ hey who was Ada Lovelace?             # one answer, then exit
 hey -i explain this repo              # answer, then stay in the REPL
 hey -r what did we decide?            # continue the most recent conversation
 hey -l                                # list conversations to open, archive, delete or fork
+hey --memories                        # list memories to write, edit or forget
 hey -m anthropic/claude-opus-5-5 hi   # use another model
 hey -t high prove it                  # set the thinking level (off, minimal…max)
 hey -p ~/prompts/reviewer.txt         # system prompt from a file
@@ -74,8 +75,7 @@ Type `/` or press Tab to see commands and skills; the status line describes the 
 | `/tools` | List tools, their permissions and MCP servers |
 | `/skills` | List skills and why any did not load |
 | `/<skill> [message]` | Invoke a skill, with the rest of the line as your message |
-| `/memories`, `/mem` | List what hey remembers across conversations |
-| `/forget` | Pick a memory to forget |
+| `/memories`, `/mem` | List memories to write, edit or forget |
 | `/clear`, `/c` | Clear the screen |
 | `/exit`, `/quit`, `/q`, `/x` | Exit |
 
@@ -313,8 +313,22 @@ every conversation gets all of them and nothing is embedded; if the model cannot
 conversation starts with the newest and says why.
 
 Memories are kept as a Markdown list (`memories.md` in hey's data directory) that you can read and
-edit, with their embeddings beside it in `memories.vectors.json`; `/memories` lists them and
-`/forget` removes one. With a remote, they are the server's.
+edit, with their embeddings beside it in `memories.vectors.json`. With a remote, they are the
+server's.
+
+`hey --memories` or `/memories` lists them, newest first:
+
+| Keys | Action |
+| --- | --- |
+| ↑ ↓, `j` `k`, `g` `G` | Move |
+| Enter, `e` | Edit the memory in place; Enter saves it, Esc leaves it as it was |
+| `n` | Write a new memory |
+| `d` | Forget it, after you confirm with `y` |
+| `/` | Filter; Esc clears it |
+| `q`, Esc | Close the list |
+
+While editing, ← →, Home and End move, Ctrl+W erases a word and Ctrl+U everything before the
+cursor. A memory hey forgets while you edit it is saved anew with your words.
 
 ```toml
 [memory]

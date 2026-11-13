@@ -95,7 +95,8 @@ right_prompt = "short"
 # Remember lasting facts about you and your work across conversations. After
 # each answer, one extra model call decides what to remember and what is now
 # outdated; each new conversation starts with the memories closest in meaning
-# to its first message. `/memories` lists them and `/forget` removes one.
+# to its first message. `/memories` or `hey --memories` lists them to write,
+# edit and forget them.
 enabled = true
 # Most memories a conversation starts with. While there are no more than
 # this, a conversation starts with all of them and nothing is embedded.

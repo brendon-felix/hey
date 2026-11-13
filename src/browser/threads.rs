@@ -1,23 +1,20 @@
 /* -------------------------------------------------------------------------- */
-/*                                 browser.rs                                 */
+/*                             browser/threads.rs                             */
 /* -------------------------------------------------------------------------- */
 
 //! A host's conversations in a full-screen list: what each is doing, and
 //! keys to open, archive, delete and fork them.
 
-use std::io::{IsTerminal, Write, stdout};
 use std::time::Duration;
 
-use anyhow::{Result, bail};
+use anyhow::Result;
 use chrono::{Datelike, Local};
 use crossterm::event::{Event as Input, EventStream, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
-use crossterm::style::Print;
-use crossterm::terminal::{self, BeginSynchronizedUpdate, Clear, ClearType, EndSynchronizedUpdate};
-use crossterm::{cursor, queue};
 use futures::StreamExt;
 use tokio::time::{Instant, MissedTickBehavior, interval, interval_at};
 use yansi::{Paint, Painted};
 
+use super::{Note, REFRESH, fit};
 use crate::backend::Backend;
 use crate::protocol::{ThreadInfo, ThreadStatus};
 use crate::render::palette;
@@ -26,9 +23,6 @@ use crate::ui::Screen;
 
 const SPINNER: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 const FRAME: Duration = Duration::from_millis(80);
-const REFRESH: Duration = Duration::from_secs(2);
-/// Rows above and below the list: the title and filter, a gap and the keys.
-const CHROME: usize = 4;
 const WHEN_WIDTH: usize = 11;
 
 /// What the user did in the browser.
@@ -41,9 +35,7 @@ pub struct Browsed {
 /// Lists the host's conversations until one is picked or the list closed.
 /// `current` is the one the REPL is in.
 pub async fn browse(backend: &Backend, current: Option<&SessionId>) -> Result<Browsed> {
-    if !stdout().is_terminal() || !std::io::stdin().is_terminal() {
-        bail!("the conversation list needs a terminal");
-    }
+    super::ensure_terminal("the conversation list")?;
     let mut browser = Browser {
         backend,
         current: current.cloned(),
@@ -81,11 +73,6 @@ enum Mode {
     Browse,
     Filter,
     ConfirmDelete(SessionId),
-}
-
-struct Note {
-    text: String,
-    failed: bool,
 }
 
 impl Browser<'_> {
@@ -148,8 +135,8 @@ impl Browser<'_> {
             Mode::Browse => match key.code {
                 KeyCode::Up | KeyCode::Char('k') => self.step(-1),
                 KeyCode::Down | KeyCode::Char('j') => self.step(1),
-                KeyCode::PageUp => self.step(-(self.page() as isize)),
-                KeyCode::PageDown => self.step(self.page() as isize),
+                KeyCode::PageUp => self.step(-(super::page() as isize)),
+                KeyCode::PageDown => self.step(super::page() as isize),
                 KeyCode::Home | KeyCode::Char('g') => self.step(isize::MIN / 2),
                 KeyCode::End | KeyCode::Char('G') => self.step(isize::MAX / 2),
                 KeyCode::Enter => return self.selected().map(|thread| Some(thread.summary.id.clone())),
@@ -223,11 +210,6 @@ impl Browser<'_> {
         self.selected = next.map(|index| self.threads[*index].summary.id.clone());
     }
 
-    fn page(&self) -> usize {
-        let height = terminal::size().map_or(24, |(_, height)| usize::from(height));
-        height.saturating_sub(CHROME).max(1)
-    }
-
     async fn refresh(&mut self) {
         match self.backend.threads().await {
             Ok(threads) => self.threads = threads,
@@ -290,50 +272,33 @@ impl Browser<'_> {
     }
 
     fn say(&mut self, text: String) {
-        self.note = Some(Note { text, failed: false });
+        self.note = Some(Note::said(text));
     }
 
     fn fail(&mut self, error: anyhow::Error) {
-        self.note = Some(Note {
-            text: format!("{error:#}"),
-            failed: true,
-        });
+        self.note = Some(Note::failed(error));
     }
 
     fn draw(&mut self) -> Result<()> {
-        let (width, height) = terminal::size().map(|(w, h)| (usize::from(w), usize::from(h)))?;
+        let (width, height) = super::size()?;
         let shown = self.shown();
         let at = self.position(&shown);
-        let rows = height.saturating_sub(CHROME).max(1);
-        self.scroll = self.scroll.min(at).max((at + 1).saturating_sub(rows));
+        let rows = super::page();
+        self.scroll = super::scrolled(self.scroll, at, rows);
 
-        let mut lines = vec![self.header(width), self.filter_line()];
+        let filtering = matches!(self.mode, Mode::Filter);
+        let mut lines = vec![self.header(width), super::filter_line(filtering, &self.filter)];
         lines.extend(shown.iter().enumerate().skip(self.scroll).take(rows).map(|(row, index)| {
             self.row(&self.threads[*index], row == at, width)
         }));
         if shown.is_empty() {
             lines.push(format!("  {}", palette().muted.paint(&self.empty())));
         }
-        lines.resize(height.saturating_sub(1), String::new());
-        lines.push(self.footer(width));
-
-        let mut out = stdout().lock();
-        queue!(out, BeginSynchronizedUpdate)?;
-        for (row, line) in lines.iter().enumerate() {
-            queue!(out, cursor::MoveTo(0, row as u16), Print(line), Clear(ClearType::UntilNewLine))?;
-        }
-        queue!(out, EndSynchronizedUpdate)?;
-        out.flush()?;
-        Ok(())
+        super::paint(lines, self.footer(width), height)
     }
 
     fn header(&self, width: usize) -> String {
-        let place = match self.backend.remote() {
-            Some(remote) => format!(" on {remote}"),
-            None => String::new(),
-        };
         let view = if self.archived { "Archived conversations" } else { "Conversations" };
-        let title = format!(" {view}{place}");
         let active = self.threads.iter().filter(|thread| !thread.archived);
         let count = |status: &[ThreadStatus]| active.clone().filter(|thread| status.contains(&thread.status)).count();
         let running = count(&[ThreadStatus::Running, ThreadStatus::Asking]);
@@ -345,17 +310,7 @@ impl Browser<'_> {
         if new > 0 {
             tallies.push(format!("● {new} new").blue().to_string());
         }
-        let tally_width: usize = tallies.iter().map(|tally| visible(tally)).sum::<usize>() + 3 * tallies.len().saturating_sub(1);
-        let gap = width.saturating_sub(title.chars().count() + tally_width + 1);
-        format!("{}{}{} ", title.bold(), " ".repeat(gap), tallies.join(" · "))
-    }
-
-    fn filter_line(&self) -> String {
-        match (&self.mode, self.filter.is_empty()) {
-            (Mode::Filter, _) => format!(" {} {}▏", palette().accent.paint("/"), self.filter),
-            (_, false) => format!(" {}", palette().muted.paint(&format!("/ {}", self.filter))),
-            (_, true) => String::new(),
-        }
+        super::header(self.backend, view, &tallies, width)
     }
 
     fn empty(&self) -> String {
@@ -400,21 +355,19 @@ impl Browser<'_> {
     }
 
     fn footer(&self, width: usize) -> String {
-        let text = match (&self.mode, &self.note) {
-            (Mode::ConfirmDelete(id), _) => {
+        let keys = match &self.mode {
+            Mode::ConfirmDelete(id) => {
                 let prompt = format!(" Delete “{}”? y deletes it, any other key keeps it", self.title(id));
-                return fit(&prompt, width).red().bold().to_string();
+                return super::question(&prompt, width);
             }
-            (_, Some(note)) if note.failed => return fit(&format!(" {}", note.text), width).red().to_string(),
-            (_, Some(note)) => format!(" {}", note.text),
-            (Mode::Filter, None) => " type to filter · ↑↓ move · ⏎ open · esc clear".into(),
-            (_, None) => {
+            Mode::Filter => " type to filter · ↑↓ move · ⏎ open · esc clear".into(),
+            Mode::Browse => {
                 let archive = if self.archived { "restore" } else { "archive" };
                 let view = if self.archived { "conversations" } else { "archived" };
                 format!(" ↑↓ move · ⏎ open · a {archive} · d delete · f fork · tab {view} · / filter · q quit")
             }
         };
-        palette().muted.paint(&fit(&text, width)).to_string()
+        super::footer(self.note.as_ref(), &keys, width)
     }
 
     fn spinner(&self) -> &'static str {
@@ -434,42 +387,5 @@ fn when(id: &SessionId) -> String {
         2..=6 => started.format("%a %H:%M").to_string(),
         _ if started.year() == today.year() => started.format("%b %e").to_string(),
         _ => started.format("%Y-%m-%d").to_string(),
-    }
-}
-
-/// `text` on one line in at most `width` characters.
-fn fit(text: &str, width: usize) -> String {
-    let line: String = text.chars().map(|c| if c.is_control() { ' ' } else { c }).collect();
-    match line.chars().count() <= width {
-        true => line,
-        false => line.chars().take(width.saturating_sub(1)).chain(['…']).collect(),
-    }
-}
-
-/// The width of `text` without its color codes.
-fn visible(text: &str) -> usize {
-    let mut width = 0;
-    let mut escaped = false;
-    for c in text.chars() {
-        match (escaped, c) {
-            (false, '\u{1b}') => escaped = true,
-            (true, 'm') => escaped = false,
-            (true, _) => {}
-            (false, _) => width += 1,
-        }
-    }
-    width
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn fit_keeps_rows_on_one_line() {
-        assert_eq!(fit("short", 10), "short");
-        assert_eq!(fit("a long title", 6), "a lon…");
-        assert_eq!(fit("two\nlines", 20), "two lines");
-        assert_eq!(visible(&"new".blue().to_string()), 3);
     }
 }

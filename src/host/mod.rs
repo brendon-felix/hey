@@ -28,7 +28,7 @@ use crate::permissions::{Approval, Origin, Permissions};
 use crate::preamble::{Hosting, Setting};
 use crate::protocol::{
     Activities, Activity, ApprovalId, Ask, Decision, Defaults, DelegationId, Ending, Event,
-    Machine, ModelInfo, RunId, RunRequest, ServerReport, Snapshot, TaskResult, ThreadInfo,
+    Machine, ModelInfo, Revision, RunId, RunRequest, ServerReport, Snapshot, TaskResult, ThreadInfo,
     ThreadStatus, Tools,
 };
 use crate::render;
@@ -411,6 +411,15 @@ impl Host {
     /// False when `memory` was not saved.
     pub fn forget(&self, memory: &str) -> Result<bool> {
         self.memory()?.forget(memory)
+    }
+
+    /// False when it is already saved.
+    pub fn remember(&self, memory: &str) -> Result<bool> {
+        self.memory()?.remember(memory)
+    }
+
+    pub fn revise(&self, revision: &Revision) -> Result<()> {
+        self.memory()?.revise(&revision.old, &revision.new)
     }
 
     /// Waits for runs to finish learning, which a host in a process that is

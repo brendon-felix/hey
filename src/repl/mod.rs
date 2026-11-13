@@ -272,8 +272,7 @@ impl Repl {
             Command::Theme(theme) => self.switch_theme(theme)?,
             Command::Tools => self.list_tools().await?,
             Command::Skills => self.list_skills().await?,
-            Command::Memories => self.list_memories().await?,
-            Command::Forget => self.forget().await?,
+            Command::Memories => browser::memories::browse(&self.backend).await?,
             Command::Clear => self.editor.clear_screen(),
             Command::Exit => {}
         }
@@ -283,7 +282,7 @@ impl Repl {
     /// Lists the host's conversations to open one, and leaves this one if
     /// it was deleted there.
     async fn browse(&mut self) -> Result<()> {
-        let browsed = browser::browse(&self.backend, Some(&self.thread)).await?;
+        let browsed = browser::threads::browse(&self.backend, Some(&self.thread)).await?;
         match browsed.open {
             Some(thread) => {
                 self.set_thread(thread);
@@ -474,37 +473,6 @@ impl Repl {
             }
         }
         println!();
-        Ok(())
-    }
-
-    async fn list_memories(&self) -> Result<()> {
-        let memories = self.backend.memories().await?;
-        if memories.is_empty() {
-            println!("{}\n", "Nothing remembered yet.".bold());
-            return Ok(());
-        }
-        println!();
-        for memory in memories {
-            println!("  {} {memory}", palette().name.paint("•"));
-        }
-        println!();
-        Ok(())
-    }
-
-    async fn forget(&self) -> Result<()> {
-        let memories = self.backend.memories().await?;
-        if memories.is_empty() {
-            println!("{}\n", "Nothing remembered yet.".bold());
-            return Ok(());
-        }
-        if let Some(index) = ui::pick("Forget a memory", &memories, 0)?
-            && let Some(memory) = memories.get(index)
-        {
-            match self.backend.forget(memory).await? {
-                true => println!("{} {}\n", "Forgot".bold(), palette().muted.paint(memory)),
-                false => println!("{}\n", "Already forgotten.".bold()),
-            }
-        }
         Ok(())
     }
 

@@ -21,7 +21,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::{config, token};
 use crate::host::{HEARTBEAT, Host, ThreadError};
-use crate::protocol::{ApprovalId, Ask, Decision, DelegationId, Event, RunRequest, TaskResult};
+use crate::protocol::{
+    ApprovalId, Ask, Decision, DelegationId, Event, Revision, RunRequest, TaskResult,
+};
 use crate::sessions::SessionId;
 
 pub async fn serve(host: Arc<Host>, config: &config::Server) -> Result<()> {
@@ -45,7 +47,7 @@ pub async fn serve(host: Arc<Host>, config: &config::Server) -> Result<()> {
         .route("/v1/threads/{id}/delegations/{delegation}/events", post(delegated_event))
         .route("/v1/threads/{id}/delegations/{delegation}/asks", post(delegated_ask))
         .route("/v1/threads/{id}/tools", get(tools))
-        .route("/v1/memories", get(memories).delete(forget))
+        .route("/v1/memories", get(memories).post(remember).put(revise).delete(forget))
         .layer(middleware::from_fn_with_state(token, authorize))
         .with_state(host);
     let listener = tokio::net::TcpListener::bind(config.listen)
@@ -267,6 +269,19 @@ async fn forget(State(host): State<Arc<Host>>, Json(memory): Json<String>) -> Re
         true => StatusCode::NO_CONTENT,
         false => StatusCode::NOT_FOUND,
     })
+}
+
+/// 409 when it is already saved.
+async fn remember(State(host): State<Arc<Host>>, Json(memory): Json<String>) -> Reply<StatusCode> {
+    Ok(match host.remember(&memory)? {
+        true => StatusCode::NO_CONTENT,
+        false => StatusCode::CONFLICT,
+    })
+}
+
+async fn revise(State(host): State<Arc<Host>>, Json(revision): Json<Revision>) -> Reply<StatusCode> {
+    host.revise(&revision)?;
+    Ok(StatusCode::NO_CONTENT)
 }
 
 fn ndjson<T: Serialize>(

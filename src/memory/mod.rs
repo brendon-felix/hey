@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Mutex, PoisonError};
 use std::time::Duration;
 
-use anyhow::{Context, Result, anyhow};
+use anyhow::{Context, Result, anyhow, bail};
 use rig_agent::extractor::ExtractorBuilder;
 use rig_core::message::{AssistantContent, Message, UserContent};
 use schemars::JsonSchema;
@@ -126,6 +126,20 @@ impl Memory {
         })
     }
 
+    /// False when it, or one differing only in case, is already saved.
+    pub fn remember(&self, memory: &str) -> Result<bool> {
+        let memory = written(memory)?;
+        self.change(|memories| add(memories, memory))
+    }
+
+    /// Rewords `old` as `new` where it stands, or saves `new` when `old` is
+    /// gone, as when hey forgot it meanwhile.
+    pub fn revise(&self, old: &str, new: &str) -> Result<()> {
+        let new = written(new)?;
+        self.change(|memories| reword(memories, old, new))?;
+        Ok(())
+    }
+
     /// False when `memory` was not saved.
     pub fn forget(&self, memory: &str) -> Result<bool> {
         self.change(|memories| {
@@ -217,14 +231,45 @@ impl Update {
         let count = memories.len();
         memories.retain(|memory| !forgotten.contains(&memory));
         let mut changed = memories.len() != count;
-        for memory in self.remember.iter().map(|memory| one_line(memory)) {
-            let known = memories.iter().any(|saved| saved.eq_ignore_ascii_case(&memory));
-            if !memory.is_empty() && !known {
-                memories.push(memory);
-                changed = true;
-            }
+        for memory in &self.remember {
+            changed |= add(memories, one_line(memory));
         }
         changed
+    }
+}
+
+/// Saves `memory` unless it is empty or already saved, ignoring case.
+fn add(memories: &mut Vec<String>, memory: String) -> bool {
+    let known = memories.iter().any(|saved| saved.eq_ignore_ascii_case(&memory));
+    let added = !memory.is_empty() && !known;
+    if added {
+        memories.push(memory);
+    }
+    added
+}
+
+/// Rewords `old` as `new`, or adds `new` when `old` is gone, leaving one
+/// memory that says `new` either way. False when nothing changed.
+fn reword(memories: &mut Vec<String>, old: &str, new: String) -> bool {
+    let at = memories.iter().position(|saved| saved == old);
+    let known = memories
+        .iter()
+        .enumerate()
+        .any(|(i, saved)| Some(i) != at && saved.eq_ignore_ascii_case(&new));
+    match (at, known) {
+        (Some(at), false) => memories[at] = new,
+        (Some(at), true) => _ = memories.remove(at),
+        (None, false) => memories.push(new),
+        (None, true) => return false,
+    }
+    true
+}
+
+/// `text` as a memory a person wrote, which must say something.
+fn written(text: &str) -> Result<String> {
+    match one_line(text) {
+        memory if memory.is_empty() => bail!("a memory cannot be empty"),
+        memory => Ok(memory),
     }
 }
 
@@ -290,7 +335,8 @@ fn parse(text: &str) -> Vec<String> {
         .collect()
 }
 
-fn one_line(text: &str) -> String {
+/// `text` as a memory is saved: on one line, its spacing collapsed.
+pub fn one_line(text: &str) -> String {
     text.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
@@ -332,5 +378,18 @@ mod tests {
             forget: vec![],
         };
         assert!(!nothing.apply(&[], &mut memories));
+    }
+
+    #[test]
+    fn rewording_keeps_one_memory_saying_the_new_words() {
+        let mut memories = strings(&["Uses vim.", "Lives in Lisbon.", "Likes tea."]);
+        assert!(reword(&mut memories, "Lives in Lisbon.", "Lives in Berlin.".into()));
+        assert_eq!(memories, ["Uses vim.", "Lives in Berlin.", "Likes tea."]);
+        assert!(reword(&mut memories, "Uses vim.", "Uses Vim.".into()), "case alone");
+        assert!(reword(&mut memories, "Likes tea.", "uses vim.".into()), "merges");
+        assert_eq!(memories, ["Uses Vim.", "Lives in Berlin."]);
+        assert!(reword(&mut memories, "Gone.", "Likes coffee.".into()), "saves anew");
+        assert!(!reword(&mut memories, "Gone.", "likes coffee.".into()));
+        assert_eq!(memories, ["Uses Vim.", "Lives in Berlin.", "Likes coffee."]);
     }
 }

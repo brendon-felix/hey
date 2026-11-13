@@ -373,6 +373,13 @@ pub struct Tools {
     pub servers: Vec<ServerReport>,
 }
 
+/// A memory reworded by its user.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Revision {
+    pub old: String,
+    pub new: String,
+}
+
 /// How an MCP server's connection went.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ServerReport {

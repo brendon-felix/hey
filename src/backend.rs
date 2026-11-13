@@ -11,8 +11,8 @@ use futures::stream::BoxStream;
 use crate::client::Client;
 use crate::host::{self, Host};
 use crate::protocol::{
-    Activities, ApprovalId, Decision, Defaults, DelegationId, Event, ModelInfo, RunRequest,
-    Snapshot, Task, ThreadInfo, Tools,
+    Activities, ApprovalId, Decision, Defaults, DelegationId, Event, ModelInfo, Revision,
+    RunRequest, Snapshot, Task, ThreadInfo, Tools,
 };
 use crate::sessions::SessionId;
 use crate::skills::Found;
@@ -204,6 +204,22 @@ impl Backend {
         match self {
             Backend::Local(host) => host.forget(memory),
             Backend::Remote(client, _) => client.forget(memory).await,
+        }
+    }
+
+    /// False when it is already saved.
+    pub async fn remember(&self, memory: &str) -> Result<bool> {
+        match self {
+            Backend::Local(host) => host.remember(memory),
+            Backend::Remote(client, _) => client.remember(memory).await,
+        }
+    }
+
+    /// Rewords a memory, or saves the new words when it is gone.
+    pub async fn revise(&self, revision: &Revision) -> Result<()> {
+        match self {
+            Backend::Local(host) => host.revise(revision),
+            Backend::Remote(client, _) => client.revise(revision).await,
         }
     }
 
