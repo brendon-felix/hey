@@ -2,7 +2,7 @@
 /*                                 config.rs                                  */
 /* -------------------------------------------------------------------------- */
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::{Path, PathBuf};
@@ -299,6 +299,8 @@ pub struct Tools {
     pub default: Permission,
     #[serde(deserialize_with = "over_default_rules")]
     pub permissions: BTreeMap<String, Permission>,
+    /// Most bytes of an MCP tool's result the model reads.
+    pub mcp_result_bytes: usize,
 }
 
 impl Default for Tools {
@@ -307,6 +309,7 @@ impl Default for Tools {
             allow_all: false,
             default: Permission::Confirm,
             permissions: permissions::default_rules(),
+            mcp_result_bytes: 16 * 1024,
         }
     }
 }
@@ -323,7 +326,16 @@ fn over_default_rules<'de, D: Deserializer<'de>>(
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(try_from = "RawMcpServer")]
-pub enum McpServer {
+pub struct McpServer {
+    pub transport: McpTransport,
+    /// The only tools offered to the model, by the server's names for them;
+    /// all of them when unset. Every tool offered costs prompt tokens on
+    /// every model call, whether or not it is used.
+    pub tools: Option<BTreeSet<String>>,
+}
+
+#[derive(Debug, Clone)]
+pub enum McpTransport {
     Stdio {
         command: String,
         args: Vec<String>,
@@ -350,6 +362,7 @@ struct RawMcpServer {
     url: Option<String>,
     #[serde(default)]
     headers: BTreeMap<String, String>,
+    tools: Option<BTreeSet<String>>,
 }
 
 #[derive(Deserialize, Clone, Copy, PartialEq, Eq)]
@@ -366,7 +379,7 @@ impl TryFrom<RawMcpServer> for McpServer {
 
     fn try_from(raw: RawMcpServer) -> Result<Self, Self::Error> {
         let local_only = !raw.args.is_empty() || !raw.env.is_empty();
-        let server = match (raw.command, raw.url) {
+        let transport = match (raw.command, raw.url) {
             (Some(_), Some(_)) => Err("set either `command` or `url`, not both"),
             (None, None) => Err("set `command` for a local server or `url` for a remote one"),
             (Some(_), None) if !raw.headers.is_empty() => {
@@ -375,24 +388,27 @@ impl TryFrom<RawMcpServer> for McpServer {
             (None, Some(_)) if local_only => {
                 Err("`args` and `env` only apply to a local server (`command`)")
             }
-            (Some(command), None) => Ok(Self::Stdio {
+            (Some(command), None) => Ok(McpTransport::Stdio {
                 command,
                 args: raw.args,
                 env: raw.env,
             }),
-            (None, Some(url)) => Ok(Self::Http {
+            (None, Some(url)) => Ok(McpTransport::Http {
                 url,
                 headers: raw.headers,
             }),
         }?;
-        match (raw.transport, &server) {
-            (Some(Transport::Stdio), Self::Http { .. }) => {
+        match (raw.transport, &transport) {
+            (Some(Transport::Stdio), McpTransport::Http { .. }) => {
                 Err("a local (`stdio`) server is started with `command`, not `url`")
             }
-            (Some(Transport::Http), Self::Stdio { .. }) => {
+            (Some(Transport::Http), McpTransport::Stdio { .. }) => {
                 Err("a remote (`http`) server is reached at a `url`, not a `command`")
             }
-            _ => Ok(server),
+            _ => Ok(Self {
+                transport,
+                tools: raw.tools,
+            }),
         }
     }
 }
@@ -544,6 +560,7 @@ mod tests {
             type = "remote"
             url = "https://example.com/mcp"
             headers = { Authorization = "Bearer ${TOKEN}" }
+            tools = ["search"]
             "#,
         )
         .unwrap();
@@ -553,8 +570,11 @@ mod tests {
         assert_eq!(config.tools.permissions["read"], Permission::Allow);
         assert_eq!(config.tools.permissions["shell"], Permission::Allow);
         assert_eq!(config.tools.permissions["mcp:github"], Permission::Deny);
-        assert!(matches!(config.mcp_servers["github"], McpServer::Stdio { .. }));
-        assert!(matches!(config.mcp_servers["docs"], McpServer::Http { .. }));
+        let (github, docs) = (&config.mcp_servers["github"], &config.mcp_servers["docs"]);
+        assert!(matches!(github.transport, McpTransport::Stdio { .. }));
+        assert!(github.tools.is_none());
+        assert!(matches!(docs.transport, McpTransport::Http { .. }));
+        assert_eq!(docs.tools, Some(BTreeSet::from(["search".to_owned()])));
         assert!(config.display.syntax_highlighting);
     }
 
@@ -576,6 +596,7 @@ mod tests {
         assert_eq!(documented.tools.allow_all, built_in.tools.allow_all);
         assert_eq!(documented.tools.default, built_in.tools.default);
         assert_eq!(documented.tools.permissions, built_in.tools.permissions);
+        assert_eq!(documented.tools.mcp_result_bytes, built_in.tools.mcp_result_bytes);
         assert_eq!(documented.server.listen, built_in.server.listen);
     }
 

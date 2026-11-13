@@ -175,6 +175,9 @@ async fn show(
             Event::Text { text } => stream.text(text),
             Event::Reasoning { text } => stream.reasoning(text),
             Event::PartEnd => stream.end_part(),
+            Event::Thought { duration } => stream.thought(duration),
+            Event::ToolCallStart { name } => stream.preparing(name),
+            Event::ToolCallArguments { json } => stream.arguments(&json),
             Event::Decided { .. } => {}
             Event::Context { tokens } => seen.context = Some(tokens),
             Event::Approval { id, tool } => {
@@ -183,8 +186,11 @@ async fn show(
             }
             event => {
                 stream.settle();
-                if let Event::End { saved, .. } = event {
-                    seen.saved = Some(saved);
+                match &event {
+                    Event::ToolCall { name, .. } => stream.running(name),
+                    Event::ToolResult { .. } => stream.waiting(),
+                    Event::End { saved, .. } => seen.saved = Some(*saved),
+                    _ => {}
                 }
                 if let Some(outcome) = report(event) {
                     return outcome;
@@ -255,6 +261,9 @@ fn report(event: Event) -> Option<Outcome> {
         | Event::Text { .. }
         | Event::Reasoning { .. }
         | Event::PartEnd
+        | Event::Thought { .. }
+        | Event::ToolCallStart { .. }
+        | Event::ToolCallArguments { .. }
         | Event::Approval { .. }
         | Event::Decided { .. }
         | Event::Context { .. } => {}

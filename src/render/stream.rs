@@ -3,13 +3,19 @@
 /* -------------------------------------------------------------------------- */
 
 use std::collections::VecDeque;
+use std::fmt;
 use std::io::IsTerminal;
 use std::time::{Duration, Instant};
 
-use crossterm::terminal::{Clear, ClearType};
+use crossterm::Command;
+use crossterm::cursor::MoveUp;
+use crossterm::terminal::{BeginSynchronizedUpdate, Clear, ClearType, EndSynchronizedUpdate};
 
+use super::preview::Call;
 use super::reply::{Part, Reply};
-use super::{Style, animations, show, theme};
+use super::{
+    Style, animations, clip, clock, show, terminal_height, terminal_width, theme, thought,
+};
 
 /// How often a [`Stream`] wants [`Stream::tick`] called.
 pub const FRAME: Duration = Duration::from_millis(16);
@@ -34,26 +40,41 @@ enum Mode {
 enum Chunk {
     Text(Part, String),
     End,
+    /// Hidden reasoning that took this long ended.
+    Thought(Duration),
 }
 
 /// What the spinner says the agent is doing.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 enum Activity {
-    Working,
+    /// The model has yet to say more: it is reading the conversation, a
+    /// tool's result in it, or is still loading.
+    Waiting,
     /// Reasoning that is not shown.
     Thinking,
+    /// The model is writing this call.
+    Preparing(Call),
+    Running(String),
 }
 
-impl Activity {
-    fn label(self) -> &'static str {
+impl fmt::Display for Activity {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Activity::Working => "Working",
-            Activity::Thinking => "Thinking",
+            Activity::Waiting => f.write_str("Waiting for model"),
+            Activity::Thinking => f.write_str("Thinking"),
+            Activity::Preparing(call) => write!(f, "Preparing {}", call.name()),
+            Activity::Running(tool) => write!(f, "Running {tool}"),
         }
     }
 }
 
-/// A run's reply on the terminal, advanced a frame at a time, with a spinner
+/// The rows under the reply that say what the agent is doing, as drawn.
+struct Status {
+    text: String,
+    rows: usize,
+}
+
+/// A run's reply on the terminal, advanced a frame at a time, with a status
 /// while the agent works without saying anything.
 pub struct Stream {
     mode: Mode,
@@ -64,8 +85,8 @@ pub struct Stream {
     backlog: VecDeque<Chunk>,
     started: Instant,
     quiet_since: Instant,
-    /// The spinner row, while it shows.
-    spinner: Option<String>,
+    /// The status, while it shows.
+    status: Option<Status>,
 }
 
 impl Stream {
@@ -80,11 +101,11 @@ impl Stream {
             mode,
             reply: Reply::new(style),
             show_thinking: style.show_thinking,
-            activity: Activity::Working,
+            activity: Activity::Waiting,
             backlog: VecDeque::new(),
             started: now,
             quiet_since: now,
-            spinner: None,
+            status: None,
         }
     }
 
@@ -95,7 +116,7 @@ impl Stream {
     }
 
     pub fn text(&mut self, text: String) {
-        self.activity = Activity::Working;
+        self.activity = Activity::Waiting;
         self.receive(Part::Text, text);
     }
 
@@ -107,14 +128,50 @@ impl Stream {
         }
     }
 
+    /// A part ended. A call stays in preparation until it runs, however
+    /// its part and those around it end.
     pub fn end_part(&mut self) {
-        self.activity = Activity::Working;
+        if !matches!(self.activity, Activity::Preparing(_)) {
+            self.activity = Activity::Waiting;
+        }
         self.backlog.push_back(Chunk::End);
+    }
+
+    /// A part of reasoning ended after `duration`, which hidden reasoning
+    /// leaves on screen in its place.
+    pub fn thought(&mut self, duration: Duration) {
+        self.end_part();
+        if !self.show_thinking {
+            self.backlog.push_back(Chunk::Thought(duration));
+        }
+    }
+
+    /// The model began writing a call to `tool`, which ends the text before
+    /// it.
+    pub fn preparing(&mut self, tool: String) {
+        self.activity = Activity::Preparing(Call::new(tool));
+        self.end_reply();
+    }
+
+    /// More of the arguments of the call the model is writing, as raw JSON.
+    pub fn arguments(&mut self, json: &str) {
+        if let Activity::Preparing(call) = &mut self.activity {
+            call.push(json);
+        }
+    }
+
+    pub fn running(&mut self, tool: &str) {
+        self.activity = Activity::Running(tool.to_owned());
+    }
+
+    /// The model has the tools' results and has yet to answer them.
+    pub fn waiting(&mut self) {
+        self.activity = Activity::Waiting;
     }
 
     pub fn tick(&mut self) {
         if !self.backlog.is_empty() {
-            self.hide_spinner();
+            self.hide_status();
             self.reveal(self.budget());
             self.quiet_since = Instant::now();
         }
@@ -123,15 +180,14 @@ impl Stream {
         }
         self.reply.draw();
         if self.reply.at_line_start() && self.quiet_since.elapsed() >= SPINNER_DELAY {
-            self.spin();
+            self.draw_status();
         }
     }
 
     /// Shows everything received and ends the open part, so other output
     /// can follow.
     pub fn settle(&mut self) {
-        self.activity = Activity::Working;
-        self.hide_spinner();
+        self.hide_status();
         self.reveal(usize::MAX);
         self.reply.finish();
         self.quiet_since = Instant::now();
@@ -145,13 +201,17 @@ impl Stream {
     }
 
     /// Hidden reasoning ends the text before it, as shown reasoning would,
-    /// so the spinner has a line of its own.
+    /// so the status has a line of its own.
     fn think(&mut self) {
         if self.activity == Activity::Thinking {
             return;
         }
         self.activity = Activity::Thinking;
-        // With nothing queued, ending the reply directly keeps a spinner
+        self.end_reply();
+    }
+
+    fn end_reply(&mut self) {
+        // With nothing queued, ending the reply directly keeps a status
         // already showing from blinking off.
         if self.backlog.is_empty() {
             self.reply.finish();
@@ -169,7 +229,7 @@ impl Stream {
                 .iter()
                 .map(|chunk| match chunk {
                     Chunk::Text(_, text) => text.chars().count(),
-                    Chunk::End => 0,
+                    Chunk::End | Chunk::Thought(_) => 0,
                 })
                 .sum::<usize>()
                 .div_ceil(CATCH_UP),
@@ -181,6 +241,7 @@ impl Stream {
         while let Some(chunk) = self.backlog.pop_front() {
             match chunk {
                 Chunk::End => self.reply.finish(),
+                Chunk::Thought(duration) => thought(Some(duration)),
                 Chunk::Text(part, mut text) => {
                     let end = text.char_indices().nth(budget).map_or(text.len(), |(at, _)| at);
                     let rest = text.split_off(end);
@@ -197,32 +258,63 @@ impl Stream {
         }
     }
 
-    fn spin(&mut self) {
+    /// Draws the status: a call being written, if there is one, over the
+    /// spinner. Each row is narrower than the terminal, so none wraps and
+    /// the rows can be found again to redraw.
+    fn draw_status(&mut self) {
         let elapsed = self.started.elapsed();
         let frame = (elapsed.as_millis() / SPINNER_FRAME.as_millis()) as usize;
         let palette = theme::palette();
-        let row = format!(
+        let spinner = format!(
             "{} {}",
             palette.accent.paint(SPINNER[frame % SPINNER.len()]),
-            palette.muted.paint(&format!("{} {}", self.activity.label(), clock(elapsed))),
+            palette.muted.paint(&clip(
+                &format!("{} {}", self.activity, clock(elapsed)),
+                terminal_width().saturating_sub(3)
+            )),
         );
-        if self.spinner.as_ref() != Some(&row) {
-            show(format!("\r{}{row}", Clear(ClearType::CurrentLine)));
-            self.spinner = Some(row);
+        let mut rows = match &self.activity {
+            Activity::Preparing(call) => {
+                call.rows(terminal_width().saturating_sub(1), terminal_height().saturating_sub(2))
+            }
+            _ => Vec::new(),
+        };
+        rows.push(spinner);
+        let text = rows.join("\n");
+        if self.status.as_ref().is_some_and(|status| status.text == text) {
+            return;
+        }
+        show(format!(
+            "{}{}{text}{}",
+            ansi(BeginSynchronizedUpdate),
+            self.erase_status(),
+            ansi(EndSynchronizedUpdate)
+        ));
+        self.status = Some(Status {
+            text,
+            rows: rows.len(),
+        });
+    }
+
+    fn hide_status(&mut self) {
+        let erase = self.erase_status();
+        if self.status.take().is_some() {
+            show(erase);
         }
     }
 
-    fn hide_spinner(&mut self) {
-        if self.spinner.take().is_some() {
-            show(format!("\r{}", Clear(ClearType::CurrentLine)));
-        }
+    /// What returns the cursor to where the status began, clearing it.
+    fn erase_status(&self) -> String {
+        let up = match self.status.as_ref().map_or(0, |status| status.rows - 1) {
+            0 => String::new(),
+            rows => MoveUp(rows as u16).to_string(),
+        };
+        format!("\r{up}{}", Clear(ClearType::FromCursorDown))
     }
 }
 
-fn clock(elapsed: Duration) -> String {
-    match elapsed.as_secs() {
-        seconds @ 0..60 => format!("{seconds}s"),
-        seconds => format!("{}m {:02}s", seconds / 60, seconds % 60),
-    }
+fn ansi(command: impl Command) -> String {
+    let mut out = String::new();
+    let _ = command.write_ansi(&mut out);
+    out
 }
-

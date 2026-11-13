@@ -10,7 +10,8 @@ use std::time::Instant;
 use futures::{Stream, StreamExt, stream};
 use rig_agent::agent::MultiTurnStreamItem;
 use rig_core::completion::Usage;
-use rig_core::streaming::{Item, StreamEvent};
+use rig_core::message::AssistantContent;
+use rig_core::streaming::{Item, PartKind, StreamEvent};
 use tokio::sync::{Notify, oneshot, watch};
 
 use crate::protocol::{ApprovalId, Decision, Event, RunId, Running};
@@ -167,26 +168,83 @@ fn undecided(events: &[Event]) -> Vec<Event> {
         .collect()
 }
 
-/// What a client needs to see of a step of the agent's stream. Tool calls
-/// are reported by the approval hook as they are dispatched.
-pub fn event(item: MultiTurnStreamItem) -> Option<Event> {
-    match item {
-        MultiTurnStreamItem::StreamAssistantItem(Item::Event(event)) => match event {
+/// What a client needs to see of the agent's stream, timing the model's
+/// reasoning as it goes. Tool calls are reported by the approval hook as
+/// they are dispatched.
+#[derive(Default)]
+pub struct Steps {
+    /// When the reasoning part now open began.
+    reasoning: Option<Instant>,
+}
+
+impl Steps {
+    pub fn events(&mut self, item: MultiTurnStreamItem) -> impl Iterator<Item = Event> + use<> {
+        let (thought, event) = match item {
+            MultiTurnStreamItem::StreamAssistantItem(Item::Event(event)) => {
+                (self.thought_before(&event), self.part(event))
+            }
+            MultiTurnStreamItem::ToolResult { tool_result } => (
+                None,
+                Some(Event::ToolResult {
+                    result: tool_result,
+                }),
+            ),
+            MultiTurnStreamItem::CompletionCall(call) => {
+                (None, tokens(&call.usage).map(|tokens| Event::Context { tokens }))
+            }
+            MultiTurnStreamItem::ModelTurnRetried { .. } => (
+                None,
+                Some(Event::Notice {
+                    text: "retrying…".into(),
+                }),
+            ),
+            _ => (None, None),
+        };
+        thought.into_iter().chain(event)
+    }
+
+    /// Reasoning ends where the reply moves on, however much later a
+    /// provider closes its part.
+    fn thought_before(&mut self, event: &StreamEvent) -> Option<Event> {
+        let moves_on = match event {
+            StreamEvent::Start { kind, .. } => *kind != PartKind::Reasoning,
+            StreamEvent::Text { .. } | StreamEvent::Arguments { .. } => true,
+            StreamEvent::Reasoning { .. } | StreamEvent::End { .. } => false,
+        };
+        moves_on.then(|| self.thought()).flatten()
+    }
+
+    fn thought(&mut self) -> Option<Event> {
+        let since = self.reasoning.take()?;
+        Some(Event::Thought {
+            duration: since.elapsed(),
+        })
+    }
+
+    fn part(&mut self, event: StreamEvent) -> Option<Event> {
+        match event {
+            StreamEvent::Start {
+                kind: PartKind::Reasoning,
+                ..
+            } => {
+                self.reasoning.get_or_insert_with(Instant::now);
+                None
+            }
+            StreamEvent::Start {
+                kind: PartKind::ToolCall,
+                name: Some(name),
+                ..
+            } => Some(Event::ToolCallStart { name: name.into() }),
+            StreamEvent::Arguments { json, .. } => Some(Event::ToolCallArguments { json }),
             StreamEvent::Text { text, .. } => Some(Event::Text { text }),
             StreamEvent::Reasoning { text, .. } => Some(Event::Reasoning { text }),
+            StreamEvent::End {
+                content: AssistantContent::Reasoning(_),
+                ..
+            } => self.thought(),
             StreamEvent::End { .. } => Some(Event::PartEnd),
             _ => None,
-        },
-        MultiTurnStreamItem::ToolResult { tool_result } => Some(Event::ToolResult {
-            result: tool_result,
-        }),
-        MultiTurnStreamItem::CompletionCall(call) => {
-            tokens(&call.usage).map(|tokens| Event::Context { tokens })
         }
-        MultiTurnStreamItem::ModelTurnRetried { .. } => Some(Event::Notice {
-            text: "retrying…".into(),
-        }),
-        _ => None,
     }
 }
 
@@ -215,6 +273,7 @@ mod tests {
                 Event::Approval { tool, .. } => format!("ask {tool}"),
                 Event::Decided { .. } => "decided".into(),
                 Event::End { .. } => "end".into(),
+                Event::Thought { .. } => "thought".into(),
                 other => format!("{other:?}"),
             })
             .collect()
@@ -268,5 +327,27 @@ mod tests {
             matches!(joined, Some(Event::Began { elapsed, .. }) if elapsed.as_millis() >= 20),
             "{joined:?}"
         );
+    }
+
+    #[test]
+    fn reasoning_ends_where_the_reply_moves_on() {
+        use rig_core::message::Reasoning;
+        use rig_core::streaming::Part;
+
+        let (thinking, answer) = (Part::new(0), Part::new(1));
+        let stream = [
+            StreamEvent::Start { part: thinking, kind: PartKind::Reasoning, name: None },
+            StreamEvent::Reasoning { part: thinking, text: "hm".into() },
+            StreamEvent::Start { part: answer, kind: PartKind::Text, name: None },
+            StreamEvent::Text { part: answer, text: "hi".into() },
+            StreamEvent::End { part: thinking, content: AssistantContent::Reasoning(Reasoning::new("hm")) },
+            StreamEvent::End { part: answer, content: AssistantContent::text("hi") },
+        ];
+        let mut steps = Steps::default();
+        let events: Vec<Event> = stream
+            .into_iter()
+            .flat_map(|event| steps.events(MultiTurnStreamItem::StreamAssistantItem(Item::Event(event))))
+            .collect();
+        assert_eq!(names(&events), ["Reasoning { text: \"hm\" }", "thought", "hi", "PartEnd"]);
     }
 }

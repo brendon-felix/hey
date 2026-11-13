@@ -113,7 +113,7 @@ pub fn available_models() -> Vec<String> {
 pub fn builder(model: &Model, seen: &Seen, live: Live) -> AgentBuilder {
     let shell = Shell {
         live: Some(live),
-        spill: config::cache_dir().map(|dir| Spill(dir.join("spill"))),
+        spill: spill(),
         ..Shell::default()
     };
     AgentBuilder::new(model.inner.clone())
@@ -134,6 +134,11 @@ pub fn builder(model: &Model, seen: &Seen, live: Live) -> AgentBuilder {
         .tool(Move::default())
         .tool(Delete::default())
         .tool(shell)
+}
+
+/// Where tools keep whole the output they cut.
+pub fn spill() -> Option<Spill> {
+    config::cache_dir().map(|dir| Spill(dir.join("spill")))
 }
 
 /// A summary of a conversation's `transcript` by `model`, which gets nothing

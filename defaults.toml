@@ -53,7 +53,8 @@ colors = true
 # Ease streamed text in rather than showing each piece as it arrives.
 animations = true
 # Print the model's reasoning as it arrives, dimmed. When false, the spinner
-# reads "Thinking" while the model reasons.
+# reads "Thinking" while the model reasons, and "Thought for 12s" stays in
+# its place once it is done.
 show_thinking = false
 
 [editor]
@@ -117,6 +118,12 @@ allow_all = false
 # "confirm" asks before each call and offers to allow the tool for the conversation.
 default = "confirm"
 
+# Most bytes of an MCP tool's result the model reads. The model reads all of a
+# result before it can go on, at a few seconds per 16 KiB on a local model, so
+# a longer one is cut here and kept whole in a file the model can `read` or
+# `search`. Built-in tools bound their own output.
+mcp_result_bytes = 16384
+
 # Rules by tool. Built-in tools: read, list, search, write, edit, move, delete,
 # shell. MCP tools are "mcp:<server>:<tool>", or "mcp:<server>" for all of a
 # server's tools. Your rules extend these defaults rather than replace them.
@@ -132,6 +139,10 @@ search = "allow"
 # Servers that only offer an OAuth sign-in are not supported yet; give them an
 # API key through `headers`.
 #
+# Every tool a server offers is described to the model on every call, whether
+# or not it is used; `tools` offers only those named, by the server's names
+# for them. A name the server does not offer is reported as an error.
+#
 # [mcp_servers.github]
 # command = "github-mcp-server"
 # args = ["stdio"]
@@ -140,6 +151,7 @@ search = "allow"
 # [mcp_servers.docs]
 # url = "https://example.com/mcp"
 # headers = { Authorization = "Bearer ${DOCS_TOKEN}" }
+# tools = ["search", "fetch"]
 
 # Remote hosts, keyed by name: machines running `hey --serve`. With a remote,
 # the agent runs there, with that machine's model keys, tools, MCP servers,

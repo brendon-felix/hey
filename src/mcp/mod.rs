@@ -1,12 +1,12 @@
 /* -------------------------------------------------------------------------- */
-/*                                   mcp.rs                                   */
+/*                                 mcp/mod.rs                                 */
 /* -------------------------------------------------------------------------- */
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::process::Stdio;
 use std::time::Duration;
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use rig_core::message::ToolName;
 use rig_core::tool::DynamicTool;
 use rig_rmcp::{McpConnection, McpTool};
@@ -18,10 +18,17 @@ use rmcp::transport::streamable_http_client::{
 };
 use rmcp::transport::{StreamableHttpClientTransport, TokioChildProcess};
 
-use crate::config::{McpServer, expand};
+use crate::config::{McpServer, McpTransport, expand};
 use crate::permissions::Origin;
 
+mod results;
+
+pub use results::ResultLimit;
+
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// What every MCP tool's name starts with, as the model sees it.
+const PREFIX: &str = "mcp__";
 
 /// A tool from an MCP server, offered to the model under a name that cannot
 /// collide with the built-in tools or another server's.
@@ -52,8 +59,8 @@ pub async fn connect_all(servers: &BTreeMap<String, McpServer>) -> Vec<Server> {
 
 async fn connect(server: &str, config: &McpServer) -> Result<Vec<Tool>> {
     let client = ClientConfig::default();
-    let connection: McpConnection = match config {
-        McpServer::Stdio { command, args, env } => {
+    let connection: McpConnection = match &config.transport {
+        McpTransport::Stdio { command, args, env } => {
             let mut command = tokio::process::Command::new(expand(command)?);
             command.args(args);
             for (key, value) in env {
@@ -70,7 +77,7 @@ async fn connect(server: &str, config: &McpServer) -> Result<Vec<Tool>> {
                 .context("cannot start the server")?;
             client.serve(transport).await.map_err(initialize_error)?.into()
         }
-        McpServer::Http { url, headers } => {
+        McpTransport::Http { url, headers } => {
             let config = StreamableHttpClientTransportConfig::with_uri(expand(url)?)
                 .custom_headers(header_map(headers)?);
             let transport = StreamableHttpClientTransport::from_config(config);
@@ -79,7 +86,33 @@ async fn connect(server: &str, config: &McpServer) -> Result<Vec<Tool>> {
         }
     };
     let tools = connection.tools().await?;
+    let tools = match &config.tools {
+        Some(wanted) => only(tools, wanted)?,
+        None => tools,
+    };
     tools.into_iter().map(|tool| namespaced(server, tool)).collect()
+}
+
+/// The `wanted` tools of those a server offers, every one of which it must
+/// offer, so a misspelt name is not silently left out.
+fn only(tools: Vec<McpTool>, wanted: &BTreeSet<String>) -> Result<Vec<McpTool>> {
+    let missing: Vec<&str> = wanted
+        .iter()
+        .filter(|name| !tools.iter().any(|tool| tool.name() == name.as_str()))
+        .map(String::as_str)
+        .collect();
+    if !missing.is_empty() {
+        let offered: Vec<&str> = tools.iter().map(McpTool::name).collect();
+        bail!(
+            "`tools` names {}, which the server does not offer; it offers {}",
+            missing.join(", "),
+            offered.join(", ")
+        );
+    }
+    Ok(tools
+        .into_iter()
+        .filter(|tool| wanted.contains(tool.name()))
+        .collect())
 }
 
 /// rmcp does not chain a transport failure as its error's source, which
@@ -122,7 +155,7 @@ fn namespaced(server: &str, tool: McpTool) -> Result<Tool> {
 
 /// `mcp__<server>__<tool>`, in the characters and length providers accept.
 fn model_name(server: &str, tool: &str) -> String {
-    format!("mcp__{server}__{tool}")
+    format!("{PREFIX}{server}__{tool}")
         .chars()
         .map(|c| if c.is_ascii_alphanumeric() || c == '-' { c } else { '_' })
         .take(64)

@@ -3,6 +3,7 @@
 /* -------------------------------------------------------------------------- */
 
 mod highlight;
+mod preview;
 mod reply;
 mod stream;
 mod theme;
@@ -88,14 +89,20 @@ pub fn user_line(text: &str, palette: Palette) -> String {
 }
 
 pub fn tool_call(name: &str, args: &str) {
+    println!("\n{}", call_line(name, &summarize_args(args), terminal_width()));
+}
+
+/// A tool call as it shows, `width` columns at most: its name and the
+/// argument that identifies it.
+fn call_line(name: &str, summary: &str, width: usize) -> String {
     let palette = palette();
-    let room = terminal_width().saturating_sub(name.chars().count() + 3);
-    println!(
-        "\n{} {} {}",
+    let room = width.saturating_sub(name.chars().count() + 3);
+    format!(
+        "{} {} {}",
         palette.name.paint("●"),
         name.bold(),
-        palette.muted.paint(&clip(&summarize_args(args), room))
-    );
+        palette.muted.paint(&clip(&summary.replace('\t', " "), room))
+    )
 }
 
 pub fn tool_result(result: &ToolResult) {
@@ -138,6 +145,23 @@ pub fn attached(target: &dyn std::fmt::Display) {
     println!("  {} {}", palette.name.paint("@"), palette.muted.paint(&target.to_string()));
 }
 
+/// That the model reasoned, where its reasoning is not shown, and for how
+/// long when that is known.
+pub fn thought(duration: Option<Duration>) {
+    let text = match duration {
+        Some(duration) => format!("Thought for {}", clock(duration)),
+        None => "Thought".to_owned(),
+    };
+    println!("\n{}", palette().muted.paint(&text).italic());
+}
+
+fn clock(elapsed: Duration) -> String {
+    match elapsed.as_secs() {
+        seconds @ 0..60 => format!("{seconds}s"),
+        seconds => format!("{}m {:02}s", seconds / 60, seconds % 60),
+    }
+}
+
 pub fn notice(text: &str) {
     println!("  {}", palette().muted.paint(text));
 }
@@ -167,6 +191,10 @@ pub fn conversation(messages: &[Message], style: &Style) {
                             let args = serde_json::Value::Object(call.function.arguments.clone());
                             tool_call(call.function.name.as_str(), &args.to_string());
                         }
+                        AssistantContent::Reasoning(_) => {
+                            reply.finish();
+                            thought(None);
+                        }
                         _ => {}
                     }
                 }
@@ -177,12 +205,16 @@ pub fn conversation(messages: &[Message], style: &Style) {
     println!();
 }
 
+fn summarize_args(args: &str) -> String {
+    match serde_json::from_str(args) {
+        Ok(serde_json::Value::Object(map)) => summarize(&map),
+        _ => args.to_owned(),
+    }
+}
+
 /// The argument a person would recognise a call by: a well-known one, else
 /// the only string argument, else all of them.
-fn summarize_args(args: &str) -> String {
-    let Ok(serde_json::Value::Object(map)) = serde_json::from_str(args) else {
-        return args.to_owned();
-    };
+fn summarize(map: &serde_json::Map<String, serde_json::Value>) -> String {
     let field = |key| map.get(key).and_then(serde_json::Value::as_str);
     let mut strings = map.values().filter_map(serde_json::Value::as_str);
     let only_string = match (strings.next(), strings.next()) {
@@ -210,6 +242,10 @@ pub fn clip(text: &str, width: usize) -> String {
 
 pub fn terminal_width() -> usize {
     crossterm::terminal::size().map_or(80, |(width, _)| usize::from(width))
+}
+
+fn terminal_height() -> usize {
+    crossterm::terminal::size().map_or(24, |(_, height)| usize::from(height))
 }
 
 /// Prints `text` a grapheme at a time when animations are on.

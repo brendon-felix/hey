@@ -35,6 +35,20 @@ pub enum Event {
     },
     /// The model finished a part of its reply.
     PartEnd,
+    /// The model finished a part of reasoning, which took `duration`.
+    Thought {
+        duration: Duration,
+    },
+    /// The model began writing a call to `name`; [`Event::ToolCall`]
+    /// follows once the call is complete and runs.
+    ToolCallStart {
+        name: String,
+    },
+    /// More of the arguments of the call the model is writing: a piece of
+    /// raw JSON.
+    ToolCallArguments {
+        json: String,
+    },
     ToolCall {
         name: String,
         args: String,

@@ -52,6 +52,7 @@ pub struct Host {
     system_prompt: String,
     max_turns: usize,
     max_tokens: Option<u64>,
+    mcp_result_bytes: usize,
     providers: Providers,
     sessions: Sessions,
     /// The repository `@shared:` mentions attach from.
@@ -136,6 +137,7 @@ impl Host {
                 .unwrap_or_else(|| agent::DEFAULT_SYSTEM_PROMPT.into()),
             max_turns: config.max_turns,
             max_tokens: config.max_tokens,
+            mcp_result_bytes: config.tools.mcp_result_bytes,
             providers: config.providers.clone(),
             sessions,
             shared: config.shared.dir()?,
@@ -394,6 +396,10 @@ impl Host {
             .add_hook(Approval {
                 permissions: thread.permissions.clone(),
                 run: run.clone(),
+            })
+            .add_hook(mcp::ResultLimit {
+                bytes: self.mcp_result_bytes,
+                spill: agent::spill(),
             });
         if let Some(memories) = memory::preamble(&thread.memories) {
             builder = builder.append_preamble(&memories);
@@ -465,6 +471,7 @@ impl Host {
             None => runner,
         }
         .stream();
+        let mut steps = run::Steps::default();
         loop {
             match stream.next().await {
                 None => return Ending::Answered,
@@ -473,11 +480,7 @@ impl Host {
                         error: error.to_string(),
                     };
                 }
-                Some(Ok(item)) => {
-                    if let Some(event) = run::event(item) {
-                        run.emit(event);
-                    }
-                }
+                Some(Ok(item)) => steps.events(item).for_each(|event| run.emit(event)),
             }
         }
     }

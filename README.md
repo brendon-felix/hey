@@ -188,7 +188,12 @@ supported yet; most also accept an API key, for example Firecrawl:
 [mcp_servers.firecrawl]
 url = "https://mcp.firecrawl.dev/v2/mcp"
 headers = { Authorization = "Bearer ${FIRECRAWL_API_KEY}" }
+tools = ["firecrawl_search", "firecrawl_scrape"]
 ```
+
+Every tool a server offers is described to the model on every call; Firecrawl's 36 come to about
+21,000 tokens. `tools` offers only those named. A result longer than `[tools] mcp_result_bytes`
+(16 KiB) is cut, and kept whole in a file the model can `read` or `search`.
 
 ## Memory
 
