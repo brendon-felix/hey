@@ -37,9 +37,15 @@ impl Call {
     }
 
     /// At most `height` rows, none wider than `width` columns, starting
-    /// with a blank one as the line the call prints does.
+    /// with a blank one as the line the call prints does. The line names
+    /// the call by its one-line arguments; longer ones show in the box.
     pub fn rows(&self, width: usize, height: usize) -> Vec<String> {
-        let summary = summarize(&parse_partial_arguments(&self.args));
+        let mut args = parse_partial_arguments(&self.args);
+        args.retain(|_, value| !value.as_str().is_some_and(|text| text.contains('\n')));
+        let summary = match args.is_empty() {
+            true => String::new(),
+            false => summarize(&args),
+        };
         let mut rows = vec![String::new(), call_line(&self.name, &summary, width)];
         if let Some(text) = writing(&self.args).filter(|text| text.contains('\n')) {
             let room = height.saturating_sub(rows.len() + 2);
