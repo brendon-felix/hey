@@ -48,6 +48,7 @@ pub fn request(prompt: String, options: RunOptions) -> RunRequest {
         prompt,
         attachments,
         options,
+        client: None,
     }
 }
 

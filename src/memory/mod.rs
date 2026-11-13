@@ -88,6 +88,11 @@ impl Memory {
         }))
     }
 
+    /// Where memories are kept.
+    pub fn file(&self) -> &Path {
+        &self.file
+    }
+
     /// Every memory, oldest first.
     pub fn all(&self) -> Result<Vec<String>> {
         match fs::read_to_string(&self.file) {

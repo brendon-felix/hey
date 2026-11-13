@@ -32,6 +32,9 @@ pub struct Config {
     pub remote: Option<String>,
     pub remotes: BTreeMap<String, Remote>,
     pub server: Server,
+    /// The file this was read from, or would be once created.
+    #[serde(skip)]
+    pub file: Option<PathBuf>,
 }
 
 impl Default for Config {
@@ -54,6 +57,7 @@ impl Default for Config {
             remote: None,
             remotes: BTreeMap::new(),
             server: Server::default(),
+            file: None,
         }
     }
 }
@@ -61,16 +65,20 @@ impl Default for Config {
 impl Config {
     /// The config at `path`, else the default file if it exists, else the defaults.
     pub fn load(path: Option<&Path>) -> Result<Self> {
-        let path = match path {
-            Some(path) => path.to_path_buf(),
-            None => match config_dir().map(|dir| dir.join("hey.toml")) {
-                Some(path) if path.exists() => path,
-                _ => return Ok(Self::default()),
-            },
+        let file = path
+            .map(Path::to_path_buf)
+            .or_else(|| config_dir().map(|dir| dir.join("hey.toml")));
+        let mut config = match &file {
+            Some(file) if path.is_some() || file.exists() => {
+                let text = fs::read_to_string(file)
+                    .with_context(|| format!("failed to read config {}", file.display()))?;
+                toml::from_str(&text)
+                    .with_context(|| format!("invalid config {}", file.display()))?
+            }
+            _ => Self::default(),
         };
-        let text = fs::read_to_string(&path)
-            .with_context(|| format!("failed to read config {}", path.display()))?;
-        toml::from_str(&text).with_context(|| format!("invalid config {}", path.display()))
+        config.file = file;
+        Ok(config)
     }
 }
 

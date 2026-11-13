@@ -275,6 +275,9 @@ API keys, tools and their permissions, MCP servers and where conversations are s
 chooses the model and thinking level per run (`/model`, `/think`) and keeps its own display and
 editor settings. `hey --local` runs the agent on the client instead.
 
+The model is told that its tools act on the server, and which machine and directory you are on,
+so it does not look for your files on the server; mention them with `@` to attach them.
+
 The server runs tools for anyone holding the token and does not use TLS. Reach it over a private
 network such as Tailscale, WireGuard or an SSH tunnel, or behind an HTTPS reverse proxy.
 

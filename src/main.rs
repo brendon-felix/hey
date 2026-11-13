@@ -12,6 +12,7 @@ mod mcp;
 mod memory;
 mod mention;
 mod permissions;
+mod preamble;
 mod protocol;
 mod render;
 mod repl;
@@ -33,6 +34,8 @@ use backend::Backend;
 use client::Client;
 use config::Config;
 use host::Host;
+use preamble::Hosting;
+use protocol::Machine;
 use repl::Repl;
 use sessions::SessionId;
 
@@ -104,7 +107,10 @@ async fn run(args: Args) -> Result<ExitCode> {
     let config = Config::load(args.config.as_deref())?;
     render::configure(&config.display);
     if args.serve {
-        let host = Arc::new(Host::new(&config).await?);
+        let hosting = Hosting::Served {
+            listen: config.server.listen,
+        };
+        let host = Arc::new(Host::new(&config, hosting).await?);
         server::serve(host, &config.server).await?;
         return Ok(ExitCode::SUCCESS);
     }
@@ -195,8 +201,11 @@ async fn connect(args: &Args, config: &Config) -> Result<Backend> {
                 .remotes
                 .get(name)
                 .with_context(|| format!("no remote `{name}` in `[remotes]`"))?;
-            Ok(Backend::Remote(Client::connect(name, remote).await?))
+            let machine = Machine::here(config.file.as_deref());
+            Ok(Backend::Remote(Client::connect(name, remote, machine).await?))
         }
-        None => Ok(Backend::Local(Arc::new(Host::new(config).await?))),
+        None => Ok(Backend::Local(Arc::new(
+            Host::new(config, Hosting::Local).await?,
+        ))),
     }
 }

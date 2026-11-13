@@ -3,6 +3,7 @@
 /* -------------------------------------------------------------------------- */
 
 use std::io;
+use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
@@ -16,8 +17,8 @@ use tokio_util::io::StreamReader;
 use crate::backend::{Events, Opened};
 use crate::config::{self, Remote};
 use crate::protocol::{
-    Activities, ApprovalId, Decision, Defaults, ModelInfo, RunRequest, Snapshot, ThreadInfo,
-    Tools,
+    Activities, ApprovalId, ClientInfo, Decision, Defaults, Machine, ModelInfo, RunRequest,
+    Snapshot, ThreadInfo, Tools,
 };
 use crate::sessions::SessionId;
 use crate::{render, token, ui};
@@ -29,12 +30,14 @@ pub struct Client {
     base: Url,
     token: String,
     http: reqwest::Client,
+    /// This machine and the host as it names it, told with every run.
+    info: Arc<ClientInfo>,
 }
 
 impl Client {
     /// Connects with the token `remote` configures, else the one hey kept,
     /// else one the user enters, which hey keeps once the host accepts it.
-    pub async fn connect(name: &str, remote: &Remote) -> Result<Self> {
+    pub async fn connect(name: &str, remote: &Remote, machine: Machine) -> Result<Self> {
         let mut url = config::expand(&remote.url)?;
         if !url.ends_with('/') {
             url.push('/');
@@ -45,9 +48,14 @@ impl Client {
             .build()?;
         let mut client = Self {
             name: name.to_owned(),
-            base,
             token: String::new(),
             http,
+            info: Arc::new(ClientInfo {
+                machine,
+                remote: name.to_owned(),
+                url: base.to_string(),
+            }),
+            base,
         };
         if let Some(token) = token::configured(&remote.token)? {
             client.token = token;
@@ -160,10 +168,14 @@ impl Client {
         Ok(Opened { snapshot, events })
     }
 
-    pub async fn start(&self, id: &SessionId, request: &RunRequest) -> Result<Events> {
+    pub async fn start(&self, id: &SessionId, request: RunRequest) -> Result<Events> {
+        let request = RunRequest {
+            client: Some(ClientInfo::clone(&self.info)),
+            ..request
+        };
         let path = format!("v1/threads/{}/run", id.as_str());
         let response = self
-            .ok(self.http.post(self.url(&path)?).json(request))
+            .ok(self.http.post(self.url(&path)?).json(&request))
             .await?;
         Ok(events(lines(response)))
     }

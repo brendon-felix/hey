@@ -19,8 +19,10 @@ model = "openai/gpt-5.5"
 # `/think` changes it at runtime, `hey --think LEVEL` for one run.
 # thinking = "medium"
 
-# System prompt. When unset, hey uses its own agent prompt. Either way, the
-# working directory, platform and date are appended.
+# System prompt. When unset, hey uses its own agent prompt. Either way, hey
+# appends what the model should know of its setting: that it is hey, which
+# machine its tools act on and, with a remote, which one the user is on, when
+# the conversation started, and where the config, shared files and memories are.
 # system_prompt = "You are a helpful assistant."
 
 # Cap on tokens per response. When unset, the provider's default applies.

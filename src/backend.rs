@@ -138,7 +138,7 @@ impl Backend {
     pub async fn start(&self, id: &SessionId, request: RunRequest) -> Result<Events> {
         match self {
             Backend::Local(host) => Ok(host.start(id.clone(), request).await?.map(Ok).boxed()),
-            Backend::Remote(client) => client.start(id, &request).await,
+            Backend::Remote(client) => client.start(id, request).await,
         }
     }
 

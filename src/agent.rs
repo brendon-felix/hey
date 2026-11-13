@@ -143,15 +143,3 @@ pub async fn summarize(model: &Model, transcript: &str) -> Result<String> {
     let request = format!("<conversation>\n{transcript}\n</conversation>\n\n{SUMMARY_PROMPT}");
     Ok(summarizer.prompt(request).await?.output())
 }
-
-pub fn environment() -> String {
-    let cwd = std::env::current_dir()
-        .map(|dir| dir.display().to_string())
-        .unwrap_or_else(|_| "unknown".into());
-    format!(
-        "\nEnvironment:\n- Working directory: {cwd}\n- Platform: {} ({})\n- Date: {}",
-        std::env::consts::OS,
-        std::env::consts::ARCH,
-        chrono::Local::now().format("%Y-%m-%d"),
-    )
-}

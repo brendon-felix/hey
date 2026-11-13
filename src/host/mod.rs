@@ -25,9 +25,10 @@ use crate::config::{Config, Providers};
 use crate::mcp;
 use crate::memory::{self, Memory, Recalled};
 use crate::permissions::{Approval, Origin, Permissions};
+use crate::preamble::{Hosting, Setting};
 use crate::protocol::{
-    Activities, Activity, ApprovalId, Decision, Defaults, Ending, Event, ModelInfo, RunId,
-    RunOptions, RunRequest, ServerReport, Snapshot, ThreadInfo, ThreadStatus, Tools,
+    Activities, Activity, ApprovalId, Decision, Defaults, Ending, Event, Machine, ModelInfo,
+    RunId, RunRequest, ServerReport, Snapshot, ThreadInfo, ThreadStatus, Tools,
 };
 use crate::render;
 use crate::sessions::{Mark, SessionId, Sessions, Summary};
@@ -44,6 +45,9 @@ pub const HEARTBEAT: Duration = Duration::from_secs(30);
 /// behind `hey --serve` for clients on other machines. Runs belong to the
 /// host, so they carry on whether or not a client is following them.
 pub struct Host {
+    hosting: Hosting,
+    /// This machine, as the model is told of it.
+    machine: Machine,
     defaults: Defaults,
     system_prompt: String,
     max_turns: usize,
@@ -113,13 +117,15 @@ impl std::error::Error for ThreadError {}
 
 impl Host {
     /// Opens the sessions store and connects every MCP server.
-    pub async fn new(config: &Config) -> Result<Self> {
+    pub async fn new(config: &Config, hosting: Hosting) -> Result<Self> {
         let sessions = Sessions::open(config.sessions.dir()?)?;
         let (mcp, servers) = connect_mcp(config).await;
         let builtin = BUILTIN_TOOLS.map(|name| (name, &Origin::Builtin));
         let external = mcp.iter().map(|tool| (tool.name.as_str(), &tool.origin));
         let permissions = Permissions::resolve(builtin.into_iter().chain(external), &config.tools);
         Ok(Self {
+            hosting,
+            machine: Machine::here(config.file.as_deref()),
             defaults: Defaults {
                 model: config.model.clone(),
                 thinking: config.thinking,
@@ -291,7 +297,7 @@ impl Host {
         if let Some(failure) = self.take_memory_failure() {
             run.emit(Event::Notice { text: failure });
         }
-        let agent = self.agent(thread, &model, &request.options, &run);
+        let agent = self.agent(&id, thread, &model, &request, &run);
         let events = run.events().boxed();
         thread.run = Some(run.clone());
         thread.last = Some(run.id());
@@ -348,7 +354,14 @@ impl Host {
         }
     }
 
-    fn agent(&self, thread: &Thread, model: &Model, options: &RunOptions, run: &Arc<Run>) -> Agent {
+    fn agent(
+        &self,
+        id: &SessionId,
+        thread: &Thread,
+        model: &Model,
+        request: &RunRequest,
+        run: &Arc<Run>,
+    ) -> Agent {
         let live = Live::new({
             let run = run.clone();
             move |text| {
@@ -357,15 +370,25 @@ impl Host {
                 })
             }
         });
-        let system_prompt = options
+        let system_prompt = request
+            .options
             .system_prompt
             .as_deref()
             .unwrap_or(&self.system_prompt);
+        let setting = Setting {
+            hosting: self.hosting,
+            host: &self.machine,
+            client: request.client.as_ref(),
+            model: &request.options.model,
+            started: id.started(),
+            shared: &self.shared,
+            memories: self.memory.as_ref().map(Memory::file),
+        };
         let mut builder = agent::builder(model, &thread.seen, live)
             .dynamic_tools(self.mcp.iter().map(|tool| tool.tool.clone()).collect())
             .name("hey")
             .preamble(system_prompt)
-            .append_preamble(&agent::environment())
+            .append_preamble(&setting.render())
             .default_max_turns(self.max_turns)
             .memory(self.sessions.store())
             .add_hook(Approval {
@@ -433,6 +456,7 @@ impl Host {
             prompt,
             attachments,
             options,
+            client: _,
         } = request;
         let message = self.message(&prompt, &attachments, model, run).await;
         let runner = agent.prompt(message).conversation(id.as_str());

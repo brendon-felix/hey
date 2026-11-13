@@ -4,6 +4,7 @@
 
 use std::collections::BTreeMap;
 use std::fmt;
+use std::path::Path;
 use std::time::Duration;
 
 use rig_core::message::{Message, ToolResult};
@@ -138,6 +139,43 @@ pub struct RunRequest {
     pub attachments: Vec<Attachment>,
     #[serde(flatten)]
     pub options: RunOptions,
+    /// The remote client asking; `None` when the host is in the asker's
+    /// process, or the client is older than this field.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub client: Option<ClientInfo>,
+}
+
+/// A machine hey runs on, as the model is told of it.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Machine {
+    pub hostname: Option<String>,
+    pub os: String,
+    pub arch: String,
+    pub cwd: Option<String>,
+    /// The config file hey reads there, whether or not it exists.
+    pub config: Option<String>,
+}
+
+impl Machine {
+    pub fn here(config: Option<&Path>) -> Self {
+        Self {
+            hostname: gethostname::gethostname().into_string().ok(),
+            os: std::env::consts::OS.to_owned(),
+            arch: std::env::consts::ARCH.to_owned(),
+            cwd: std::env::current_dir()
+                .ok()
+                .map(|dir| dir.display().to_string()),
+            config: config.map(|path| path.display().to_string()),
+        }
+    }
+}
+
+/// A remote client's machine, and the host as the client names it.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ClientInfo {
+    pub machine: Machine,
+    pub remote: String,
+    pub url: String,
 }
 
 /// A file or directory a mention attaches, as read where it was found, by
