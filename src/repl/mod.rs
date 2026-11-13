@@ -18,6 +18,7 @@ use yansi::Paint;
 
 use crate::backend::{Backend, Events};
 use crate::browser;
+use crate::clipboard::{Clipboard, Copied};
 use crate::config::{Setting, Thinking};
 use crate::mention;
 use crate::permissions::Permission;
@@ -25,9 +26,10 @@ use crate::protocol::{ModelInfo, RunId, RunOptions, Snapshot};
 use crate::render::{self, Reply, Style, Theme, palette, snailprint};
 use crate::sessions::SessionId;
 use crate::skills::Invocation;
+use crate::transcript;
 use crate::turn::{self, Turn};
 use crate::ui;
-use commands::{COMMANDS, Command, Input};
+use commands::{COMMANDS, Command, Input, Scope};
 use editor::{Choices, Editor, Read, SharedStatus, Status};
 use mentions::{Index, STALE_AFTER};
 use watch::Watch;
@@ -53,6 +55,7 @@ pub struct Repl {
     /// What the host offers to mention, and when it was fetched.
     index: Index,
     indexed: Option<Instant>,
+    clipboard: Clipboard,
 }
 
 pub struct Setup {
@@ -112,6 +115,7 @@ impl Repl {
             displayed: 0,
             index,
             indexed: None,
+            clipboard: Clipboard::default(),
         };
         repl.show_status(None);
         repl
@@ -267,6 +271,7 @@ impl Repl {
             Command::Threads => self.browse().await?,
             Command::Fork => self.fork().await?,
             Command::History => self.show_thread(true).await,
+            Command::Copy(scope) => self.copy(scope).await?,
             Command::Model(reference) => self.switch_model(reference).await?,
             Command::Think(level) => self.set_thinking(level)?,
             Command::Theme(theme) => self.switch_theme(theme)?,
@@ -318,6 +323,34 @@ impl Repl {
     async fn show_thread(&mut self, announce_empty: bool) {
         self.displayed = 0;
         self.sync(announce_empty).await;
+    }
+
+    /// Copies what was said in `scope` as the Markdown it was written in, as
+    /// opposed to how it shows: unwrapped, without reasoning or tool calls.
+    async fn copy(&mut self, scope: Scope) -> Result<()> {
+        let messages = self.backend.open(&self.thread).await?.snapshot.messages;
+        let (text, what) = match scope {
+            Scope::Reply => (transcript::last_reply(&messages), "the latest reply"),
+            Scope::Thread => (
+                Some(transcript::thread(&messages)).filter(|text| !text.is_empty()),
+                "this conversation",
+            ),
+        };
+        let Some(text) = text else {
+            println!("{}\n", "Nothing to copy yet.".bold());
+            return Ok(());
+        };
+        let what = format!("{what} ({} lines)", text.lines().count());
+        match self.clipboard.copy(&text)? {
+            Copied::System => println!("{}\n", format!("Copied {what}.").bold()),
+            Copied::Terminal(unavailable) => {
+                println!("{}", format!("Sent {what} to the terminal's clipboard.").bold());
+                let why = unavailable.map_or("over SSH".to_owned(), |error| format!("no system clipboard: {error}"));
+                render::notice(&format!("{why}; by OSC 52, which some terminals ignore"));
+                println!();
+            }
+        }
+        Ok(())
     }
 
     async fn switch_model(&mut self, reference: Option<String>) -> Result<()> {

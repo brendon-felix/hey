@@ -4,7 +4,7 @@
 
 use std::path::Path;
 
-use rig_core::message::{AssistantContent, Message, UserContent};
+use rig_core::message::{Message, UserContent};
 
 use crate::protocol::Attachment;
 use crate::sessions::SessionId;
@@ -74,43 +74,6 @@ impl Context {
 /// mentions attached, rather than what the user typed.
 pub fn is_context(text: &str) -> bool {
     text.starts_with(OPEN_CONTEXT)
-}
-
-/// What was said, without tool calls, their results, or attachments.
-pub fn transcript(messages: &[Message]) -> String {
-    messages
-        .iter()
-        .filter_map(|message| {
-            let (speaker, texts): (_, Vec<&str>) = match message {
-                Message::System { .. } => return None,
-                Message::User { content } => (
-                    "User",
-                    content
-                        .iter()
-                        .filter_map(|content| match content {
-                            UserContent::Text(text) if !is_context(&text.text) => {
-                                Some(text.text.as_str())
-                            }
-                            _ => None,
-                        })
-                        .collect(),
-                ),
-                Message::Assistant(reply) => (
-                    "Assistant",
-                    reply
-                        .content
-                        .iter()
-                        .filter_map(|content| match content {
-                            AssistantContent::Text(text) => Some(text.text.as_str()),
-                            _ => None,
-                        })
-                        .collect(),
-                ),
-            };
-            (!texts.is_empty()).then(|| format!("## {speaker}\n\n{}", texts.join("\n\n")))
-        })
-        .collect::<Vec<_>>()
-        .join("\n\n")
 }
 
 /// A fence longer than any run of backticks in `text`, tagged with the

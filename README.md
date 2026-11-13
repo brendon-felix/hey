@@ -69,6 +69,8 @@ Type `/` or press Tab to see commands and skills; the status line describes the 
 | `/threads`, `/resume`, `/load`, `/l` | List conversations to open, archive, delete or fork |
 | `/fork` | Continue in a copy of this conversation, leaving the original as it is |
 | `/history` | Show this conversation |
+| `/copy` | Copy the latest reply as Markdown |
+| `/copy-all` | Copy this conversation as Markdown |
 | `/model [vendor/model]`, `/m` | Switch model |
 | `/think [level]` | Set thinking: `off`, `minimal`…`max`, or `default` |
 | `/theme [theme]`, `/t` | Switch theme; without one, pick with a live preview |
@@ -81,6 +83,12 @@ Type `/` or press Tab to see commands and skills; the status line describes the 
 
 `/model`, `/think` and `/theme` save their choice to the config file, so later sessions start
 with it; `--model` and `--think` apply to one run only.
+
+`/copy` and `/copy-all` copy the Markdown the model wrote, not how it shows: without the
+terminal's line wrapping, reasoning or tool calls. `/copy` takes the latest reply, all the model
+wrote in answer to one message; `/copy-all` heads each message `## User` or `## Assistant`, leaving out
+what mentions attached. Over SSH, or where there is no system clipboard, they ask the terminal
+to set its machine's clipboard (OSC 52), which most modern terminals do.
 
 ### Mentions
 

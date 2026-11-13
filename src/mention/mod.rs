@@ -17,7 +17,7 @@ use ignore::WalkBuilder;
 
 use crate::protocol::Attachment;
 
-pub use context::{Context, is_context, transcript};
+pub use context::{Context, is_context};
 
 /// What precedes a saved conversation's id in a mention, as Zed's `@thread`.
 pub const THREAD: &str = "thread:";

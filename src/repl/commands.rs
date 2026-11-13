@@ -9,6 +9,7 @@ pub enum Command {
     Threads,
     Fork,
     History,
+    Copy(Scope),
     Model(Option<String>),
     Think(Option<String>),
     Theme(Option<String>),
@@ -17,6 +18,13 @@ pub enum Command {
     Memories,
     Clear,
     Exit,
+}
+
+/// How much of the conversation a copy takes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Scope {
+    Reply,
+    Thread,
 }
 
 /// What a command's argument names, which decides how it completes.
@@ -89,6 +97,20 @@ pub const COMMANDS: &[Spec] = &[
         arg: None,
         about: "Show this conversation",
         build: |_| Command::History,
+    },
+    Spec {
+        name: "copy",
+        aliases: &[],
+        arg: None,
+        about: "Copy the latest reply as Markdown",
+        build: |_| Command::Copy(Scope::Reply),
+    },
+    Spec {
+        name: "copy-all",
+        aliases: &[],
+        arg: None,
+        about: "Copy this conversation as Markdown",
+        build: |_| Command::Copy(Scope::Thread),
     },
     Spec {
         name: "model",

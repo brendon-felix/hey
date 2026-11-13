@@ -14,6 +14,7 @@ use crate::mention::{self, Context, Item, Reference, SHARED, SKILL};
 use crate::protocol::{Attachment, Event};
 use crate::sessions::SessionId;
 use crate::skills::{self, Found, Skill};
+use crate::transcript;
 
 /// What the host attaches for a mention: a file or directory of its shared
 /// repository, a saved conversation, or a skill the user invoked.
@@ -112,7 +113,7 @@ impl Host {
     }
 
     async fn summary(&self, id: &SessionId, model: &Model) -> Result<String> {
-        let transcript = mention::transcript(&self.sessions.messages(id)?);
+        let transcript = transcript::thread(&self.sessions.messages(id)?);
         if transcript.is_empty() {
             bail!("nothing was said in it");
         }
