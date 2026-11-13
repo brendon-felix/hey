@@ -249,17 +249,16 @@ async fn call_event(
     }
 }
 
-/// The decision, once a client makes it.
+/// The decision, once a client makes it, as the only line of a stream that
+/// is kept open meanwhile: a question can wait longer than a proxy lets a
+/// silent response. `null` when the call is no longer waited for.
 async fn call_ask(
     State(host): State<Arc<Host>>,
     Path((id, call)): Path<(SessionId, u64)>,
     Json(ask): Json<Ask>,
-) -> Reply<impl IntoResponse> {
-    let decision = host
-        .call_ask(&id, CallId(call), ask)
-        .await
-        .ok_or_else(|| Failure(StatusCode::NOT_FOUND, "the call is no longer waited for".into()))?;
-    Ok(Json(decision))
+) -> Response {
+    let decision = stream::once(async move { host.call_ask(&id, CallId(call), ask).await });
+    ndjson_response(ndjson(decision))
 }
 
 async fn finish(

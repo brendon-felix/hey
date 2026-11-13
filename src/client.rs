@@ -242,9 +242,16 @@ impl Client {
     }
 
     /// Waits for a client following the run to decide `ask` for the call.
+    /// The host keeps the response open with blank lines until then.
     pub async fn call_ask(&self, id: &SessionId, call: CallId, ask: &Ask) -> Result<Decision> {
         let path = format!("{}/asks", call_path(id, call));
-        self.json(self.http.post(self.url(&path)?).json(ask)).await
+        let response = self.ok(self.http.post(self.url(&path)?).json(ask)).await?;
+        let mut decisions = parse::<Option<Decision>>(lines(response));
+        decisions
+            .next()
+            .await
+            .context("the host sent no decision")??
+            .context("the call is no longer waited for")
     }
 
     /// Reports how the call went; false when it was no longer waited for.

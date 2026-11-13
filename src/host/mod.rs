@@ -285,9 +285,15 @@ impl Host {
     pub async fn start(
         self: &Arc<Self>,
         id: SessionId,
-        request: RunRequest,
+        mut request: RunRequest,
         machine: Option<String>,
     ) -> Result<Events, ThreadError> {
+        // A client on this machine lends tools the host has already.
+        if let Some(client) = &mut request.client
+            && client.lent.as_ref().is_some_and(|lent| lent.machine == self.name)
+        {
+            client.lent = None;
+        }
         let model = Model::connect(&request.options.model, &self.providers)
             .map_err(ThreadError::Other)?;
         let known = self.lock().contains_key(&id);
