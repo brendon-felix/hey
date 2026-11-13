@@ -2,7 +2,7 @@
 /*                              render/stream.rs                              */
 /* -------------------------------------------------------------------------- */
 
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::fmt;
 use std::io::IsTerminal;
 use std::time::{Duration, Instant};
@@ -10,13 +10,16 @@ use std::time::{Duration, Instant};
 use crossterm::Command;
 use crossterm::cursor::MoveUp;
 use crossterm::terminal::{BeginSynchronizedUpdate, Clear, ClearType, EndSynchronizedUpdate};
+use rig_core::message::{CallId, ToolResult};
+use rig_tools::split_status;
+use yansi::Paint;
 
-use super::preview::{Call, Preview, Progress, Source};
+use super::preview::{Call, Preview, Source};
 use super::reply::{Part, Reply};
-use super::tool::{Mark, line};
+use super::tool::{self, Mark, line};
 use super::{
-    Style, agent_row, animations, clip, clock, show, terminal_height, terminal_width, theme,
-    thought,
+    Style, animations, call_line, clip, clock, machine_arg, palette, show, summarize_args,
+    terminal_height, terminal_width, theme, thought, thought_text,
 };
 use crate::config::Output;
 
@@ -43,8 +46,52 @@ enum Mode {
 enum Chunk {
     Text(Part, String),
     End,
-    /// Hidden reasoning that took this long ended.
+    /// Hidden reasoning ended, having taken this long when that is known.
+    Thought(Option<Duration>),
+}
+
+/// What ends a preview, which its box shows.
+enum Ending<'a> {
+    /// Something else shows below it.
+    Interrupted,
+    /// The reasoning it shows took this long.
     Thought(Duration),
+    /// The result of the call it belongs to, which its marker sums up.
+    Answered(&'a str),
+}
+
+/// The calls shown whose results have yet to come.
+#[derive(Default)]
+struct Calls {
+    /// Each call as its line names it.
+    named: HashMap<CallId, String>,
+    /// The call shown last, until a result comes.
+    latest: Option<CallId>,
+}
+
+impl Calls {
+    fn called(&mut self, id: Option<CallId>, named: String) {
+        if let Some(id) = &id {
+            self.named.insert(id.clone(), named);
+        }
+        self.latest = id;
+    }
+
+    /// Where `result` shows: right under its call, or apart from it, as
+    /// when the calls of a reply run side by side.
+    fn answered(&mut self, result: &ToolResult) -> Placement {
+        let named = self.named.remove(&result.call);
+        match self.latest.take() == Some(result.call.clone()) {
+            true => Placement::Under,
+            false => Placement::Apart(named),
+        }
+    }
+}
+
+enum Placement {
+    Under,
+    /// Apart from its call, which it names when known.
+    Apart(Option<String>),
 }
 
 /// What the spinner says the agent is doing.
@@ -88,6 +135,9 @@ pub struct Stream {
     /// The latest of what the agent does besides answering, while it goes
     /// on. Output that is not a terminal gets it once it ends.
     preview: Option<Preview>,
+    calls: Calls,
+    /// Whether the latest call's output showed as it ran.
+    ran_live: bool,
     /// Received but not yet shown.
     backlog: VecDeque<Chunk>,
     started: Instant,
@@ -103,6 +153,15 @@ impl Stream {
             (true, false) => Mode::Live,
             (true, true) => Mode::Animated,
         };
+        Self::with_mode(style, mode)
+    }
+
+    /// A stream that shows a conversation already had, as it showed live.
+    pub fn replaying(style: &Style) -> Self {
+        Self::with_mode(style, Mode::Lines)
+    }
+
+    fn with_mode(style: &Style, mode: Mode) -> Self {
         let now = Instant::now();
         Self {
             mode,
@@ -110,6 +169,8 @@ impl Stream {
             style: style.clone(),
             activity: Activity::Waiting,
             preview: None,
+            calls: Calls::default(),
+            ran_live: false,
             backlog: VecDeque::new(),
             started: now,
             quiet_since: now,
@@ -131,11 +192,11 @@ impl Stream {
     pub fn reasoning(&mut self, text: String) {
         match self.style.thinking_output {
             Output::Full => self.receive(Part::Reasoning, text),
-            Output::Preview => {
+            Output::Preview if !text.is_empty() => {
                 self.think();
                 self.preview(Source::Reasoning, &text);
             }
-            Output::Hidden => self.think(),
+            Output::Preview | Output::Hidden => self.think(),
         }
     }
 
@@ -148,17 +209,20 @@ impl Stream {
         self.backlog.push_back(Chunk::End);
     }
 
-    /// A part of reasoning ended after `duration`, which shows where its
-    /// reasoning does not, or only in preview.
-    pub fn thought(&mut self, duration: Duration) {
+    /// A part of reasoning ended after `duration`, when that is known,
+    /// which shows where its reasoning does not, or only in preview.
+    pub fn thought(&mut self, duration: Option<Duration>) {
         self.end_part();
-        match (self.style.thinking_output, &self.preview) {
-            (Output::Full, _) => {}
-            (_, Some(preview)) if preview.source() == Source::Reasoning => {
-                self.end_preview(Some(duration));
+        match (self.style.thinking_output, &self.preview, duration) {
+            (Output::Full, _, _) => {}
+            (_, Some(preview), Some(duration)) if preview.source() == Source::Reasoning => {
+                self.end_preview(Ending::Thought(duration));
+            }
+            (_, Some(preview), None) if preview.source() == Source::Reasoning => {
+                self.end_preview(Ending::Interrupted);
             }
             // Reasoning whose text the provider withholds still took time.
-            (Output::Preview | Output::Hidden, _) => {
+            (Output::Preview | Output::Hidden, _, _) => {
                 self.backlog.push_back(Chunk::Thought(duration));
             }
         }
@@ -178,17 +242,88 @@ impl Stream {
         }
     }
 
-    pub fn running(&mut self, tool: &str) {
-        self.activity = Activity::Running(tool.to_owned());
+    /// A call runs: its line, under which its output and result show, and
+    /// what it changes when it writes to a file. `machine` is the remote
+    /// client it runs on, if not the host.
+    pub fn call(&mut self, name: &str, args: &str, machine: Option<&str>, id: Option<CallId>) {
+        self.settle();
+        self.activity = Activity::Running(name.to_owned());
+        let summary = summarize_args(args);
+        let machine = machine.map(str::to_owned).or_else(|| machine_arg(args));
+        println!("\n{}", call_line(name, machine.as_deref(), &summary, terminal_width()));
+        self.calls.called(id, format!("{name} {summary}"));
+        self.ran_live = false;
+        let Some(changes) = tool::changes(name, args) else {
+            return;
+        };
+        match self.style.tool_output {
+            Output::Full => changes.iter().for_each(|(mark, text)| println!("{}", line(*mark, text))),
+            Output::Preview => {
+                let mut preview = Preview::new(Source::Changes);
+                preview.push(&changes.iter().map(|(mark, text)| format!("{}{text}\n", mark.sign())).collect::<String>());
+                self.preview = Some(preview);
+            }
+            Output::Hidden => {}
+        }
     }
 
-    /// The model has the tools' results and has yet to answer them.
-    pub fn waiting(&mut self) {
+    /// A call's result: what it gave back, where that has not shown as it
+    /// ran or with the call, and its marker, which closes the call's box
+    /// when it is still the last thing shown.
+    pub fn result(&mut self, result: &ToolResult) {
         self.activity = Activity::Waiting;
+        let name = result.name.as_str();
+        let text = tool::text(result);
+        let placement = self.calls.answered(result);
+        if result.is_error {
+            self.settle();
+            let first = text.lines().next().unwrap_or("failed");
+            let room = terminal_width().saturating_sub(name.chars().count() + 5);
+            println!("  {} {} {}", "✗".red(), name.red(), clip(first, room).red());
+            return;
+        }
+        let marker = format!("{name} {}", tool::summary(&text));
+        let own_box = matches!(placement, Placement::Under)
+            && self.preview.as_ref().is_some_and(|preview| matches!(preview.source(), Source::Command | Source::Changes));
+        if own_box {
+            self.end_preview(Ending::Answered(&marker));
+            return self.flush();
+        }
+        self.settle();
+        let called = match placement {
+            Placement::Apart(Some(called)) => Some(called),
+            Placement::Under | Placement::Apart(None) => None,
+        };
+        let (source, given) = match name {
+            "shell" => (Source::Command, split_status(&text).0),
+            _ => (Source::Returned, text.as_str()),
+        };
+        let shown = self.ran_live || tool::shows_changes(name) || given.trim().is_empty();
+        match self.style.tool_output {
+            Output::Preview if !shown && given.lines().count() > 1 => {
+                let mut preview = Preview::new(source);
+                preview.label(called.unwrap_or_default());
+                preview.push(given);
+                self.preview = Some(preview);
+                return self.end_preview(Ending::Answered(&marker));
+            }
+            Output::Full if !shown => {
+                given.lines().for_each(|text| println!("{}", line(Mark::Printed, text)));
+            }
+            Output::Full | Output::Preview | Output::Hidden => {}
+        }
+        let marker = match called {
+            Some(called) => format!("{called} · {}", tool::summary(&text)),
+            None => marker,
+        };
+        let muted = palette().muted;
+        let room = terminal_width().saturating_sub(5);
+        println!("  {} {}", muted.paint("╰─"), muted.paint(&clip(&marker, room)));
     }
 
     /// A line of a running command's output.
     pub fn output(&mut self, text: String) {
+        self.ran_live = true;
         match self.style.tool_output {
             Output::Full => {
                 self.settle();
@@ -204,7 +339,8 @@ impl Stream {
         match self.style.subagent_output {
             Output::Full => {
                 self.settle();
-                println!("{}", agent_row(&step, terminal_width()));
+                let muted = palette().muted;
+                println!("  {}", muted.paint(&clip(&step, terminal_width().saturating_sub(2))));
             }
             Output::Preview => self.preview(Source::Agents, &format!("{step}\n")),
             Output::Hidden => {}
@@ -229,7 +365,7 @@ impl Stream {
     /// Shows everything received and ends the open part and preview, so
     /// other output can follow.
     pub fn settle(&mut self) {
-        self.end_preview(None);
+        self.end_preview(Ending::Interrupted);
         self.flush();
     }
 
@@ -249,19 +385,29 @@ impl Stream {
             self.flush();
         }
         if self.preview.as_ref().is_some_and(|preview| preview.source() != source) {
-            self.end_preview(None);
+            self.end_preview(Ending::Interrupted);
         }
         self.preview.get_or_insert_with(|| Preview::new(source)).push(text);
     }
 
-    /// Leaves the preview shown for good, saying how long it took when that
-    /// is known.
-    fn end_preview(&mut self, took: Option<Duration>) {
-        let Some(preview) = self.preview.take() else {
+    /// Leaves the preview shown for good, with what ended it.
+    fn end_preview(&mut self, ending: Ending) {
+        let Some(mut preview) = self.preview.take() else {
             return;
         };
         self.hide_status();
-        let rows = preview.rows(self.preview_width(), Progress::Ended(took));
+        if preview.source() == Source::Reasoning {
+            let took = match ending {
+                Ending::Thought(duration) => Some(duration),
+                Ending::Interrupted | Ending::Answered(_) => None,
+            };
+            preview.label(thought_text(took));
+        }
+        let bottom = match ending {
+            Ending::Answered(marker) => marker,
+            Ending::Interrupted | Ending::Thought(_) => "",
+        };
+        let rows = preview.framed(self.preview_width(), bottom);
         show(rows.iter().map(|row| format!("{row}\n")).collect::<String>());
     }
 
@@ -315,12 +461,12 @@ impl Stream {
     /// Hands the reply up to `budget` characters of the backlog, in order.
     fn reveal(&mut self, mut budget: usize) {
         if !self.backlog.is_empty() {
-            self.end_preview(None);
+            self.end_preview(Ending::Interrupted);
         }
         while let Some(chunk) = self.backlog.pop_front() {
             match chunk {
                 Chunk::End => self.reply.finish(),
-                Chunk::Thought(duration) => thought(Some(duration)),
+                Chunk::Thought(duration) => thought(duration),
                 Chunk::Text(part, mut text) => {
                     let end = text.char_indices().nth(budget).map_or(text.len(), |(at, _)| at);
                     let rest = text.split_off(end);
@@ -345,11 +491,11 @@ impl Stream {
         let mut rows = self
             .preview
             .as_ref()
-            .map_or_else(Vec::new, |preview| preview.rows(self.preview_width(), Progress::Going));
+            .map_or_else(Vec::new, |preview| preview.framed(self.preview_width(), ""));
         if self.quiet_since.elapsed() >= SPINNER_DELAY {
             let room = terminal_height().saturating_sub(rows.len() + 2);
             if let Activity::Preparing(call) = &self.activity {
-                rows.extend(call.rows(terminal_width().saturating_sub(1), room));
+                rows.extend(call.rows(self.preview_width(), room));
             }
             rows.push(self.spinner());
         }

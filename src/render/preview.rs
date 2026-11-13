@@ -3,50 +3,63 @@
 /* -------------------------------------------------------------------------- */
 
 use std::collections::VecDeque;
-use std::time::Duration;
 
 use rig_core::streaming::parse_partial_arguments;
 use textwrap::core::display_width;
+use yansi::{Paint, Style};
 
-use super::tool::{Mark, PREVIEW_LINES, row};
-use super::{agent_row, call_line, palette, summarize, thought_text, wrap};
+use super::tool::PREVIEW_LINES;
+use super::{call_line, clip, palette, summarize, wrap};
 
 /// Most rows of the text being written the box shows.
 const ROWS: usize = 10;
 
-/// What a [`Preview`] shows the latest of.
+/// What a [`Preview`] shows.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Source {
-    /// A running command's output, a row per line.
+    /// A command's output: its latest lines.
     Command,
-    /// The model's reasoning, wrapped, under a line saying it thinks.
+    /// The model's reasoning, wrapped: its latest rows.
     Reasoning,
-    /// What subagents do, a row per step.
+    /// What subagents do: their latest steps.
     Agents,
+    /// The lines a call to `write` or `edit` removes and adds, marked `-`
+    /// and `+`: the first of them.
+    Changes,
+    /// What a call gave back: its first lines.
+    Returned,
 }
 
-/// Whether what a [`Preview`] shows goes on, and once it has ended, how long
-/// it took when that is known.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Progress {
-    Going,
-    Ended(Option<Duration>),
+impl Source {
+    fn keeps_first(self) -> bool {
+        matches!(self, Source::Changes | Source::Returned)
+    }
 }
 
-/// The latest of what the agent does besides answering, which shows in
-/// place as more arrives and stays once it ends.
+/// Some of what the agent does besides answering, in a box: shown in place
+/// as more arrives, and left in place once it ends.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Preview {
     source: Source,
-    /// Its latest lines, each with its `\n` once complete.
+    /// What the box's top border says.
+    label: String,
+    /// The lines it keeps, each with its `\n` once complete.
     lines: VecDeque<String>,
+    /// How many lines it has been given.
+    total: usize,
 }
 
 impl Preview {
     pub fn new(source: Source) -> Self {
+        let label = match source {
+            Source::Reasoning => "Thinking",
+            _ => "",
+        };
         Self {
             source,
+            label: label.to_owned(),
             lines: VecDeque::new(),
+            total: 0,
         }
     }
 
@@ -54,47 +67,71 @@ impl Preview {
         self.source
     }
 
+    pub fn label(&mut self, label: String) {
+        self.label = label;
+    }
+
     pub fn push(&mut self, text: &str) {
         for piece in text.split_inclusive('\n') {
             match self.lines.back_mut() {
                 Some(open) if !open.ends_with('\n') => open.push_str(piece),
-                _ => self.lines.push_back(piece.to_owned()),
+                _ => {
+                    self.lines.push_back(piece.to_owned());
+                    self.total += 1;
+                }
             }
             // Reasoning spaces its paragraphs, which would waste a preview's rows.
             if self.source == Source::Reasoning
                 && self.lines.back().is_some_and(|line| line.ends_with('\n') && blank(line))
             {
                 self.lines.pop_back();
+                self.total -= 1;
             }
         }
-        let excess = self.lines.len().saturating_sub(PREVIEW_LINES);
-        self.lines.drain(..excess);
+        if self.source.keeps_first() {
+            self.lines.truncate(PREVIEW_LINES);
+        } else {
+            let excess = self.lines.len().saturating_sub(PREVIEW_LINES);
+            self.lines.drain(..excess);
+        }
     }
 
-    /// Its rows, none wider than `width` columns: at most [`PREVIEW_LINES`]
-    /// of the latest, under a header for reasoning.
-    pub fn rows(&self, width: usize, progress: Progress) -> Vec<String> {
+    /// The box, `width` columns wide, with `bottom` set in its lower border.
+    /// Reasoning has a row to itself above it, as text the reply begins.
+    pub fn framed(&self, width: usize, bottom: &str) -> Vec<String> {
+        let framed = framed(&self.label, self.rows(inner(width)), bottom, width);
+        match self.source {
+            Source::Reasoning => std::iter::once(String::new()).chain(framed).collect(),
+            _ => framed,
+        }
+    }
+
+    /// At most [`PREVIEW_LINES`] rows, none wider than `width` columns.
+    fn rows(&self, width: usize) -> Vec<Row> {
         let lines = self.lines.iter().map(|line| line.strip_suffix('\n').unwrap_or(line));
-        let mut rows: Vec<String> = match self.source {
-            Source::Command => lines.map(|line| row(Mark::Printed, line, width)).collect(),
-            Source::Agents => lines.map(|line| agent_row(line, width)).collect(),
+        let lines = lines.map(|line| line.replace('\t', "    "));
+        let mut rows: Vec<Row> = match self.source {
+            Source::Command | Source::Returned => {
+                lines.map(|line| Row::new(&[(&clip(&line, width), Style::new())])).collect()
+            }
+            Source::Changes => lines.map(|line| change(&line, width)).collect(),
+            Source::Agents => lines.map(|line| step(&line, width)).collect(),
             Source::Reasoning => lines
                 .filter(|line| !blank(line))
-                .flat_map(|line| reasoning_rows(line, width))
+                .flat_map(|line| reasoning(&line, width))
                 .collect(),
         };
-        rows.drain(..rows.len().saturating_sub(PREVIEW_LINES));
-        match self.source {
-            Source::Reasoning => {
-                let header = match progress {
-                    Progress::Going => "Thinking".to_owned(),
-                    Progress::Ended(took) => thought_text(took),
-                };
-                let header = palette().muted.paint(&header).italic().to_string();
-                [String::new(), header].into_iter().chain(rows).collect()
+        if self.source.keeps_first() {
+            let more = self.total - self.lines.len();
+            if more > 0 {
+                let muted = Style::new().fg(palette().muted.into());
+                let lines = if more == 1 { "line" } else { "lines" };
+                rows.push(Row::new(&[(&format!("… {more} more {lines}"), muted)]));
             }
-            Source::Command | Source::Agents => rows,
+        } else {
+            rows.drain(..rows.len().saturating_sub(PREVIEW_LINES));
         }
+        rows
     }
 }
 
@@ -102,16 +139,74 @@ fn blank(line: &str) -> bool {
     line.trim().is_empty()
 }
 
-/// A line of reasoning wrapped beside the preview's border.
-fn reasoning_rows(line: &str, width: usize) -> Vec<String> {
-    let line = line.replace('\t', "    ");
-    let muted = palette().muted;
-    wrap::rows(&line, width.saturating_sub(4))
+fn change(line: &str, width: usize) -> Row {
+    let style = match line.as_bytes().first() {
+        Some(b'+') => Style::new().green(),
+        Some(b'-') => Style::new().red(),
+        _ => Style::new(),
+    };
+    Row::new(&[(&clip(line, width), style)])
+}
+
+/// A subagent's step, its label muted, as [`super::agent_step`] puts it.
+fn step(line: &str, width: usize) -> Row {
+    let line = clip(line, width);
+    let muted = Style::new().fg(palette().muted.into());
+    match line.split_once(" › ") {
+        Some((label, step)) => Row::new(&[(label, muted), (" › ", muted), (step, Style::new())]),
+        None => Row::new(&[(&line, Style::new())]),
+    }
+}
+
+fn reasoning(line: &str, width: usize) -> Vec<Row> {
+    wrap::rows(line, width)
         .into_iter()
-        .map(|range| {
-            let text = &line[wrap::trimmed(&line, &range)];
-            format!("  {} {}", muted.paint("│"), muted.paint(text).italic())
-        })
+        .map(|range| Row::new(&[(&line[wrap::trimmed(line, &range)], Style::new().italic())]))
+        .collect()
+}
+
+/// A row of a box: its text as painted, and the columns it takes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Row {
+    painted: String,
+    width: usize,
+}
+
+impl Row {
+    fn new(parts: &[(&str, Style)]) -> Self {
+        Self {
+            painted: parts.iter().map(|(text, style)| text.paint(*style).to_string()).collect(),
+            width: parts.iter().map(|(text, _)| display_width(text)).sum(),
+        }
+    }
+}
+
+/// Columns inside a box `width` columns wide: it is indented two, and has
+/// a border and a space on each side.
+fn inner(width: usize) -> usize {
+    width.saturating_sub(6).max(1)
+}
+
+/// `rows` in a box `width` columns wide, its borders muted, with `top` and
+/// `bottom` set in them.
+pub fn framed(top: &str, rows: impl IntoIterator<Item = Row>, bottom: &str, width: usize) -> Vec<String> {
+    let inner = inner(width);
+    let muted = palette().muted;
+    let border = |left: &str, label: &str, right: &str| {
+        let label = match label.is_empty() || inner < 4 {
+            true => String::new(),
+            false => format!(" {} ", clip(label, inner - 2)),
+        };
+        let rule = "─".repeat((inner + 1).saturating_sub(display_width(&label)));
+        format!("  {}", muted.paint(&format!("{left}─{label}{rule}{right}")))
+    };
+    let side = muted.paint("│");
+    std::iter::once(border("╭", top, "╮"))
+        .chain(rows.into_iter().map(|row| {
+            let padding = " ".repeat(inner.saturating_sub(row.width));
+            format!("  {side} {}{padding} {side}", row.painted)
+        }))
+        .chain(std::iter::once(border("╰", bottom, "╯")))
         .collect()
 }
 
@@ -163,32 +258,22 @@ impl Call {
 
 /// `text` in a box `width` columns wide, its last `height` rows at most.
 fn boxed(text: &str, width: usize, height: usize) -> Vec<String> {
-    // Indented two columns, and a border and a space on each side.
-    let inner = width.saturating_sub(6).max(1);
     let text = text.replace('\t', "    ").replace('\r', "");
     let rows: Vec<&str> = text
         .lines()
         .flat_map(|line| {
-            wrap::rows(line, inner)
+            wrap::rows(line, inner(width))
                 .into_iter()
                 .map(move |row| &line[wrap::trimmed(line, &row)])
         })
         .collect();
     let shown = &rows[rows.len().saturating_sub(height)..];
-    let label = Some(format!(" {} lines ", text.lines().count()))
-        .filter(|label| shown.len() < rows.len() && display_width(label) <= inner + 1)
-        .unwrap_or_default();
-    let rule = |count: usize| "─".repeat(count);
-    let muted = palette().muted;
-    let top = format!("╭─{label}{}╮", rule((inner + 1).saturating_sub(display_width(&label))));
-    let bottom = format!("╰{}╯", rule(inner + 2));
-    std::iter::once(format!("  {}", muted.paint(&top)))
-        .chain(shown.iter().map(|row| {
-            let padding = " ".repeat(inner.saturating_sub(display_width(row)));
-            format!("  {} {row}{padding} {}", muted.paint("│"), muted.paint("│"))
-        }))
-        .chain(std::iter::once(format!("  {}", muted.paint(&bottom))))
-        .collect()
+    let label = match shown.len() < rows.len() {
+        true => format!("{} lines", text.lines().count()),
+        false => String::new(),
+    };
+    let shown = shown.iter().map(|row| Row::new(&[(row, Style::new())]));
+    framed(&label, shown, "", width)
 }
 
 /// The text of the string value raw JSON arguments end in, as far as it
@@ -271,19 +356,41 @@ mod tests {
             preview.push(piece);
         }
         assert_eq!(
-            preview.rows(16, Progress::Going),
+            preview.framed(18, ""),
             [
                 "",
-                "Thinking",
-                "  │ five six",
-                "  │ seven",
-                "  │ eight",
-                "  │ nine",
-                "  │ ten",
+                "  ╭─ Thinking ───╮",
+                "  │ five six     │",
+                "  │ seven        │",
+                "  │ eight        │",
+                "  │ nine         │",
+                "  │ ten          │",
+                "  ╰──────────────╯",
             ]
         );
-        let ended = preview.rows(16, Progress::Ended(Some(Duration::from_secs(72))));
-        assert_eq!(ended[1], "Thought for 1m 12s");
+    }
+
+    #[test]
+    fn previews_the_first_lines_given_back_over_the_result() {
+        yansi::disable();
+        let mut preview = Preview::new(Source::Returned);
+        preview.label("read a.rs".into());
+        preview.push("1\n2\n3\n4\n5\n6\n7");
+        let framed = preview.framed(22, "read 7 lines");
+        assert_eq!(
+            framed,
+            [
+                "  ╭─ read a.rs ──────╮",
+                "  │ 1                │",
+                "  │ 2                │",
+                "  │ 3                │",
+                "  │ 4                │",
+                "  │ 5                │",
+                "  │ … 2 more lines   │",
+                "  ╰─ read 7 lines ───╯",
+            ]
+        );
+        assert!(framed.iter().all(|row| display_width(row) == 22));
     }
 
     #[test]

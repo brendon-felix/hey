@@ -87,7 +87,7 @@ pub async fn follow(backend: &Backend, thread: &SessionId, mut events: Events, s
     let mut stream = Stream::new(style);
     print!("{}", cursor::Hide);
     let shown = tokio::select! {
-        outcome = show(backend, thread, &mut events, &mut stream, &mut seen, style) => Some(outcome),
+        outcome = show(backend, thread, &mut events, &mut stream, &mut seen) => Some(outcome),
         Ok(()) = tokio::signal::ctrl_c() => None,
     };
     stream.settle();
@@ -151,7 +151,6 @@ async fn show(
     events: &mut Events,
     stream: &mut Stream,
     seen: &mut Seen,
-    style: &Style,
 ) -> Outcome {
     let mut frames = tokio::time::interval(render::FRAME);
     frames.set_missed_tick_behavior(MissedTickBehavior::Skip);
@@ -197,7 +196,7 @@ async fn show(
             Event::Reasoning { text } => stream.reasoning(text),
             Event::PartEnd => stream.end_part(),
             Event::Output { text } => stream.output(text),
-            Event::Thought { duration } => stream.thought(duration),
+            Event::Thought { duration } => stream.thought(Some(duration)),
             Event::ToolCallStart { name } => stream.preparing(name),
             Event::ToolCallArguments { json } => stream.arguments(&json),
             Event::Decided { .. } | Event::Claimed { .. } => {}
@@ -222,19 +221,23 @@ async fn show(
                     stream.agent_step(step);
                 }
             }
+            Event::ToolCall {
+                name,
+                args,
+                machine,
+                call,
+            } => stream.call(&name, &args, machine.as_deref(), call),
+            Event::ToolResult { result } => stream.result(&result),
             Event::AgentEnded { agent, error } => {
                 stream.settle();
                 render::agent_ended(seen.label(&agent), error.as_deref());
             }
             event => {
                 stream.settle();
-                match &event {
-                    Event::ToolCall { name, .. } => stream.running(name),
-                    Event::ToolResult { .. } => stream.waiting(),
-                    Event::End { saved, .. } => seen.saved = Some(*saved),
-                    _ => {}
+                if let Event::End { saved, .. } = &event {
+                    seen.saved = Some(*saved);
                 }
-                if let Some(outcome) = report(event, style) {
+                if let Some(outcome) = report(event) {
                     return outcome;
                 }
             }
@@ -282,14 +285,8 @@ async fn approve(
 
 /// Prints an event that is not part of the reply's text, and how the run
 /// ended if it did: only its end returns an outcome.
-fn report(event: Event, style: &Style) -> Option<Outcome> {
+fn report(event: Event) -> Option<Outcome> {
     match event {
-        Event::ToolCall {
-            name,
-            args,
-            machine,
-        } => render::tool_call(&name, &args, machine.as_deref(), style.tool_output),
-        Event::ToolResult { result } => render::tool_result(&result, style.tool_output),
         Event::Notice { text } => render::notice(&text),
         Event::Attached { name } => render::attached(&name),
         Event::End { ending, .. } => {
@@ -310,6 +307,8 @@ fn report(event: Event, style: &Style) -> Option<Outcome> {
         | Event::Thought { .. }
         | Event::ToolCallStart { .. }
         | Event::ToolCallArguments { .. }
+        | Event::ToolCall { .. }
+        | Event::ToolResult { .. }
         | Event::Approval { .. }
         | Event::Decided { .. }
         | Event::Context { .. }

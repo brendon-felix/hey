@@ -59,6 +59,10 @@ pub enum Event {
         /// The remote client it runs on; `None` is the host.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         machine: Option<String>,
+        /// What its [`Event::ToolResult`] answers, so a result shown apart
+        /// from its call can name it.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        call: Option<rig_core::message::CallId>,
     },
     /// A piece of a running command's output.
     Output {

@@ -16,7 +16,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread::sleep;
 use std::time::Duration;
 
-use rig_core::message::{AssistantContent, Message, ToolResult, UserContent};
+use rig_core::message::{AssistantContent, Message, UserContent};
 use textwrap::core::display_width;
 use unicode_segmentation::UnicodeSegmentation;
 use yansi::Paint;
@@ -30,8 +30,6 @@ pub use reply::{Reply, rows as reply_rows};
 pub use stream::{FRAME, Stream};
 pub use theme::{Color, Palette, Theme, palette, themes};
 
-use preview::{Preview, Progress, Source};
-use reply::Part;
 
 static ANIMATIONS: AtomicBool = AtomicBool::new(false);
 
@@ -99,14 +97,6 @@ pub fn user_line(text: &str, palette: Palette) -> String {
     format!("{}{}", palette.accent.paint("> "), palette.input.paint(text))
 }
 
-/// A call, the remote client it runs on if not the host, and what it will
-/// write when it is to a file.
-pub fn tool_call(name: &str, args: &str, machine: Option<&str>, shown: Output) {
-    let named = machine.map(str::to_owned).or_else(|| machine_arg(args));
-    println!("\n{}", call_line(name, named.as_deref(), &summarize_args(args), terminal_width()));
-    tool::changes(name, args, shown);
-}
-
 /// A tool call as it shows, `width` columns at most: its name, the machine
 /// it runs on when that is named, and the argument that identifies it.
 fn call_line(name: &str, machine: Option<&str>, summary: &str, width: usize) -> String {
@@ -128,30 +118,6 @@ fn machine_arg(args: &str) -> Option<String> {
     args.get(route::ARG)?.as_str().map(str::to_owned)
 }
 
-/// What a call gave back, under it, and how it ended.
-pub fn tool_result(result: &ToolResult, shown: Output) {
-    tool::returned(result, shown);
-    let text = tool::text(result);
-    let room = terminal_width().saturating_sub(result.name.as_str().chars().count() + 7);
-    if result.is_error {
-        let first = text.lines().next().unwrap_or("failed");
-        println!("  {} {} {}", "✗".red(), result.name.as_str().red(), clip(first, room).red());
-        return;
-    }
-    let summary = match text.lines().count() {
-        0 => "done".to_owned(),
-        1 => text.trim().to_owned(),
-        lines => format!("{lines} lines"),
-    };
-    let muted = palette().muted;
-    println!(
-        "  {} {} {}",
-        muted.paint("╰─"),
-        muted.paint(result.name.as_str()),
-        muted.paint(&clip(&summary, room))
-    );
-}
-
 /// A subagent began its task, `label`.
 pub fn agent_started(label: &str) {
     println!("\n{} {}", palette().name.paint("◇"), label.bold());
@@ -160,7 +126,7 @@ pub fn agent_started(label: &str) {
 /// What the subagent `label` did, as a line: a tool call or a notice.
 pub fn agent_step(label: &str, event: &Event) -> Option<String> {
     let step = match event {
-        Event::ToolCall { name, args, machine } => {
+        Event::ToolCall { name, args, machine, .. } => {
             let on = machine.clone().or_else(|| machine_arg(args));
             let on = on.map(|machine| format!(" on {machine}")).unwrap_or_default();
             format!("{name}{on} {}", summarize_args(args))
@@ -169,11 +135,6 @@ pub fn agent_step(label: &str, event: &Event) -> Option<String> {
         _ => return None,
     };
     Some(format!("{label} › {}", step.replace('\n', " ")))
-}
-
-/// A subagent's step, on one muted row `width` columns wide.
-fn agent_row(step: &str, width: usize) -> String {
-    format!("  {}", palette().muted.paint(&clip(step, width.saturating_sub(2))))
 }
 
 pub fn agent_ended(label: &str, error: Option<&str>) {
@@ -204,26 +165,6 @@ fn thought_text(duration: Option<Duration>) -> String {
     }
 }
 
-/// Reasoning from an earlier reply, shown as it was when it streamed.
-fn reasoned(text: &str, reply: &mut Reply, style: &Style) {
-    match style.thinking_output {
-        Output::Full if !text.trim().is_empty() => reply.push(Part::Reasoning, text),
-        Output::Full | Output::Hidden => {
-            reply.finish();
-            thought(None);
-        }
-        Output::Preview => {
-            reply.finish();
-            let mut preview = Preview::new(Source::Reasoning);
-            preview.push(text);
-            let width = style.width().min(terminal_width().saturating_sub(1));
-            for row in preview.rows(width, Progress::Ended(None)) {
-                println!("{row}");
-            }
-        }
-    }
-}
-
 fn clock(elapsed: Duration) -> String {
     match elapsed.as_secs() {
         seconds @ 0..60 => format!("{seconds}s"),
@@ -239,40 +180,40 @@ pub fn error(error: &dyn std::fmt::Display) {
     println!("\n{} {error}", "Error:".red());
 }
 
+/// A conversation already had, shown as it showed live.
 pub fn conversation(messages: &[Message], style: &Style) {
+    let mut stream = Stream::replaying(style);
     for message in messages {
         match message {
             Message::System { .. } => {}
             Message::User { content } => content.iter().for_each(|content| match content {
                 UserContent::Text(text) if !mention::is_context(&text.text) => {
+                    stream.settle();
                     user_message(&text.text)
                 }
-                UserContent::ToolResult(result) => {
-                    tool::printed(result, style.tool_output);
-                    tool_result(result, style.tool_output)
-                }
+                UserContent::ToolResult(result) => stream.result(result),
                 _ => {}
             }),
             Message::Assistant(assistant) => {
-                let mut reply = Reply::new(style);
                 for content in &assistant.content {
                     match content {
-                        AssistantContent::Text(text) => reply.text(&text.text),
+                        AssistantContent::Text(text) => stream.text(text.text.clone()),
                         AssistantContent::ToolCall(call) => {
-                            reply.finish();
                             let args = serde_json::Value::Object(call.function.arguments.clone());
-                            tool_call(call.function.name.as_str(), &args.to_string(), None, style.tool_output);
+                            stream.call(call.function.name.as_str(), &args.to_string(), None, Some(call.id.clone()));
                         }
                         AssistantContent::Reasoning(reasoning) => {
-                            reasoned(&reasoning.text, &mut reply, style)
+                            stream.reasoning(reasoning.text.clone());
+                            stream.thought(None);
                         }
                         _ => {}
                     }
                 }
-                reply.finish();
+                stream.end_part();
             }
         }
     }
+    stream.settle();
     println!();
 }
 

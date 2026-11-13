@@ -6,6 +6,7 @@ use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex, PoisonError};
 
 use rig_agent::agent::{AgentHook, DispatchAction, DispatchEvent, HookContext, OutcomeAction, OutcomeEvent};
+use rig_core::message::CallId;
 use serde::{Deserialize, Serialize};
 
 use crate::gate::Gate;
@@ -158,7 +159,7 @@ impl<R: Reporter> AgentHook for Approval<R> {
         let admission = self.gate.admit(name).await;
         let action = {
             let _deciding = self.deciding.lock().await;
-            self.decide(name, event.tool_args().unwrap_or_default()).await
+            self.decide(name, event.tool_args().unwrap_or_default(), event.call_id).await
         };
         // Only a call that runs keeps its admission: rig reports no outcome
         // for one stopped here, whose admission would keep the calls behind
@@ -176,7 +177,7 @@ impl<R: Reporter> AgentHook for Approval<R> {
 }
 
 impl<R: Reporter> Approval<R> {
-    async fn decide(&self, name: &str, args: &str) -> DispatchAction {
+    async fn decide(&self, name: &str, args: &str, call: Option<&CallId>) -> DispatchAction {
         let target = self.routes.target_of(name, args);
         let machine = match &target {
             Ok(Target::Client(machine)) => Some(machine.clone()),
@@ -186,6 +187,7 @@ impl<R: Reporter> Approval<R> {
             name: name.to_owned(),
             args: args.to_owned(),
             machine,
+            call: call.cloned(),
         };
         self.reporter.emit(call).await;
         match target {

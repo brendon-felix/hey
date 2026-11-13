@@ -3,66 +3,53 @@
 /* -------------------------------------------------------------------------- */
 
 use rig_core::message::ToolResult;
-use rig_tools::{EditArgs, WriteArgs, split_status};
+use rig_tools::{EditArgs, WriteArgs};
 use yansi::Paint;
 
-use super::{clip, palette, terminal_width};
-use crate::config::Output;
+use super::palette;
 
-/// Lines a preview keeps of what a call wrote or printed.
+/// Lines a preview keeps of what a call wrote, printed or gave back.
 pub(super) const PREVIEW_LINES: usize = 5;
 
-/// What a call to `write` or `edit` changes in its file.
-pub(super) fn changes(name: &str, args: &str, shown: Output) {
-    match name {
+/// Whether calls to `name` show what they change in a file, rather than
+/// what they give back.
+pub(super) fn shows_changes(name: &str) -> bool {
+    matches!(name, "write" | "edit")
+}
+
+/// The lines a call to `write` or `edit` adds and removes in its file.
+pub(super) fn changes(name: &str, args: &str) -> Option<Vec<(Mark, String)>> {
+    let lines = match name {
         "write" => {
-            if let Ok(write) = serde_json::from_str::<WriteArgs>(args) {
-                let lines: Vec<_> = write.content.lines().map(|line| (Mark::Added, line)).collect();
-                excerpt(&lines, shown, Keep::First);
-            }
+            let write = serde_json::from_str::<WriteArgs>(args).ok()?;
+            write.content.lines().map(|line| (Mark::Added, line.to_owned())).collect()
         }
         "edit" => {
-            if let Ok(edit) = serde_json::from_str::<EditArgs>(args) {
-                let lines: Vec<_> = edit
-                    .edits
-                    .iter()
-                    .flat_map(|edit| diff(&edit.old_text, &edit.new_text))
-                    .collect();
-                excerpt(&lines, shown, Keep::First);
-            }
+            let edit = serde_json::from_str::<EditArgs>(args).ok()?;
+            edit.edits
+                .iter()
+                .flat_map(|edit| diff(&edit.old_text, &edit.new_text))
+                .map(|(mark, line)| (mark, line.to_owned()))
+                .collect()
         }
-        _ => {}
-    }
-}
-
-/// What a finished command printed, as it showed while it ran.
-pub(super) fn printed(result: &ToolResult, shown: Output) {
-    if result.name.as_str() != "shell" || result.is_error {
-        return;
-    }
-    let text = text(result);
-    let lines: Vec<_> = split_status(&text).0.lines().map(|line| (Mark::Printed, line)).collect();
-    excerpt(&lines, shown, Keep::Last);
-}
-
-/// What a call gave back, where it has not shown already: a command's
-/// output shows as it runs, what `write` and `edit` change shows with the
-/// call, and a single line shows beside the result's marker.
-pub(super) fn returned(result: &ToolResult, shown: Output) {
-    if matches!(result.name.as_str(), "shell" | "write" | "edit") || result.is_error {
-        return;
-    }
-    let text = text(result);
-    let lines: Vec<_> = text.lines().map(|line| (Mark::Printed, line)).collect();
-    if lines.len() > 1 {
-        excerpt(&lines, shown, Keep::First);
-    }
+        _ => return None,
+    };
+    Some(lines)
 }
 
 /// A result's text, whatever else it holds left out.
 pub(super) fn text(result: &ToolResult) -> String {
     let text: Vec<_> = result.content.iter().filter_map(|content| content.as_text()).collect();
     text.join("\n")
+}
+
+/// What a result's marker says of it: its only line, or how many it has.
+pub(super) fn summary(text: &str) -> String {
+    match text.lines().count() {
+        0 => "done".to_owned(),
+        1 => text.trim().to_owned(),
+        lines => format!("{lines} lines"),
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -72,11 +59,15 @@ pub(super) enum Mark {
     Removed,
 }
 
-/// Which end of the lines a preview keeps.
-#[derive(Debug, Clone, Copy)]
-enum Keep {
-    First,
-    Last,
+impl Mark {
+    /// How a preview's lines mark it.
+    pub(super) fn sign(self) -> &'static str {
+        match self {
+            Mark::Printed => "",
+            Mark::Added => "+ ",
+            Mark::Removed => "- ",
+        }
+    }
 }
 
 /// The lines an edit removes and adds, without those it keeps at either end.
@@ -92,31 +83,8 @@ fn diff<'a>(old: &'a str, new: &'a str) -> Vec<(Mark, &'a str)> {
     removed.chain(added).collect()
 }
 
-fn excerpt(lines: &[(Mark, &str)], shown: Output, keep: Keep) {
-    match shown {
-        Output::Hidden => {}
-        Output::Full => lines.iter().for_each(|&(mark, text)| println!("{}", line(mark, text))),
-        Output::Preview => {
-            let more = lines.len().saturating_sub(PREVIEW_LINES);
-            let (kept, before, after) = match keep {
-                Keep::First => (&lines[..lines.len() - more], 0, more),
-                Keep::Last => (&lines[more..], more, 0),
-            };
-            elided(before);
-            kept.iter().for_each(|&(mark, text)| println!("{}", row(mark, text, terminal_width())));
-            elided(after);
-        }
-    }
-}
-
-fn elided(lines: usize) {
-    if lines > 0 {
-        let muted = palette().muted;
-        println!("  {}", muted.paint(&format!("… {lines} more lines")));
-    }
-}
-
-/// A line under a call: what it printed, or what it writes to a file.
+/// A line under a call, shown in full: what it printed or gave back, or
+/// what it writes to a file.
 pub(super) fn line(mark: Mark, text: &str) -> String {
     let text = text.strip_suffix('\n').unwrap_or(text);
     let muted = palette().muted;
@@ -125,12 +93,6 @@ pub(super) fn line(mark: Mark, text: &str) -> String {
         Mark::Added => format!("  {}", format!("+ {text}").green()),
         Mark::Removed => format!("  {}", format!("- {text}").red()),
     }
-}
-
-/// [`line`] cut to a single row `width` columns wide.
-pub(super) fn row(mark: Mark, text: &str, width: usize) -> String {
-    let text = text.strip_suffix('\n').unwrap_or(text).replace('\t', "    ");
-    line(mark, &clip(&text, width.saturating_sub(4)))
 }
 
 #[cfg(test)]

@@ -54,8 +54,8 @@ colors = true
 # Ease streamed text in rather than showing each piece as it arrives.
 animations = true
 # How much shows of what the agent does besides answering. "full" shows all
-# of it, "preview" a few lines (the latest, kept in place as they change),
-# "hidden" none.
+# of it, "preview" a few lines in a box (the latest, kept in place as they
+# change), "hidden" none.
 #
 # The model's reasoning, under "Thought for 12s". In full it streams dimmed,
 # like the reply.
