@@ -62,6 +62,12 @@ bracketed_paste = true
 # Keep input history across sessions, in the config directory's history.txt.
 history = true
 history_size = 1000
+# The status at the right of the prompt: other conversations running or
+# answered unseen, the remote host, the model, its thinking level and how full
+# its context is. "short" (fermi · qwen3.8 medium · 24k/128k), "full"
+# (fermi · ollama/qwen3.8:latest · thinking medium · 24k / 128k tokens) or
+# "off".
+right_prompt = "short"
 
 [sessions]
 # Where conversations are saved. Every answer is saved as it finishes;

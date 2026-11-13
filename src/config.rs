@@ -182,6 +182,14 @@ pub enum EditMode {
     Helix,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum RightPrompt {
+    Off,
+    Short,
+    Full,
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Editor {
@@ -189,6 +197,7 @@ pub struct Editor {
     pub bracketed_paste: bool,
     pub history: bool,
     pub history_size: usize,
+    pub right_prompt: RightPrompt,
 }
 
 impl Default for Editor {
@@ -198,6 +207,7 @@ impl Default for Editor {
             bracketed_paste: true,
             history: true,
             history_size: 1000,
+            right_prompt: RightPrompt::Short,
         }
     }
 }
@@ -551,6 +561,7 @@ mod tests {
         assert_eq!(documented.display.show_thinking, built_in.display.show_thinking);
         assert_eq!(documented.editor.mode, built_in.editor.mode);
         assert_eq!(documented.editor.history_size, built_in.editor.history_size);
+        assert_eq!(documented.editor.right_prompt, built_in.editor.right_prompt);
         assert_eq!(documented.memory.enabled, built_in.memory.enabled);
         assert_eq!(documented.memory.recall, built_in.memory.recall);
         assert_eq!(documented.memory.embedding_model, built_in.memory.embedding_model);

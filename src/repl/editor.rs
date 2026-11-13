@@ -24,7 +24,7 @@ use reedline::{
 use super::commands::{self, Arg, COMMANDS};
 use super::mentions::{self as host, Index, Mentions};
 use super::watch::{self, Watch};
-use crate::config::{self, EditMode as Mode, Thinking};
+use crate::config::{self, EditMode as Mode, RightPrompt, Thinking};
 use crate::mention::{self, Mention, Reference};
 use crate::render::{self, Palette, palette};
 
@@ -42,7 +42,7 @@ pub struct Status {
 }
 
 impl Status {
-    fn summary(&self) -> String {
+    fn short(&self) -> String {
         let name = short_name(&self.model);
         let model = match self.thinking {
             Some(level) => format!("{name} {}", level.as_str()),
@@ -52,13 +52,20 @@ impl Status {
             Some(window) => format!("{}/{}", compact(used), compact(u64::from(window))),
             None => compact(used),
         });
-        self.remote
-            .iter()
-            .cloned()
-            .chain(std::iter::once(model))
-            .chain(context)
-            .collect::<Vec<_>>()
-            .join(" · ")
+        self.after_remote(std::iter::once(model).chain(context))
+    }
+
+    fn full(&self) -> String {
+        let thinking = self.thinking.map(|level| format!("thinking {}", level.as_str()));
+        let context = self.context.map(|used| match self.window {
+            Some(window) => format!("{} / {} tokens", compact(used), compact(u64::from(window))),
+            None => format!("{} tokens", compact(used)),
+        });
+        self.after_remote(std::iter::once(self.model.clone()).chain(thinking).chain(context))
+    }
+
+    fn after_remote(&self, parts: impl Iterator<Item = String>) -> String {
+        self.remote.iter().cloned().chain(parts).collect::<Vec<_>>().join(" · ")
     }
 }
 
@@ -136,6 +143,7 @@ impl Editor {
                 status,
                 watch,
                 colors,
+                right: config.right_prompt,
             },
         }
     }
@@ -465,6 +473,7 @@ enum HeyPrompt {
         status: SharedStatus,
         watch: Watch,
         colors: bool,
+        right: RightPrompt,
     },
     /// How a submitted line stays in the scrollback: without the status.
     Submitted,
@@ -472,7 +481,12 @@ enum HeyPrompt {
 
 /// The editing status: a spinner and a blue dot counting the other threads
 /// answering and answered unseen, then the model and its context.
-fn status_line(status: &SharedStatus, watch: &Watch, colors: bool) -> String {
+fn status_line(
+    status: &SharedStatus,
+    watch: &Watch,
+    colors: bool,
+    summary: fn(&Status) -> String,
+) -> String {
     let paint = |color: Color, text: &str| match colors {
         true => color.paint(text).to_string(),
         false => text.to_owned(),
@@ -487,7 +501,7 @@ fn status_line(status: &SharedStatus, watch: &Watch, colors: bool) -> String {
         let dot = paint(Color::Blue, "●");
         format!("{dot}{}", muted(&format!(" {} new", elsewhere.unseen)))
     });
-    let summary = status.lock().unwrap_or_else(PoisonError::into_inner).summary();
+    let summary = summary(&status.lock().unwrap_or_else(PoisonError::into_inner));
     running
         .into_iter()
         .chain(unseen)
@@ -507,7 +521,15 @@ impl Prompt for HeyPrompt {
                 status,
                 watch,
                 colors,
-            } => Cow::Owned(status_line(status, watch, *colors)),
+                right,
+            } => {
+                let summary = match right {
+                    RightPrompt::Off => return Cow::Borrowed(""),
+                    RightPrompt::Short => Status::short,
+                    RightPrompt::Full => Status::full,
+                };
+                Cow::Owned(status_line(status, watch, *colors, summary))
+            }
             Self::Submitted => Cow::Borrowed(""),
         }
     }
