@@ -504,19 +504,25 @@ impl Choices {
             });
             return commands.chain(skills).collect();
         };
+        let start = before.len() - arg.len();
+        let span = Span::new(start, before.len());
         let values = match commands::find(word).and_then(|spec| spec.arg) {
             Some(Arg::Model) => &self.models,
             Some(Arg::Thinking) => &self.thinking,
             Some(Arg::Theme) => &self.themes,
+            Some(Arg::Thread) => {
+                return host::thread_matches(matcher, &index.threads, arg.trim())
+                    .map(|summary| host::thread_suggestion(summary, span))
+                    .collect();
+            }
             None => return Vec::new(),
         };
-        let start = before.len() - arg.len();
         values
             .iter()
             .filter(|value| value.contains(arg.trim()))
             .map(|value| Suggestion {
                 value: value.clone(),
-                span: Span::new(start, before.len()),
+                span,
                 ..Suggestion::default()
             })
             .collect()

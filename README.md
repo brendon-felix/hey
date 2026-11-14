@@ -69,7 +69,8 @@ Type `/` or press Tab to see commands and skills; the status line describes the 
 | --- | --- |
 | `/help`, `/h` | Show commands and shortcuts |
 | `/new`, `/reset`, `/r` | Start a new conversation |
-| `/threads`, `/resume`, `/load`, `/l` | List conversations to open, archive, delete or fork |
+| `/threads`, `/load`, `/l` | List conversations to open, archive, delete or fork |
+| `/resume [thread]` | Continue the newest other conversation that is not archived, or the one named |
 | `/fork` | Continue in a copy of this conversation, leaving the original as it is |
 | `/history` | Show this conversation |
 | `/copy` | Copy the latest reply as Markdown |
@@ -86,6 +87,9 @@ Type `/` or press Tab to see commands and skills; the status line describes the 
 
 `/model`, `/think` and `/theme` save their choice to the config file, so later sessions start
 with it; `--model` and `--think` apply to one run only.
+
+`/resume` takes a conversation's id, which Tab completes from their dates and titles, or any
+part of its date or title, opening the best match.
 
 `/copy` and `/copy-all` copy the Markdown the model wrote, not how it shows: without the
 terminal's line wrapping, reasoning or tool calls. `/copy` takes the latest reply, all the model

@@ -139,25 +139,11 @@ impl Mentions {
 
     fn threads(&self, query: &str, span: Span) -> Vec<Suggestion> {
         let index = lock(&self.index);
-        let mut matches: Vec<_> = index
-            .threads
-            .iter()
-            .filter_map(|summary| {
-                let score = self.matcher.fuzzy_match(&summary.to_string(), query)?;
-                Some((score, summary))
-            })
-            .collect();
-        matches.sort_by_key(|(score, _)| Reverse(*score));
-        matches
-            .into_iter()
+        thread_matches(&self.matcher, &index.threads, query)
             .take(MAX_SUGGESTED)
-            .map(|(_, summary)| Suggestion {
+            .map(|summary| Suggestion {
                 value: format!("@{THREAD}{}", summary.id.as_str()),
-                display_override: Some(summary.id.to_string()),
-                description: Some(summary.title.clone()),
-                span,
-                append_whitespace: true,
-                ..Suggestion::default()
+                ..thread_suggestion(summary, span)
             })
             .collect()
     }
@@ -170,6 +156,33 @@ impl Mentions {
                 ..skill_suggestion(skill, indices, span)
             })
             .collect()
+    }
+}
+
+/// The `threads` whose date and title match `query`, best first; among
+/// equals, in the order given.
+pub fn thread_matches<'a>(
+    matcher: &SkimMatcherV2,
+    threads: impl IntoIterator<Item = &'a Summary>,
+    query: &str,
+) -> impl Iterator<Item = &'a Summary> {
+    let mut matches: Vec<_> = threads
+        .into_iter()
+        .filter_map(|summary| Some((matcher.fuzzy_match(&summary.to_string(), query)?, summary)))
+        .collect();
+    matches.sort_by_key(|(score, _)| Reverse(*score));
+    matches.into_iter().map(|(_, summary)| summary)
+}
+
+/// `summary` in a menu, shown by date with its title; its value is its id.
+pub fn thread_suggestion(summary: &Summary, span: Span) -> Suggestion {
+    Suggestion {
+        value: summary.id.as_str().to_owned(),
+        display_override: Some(summary.id.to_string()),
+        description: Some(summary.title.clone()),
+        span,
+        append_whitespace: true,
+        ..Suggestion::default()
     }
 }
 

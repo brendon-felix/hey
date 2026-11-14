@@ -269,7 +269,7 @@ impl Follow {
             }
             None => {
                 self.stream.settle();
-                render::error(&"the run's events stopped before it ended; `/resume` follows it again");
+                render::error(&"the run's events stopped before it ended; `/history` follows it again");
                 return Step::Ended(Outcome::Failed);
             }
         };

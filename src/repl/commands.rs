@@ -7,6 +7,7 @@ pub enum Command {
     Help,
     New,
     Threads,
+    Resume(Option<String>),
     Fork,
     History,
     Copy(Scope),
@@ -33,6 +34,7 @@ pub enum Arg {
     Model,
     Thinking,
     Theme,
+    Thread,
 }
 
 impl Arg {
@@ -41,6 +43,7 @@ impl Arg {
             Arg::Model => "vendor/model",
             Arg::Thinking => "level",
             Arg::Theme => "theme",
+            Arg::Thread => "thread",
         }
     }
 }
@@ -79,10 +82,17 @@ pub const COMMANDS: &[Spec] = &[
     },
     Spec {
         name: "threads",
-        aliases: &["resume", "load", "l"],
+        aliases: &["load", "l"],
         arg: None,
         about: "Browse, open, archive and delete conversations",
         build: |_| Command::Threads,
+    },
+    Spec {
+        name: "resume",
+        aliases: &[],
+        arg: Some(Arg::Thread),
+        about: "Continue the latest other conversation, or the one named",
+        build: Command::Resume,
     },
     Spec {
         name: "fork",
@@ -229,6 +239,10 @@ mod tests {
             Input::Command(Command::Model(Some("openai/gpt-5.5".into())))
         );
         assert_eq!(parse("/new now"), Input::Invalid("/new takes no argument".into()));
+        assert_eq!(
+            parse("/resume auth bug"),
+            Input::Command(Command::Resume(Some("auth bug".into())))
+        );
         assert_eq!(parse("/nope"), Input::Invalid("unknown command /nope".into()));
         assert_eq!(parse(" /deploy to staging"), Input::Message("/deploy to staging".into()));
         assert_eq!(parse("/new"), Input::Command(Command::New), "commands win");

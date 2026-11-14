@@ -15,6 +15,7 @@ use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Instant;
 
 use anyhow::Result;
+use fuzzy_matcher::skim::SkimMatcherV2;
 use yansi::Paint;
 
 use crate::backend::Backend;
@@ -588,6 +589,7 @@ impl Session {
                 println!("{}\n", "Started a new conversation.".bold());
             }
             Command::Threads => self.browse().await?,
+            Command::Resume(query) => self.resume(query.as_deref()).await?,
             Command::Fork => self.fork().await?,
             Command::History => self.show_thread(true).await,
             Command::Copy(scope) => self.copy(scope).await?,
@@ -608,10 +610,7 @@ impl Session {
     async fn browse(&mut self) -> Result<()> {
         let browsed = browser::threads::browse(&self.backend, Some(&self.thread)).await?;
         match browsed.open {
-            Some(thread) => {
-                self.set_thread(thread);
-                self.show_thread(true).await;
-            }
+            Some(thread) => self.open(thread).await,
             None if browsed.deleted.contains(&self.thread) => {
                 self.set_thread(SessionId::new());
                 println!("{}\n", "Deleted this conversation; started a new one.".bold());
@@ -620,6 +619,35 @@ impl Session {
         }
         self.indexed = None;
         Ok(())
+    }
+
+    /// Opens the conversation `query` names, by id or else by the best match
+    /// of its date and title; without one, the newest besides this one that
+    /// is not archived.
+    async fn resume(&mut self, query: Option<&str>) -> Result<()> {
+        let threads = self.backend.threads().await?;
+        let summaries = threads.iter().map(|thread| &thread.summary);
+        let found = match query {
+            None => threads
+                .iter()
+                .find(|thread| !thread.archived && thread.summary.id != self.thread)
+                .map(|thread| &thread.summary),
+            Some(query) => summaries.clone().find(|summary| summary.id.as_str() == query).or_else(|| {
+                mentions::thread_matches(&SkimMatcherV2::default(), summaries, query).next()
+            }),
+        };
+        match (found, query) {
+            (Some(summary), _) => self.open(summary.id.clone()).await,
+            (None, None) => println!("{}\n", "No other conversation to resume.".bold()),
+            (None, Some(query)) => anyhow::bail!("no conversation matches {query:?}"),
+        }
+        Ok(())
+    }
+
+    /// Shows `thread` from here on, all of it.
+    async fn open(&mut self, thread: SessionId) {
+        self.set_thread(thread);
+        self.show_thread(true).await;
     }
 
     /// Goes on in a copy of this conversation, leaving the original as it is.
