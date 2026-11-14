@@ -26,6 +26,7 @@ use crate::protocol::{
     RunRequest,
 };
 use crate::sessions::SessionId;
+use crate::steer::Steer;
 
 pub async fn serve(host: Arc<Host>, config: &config::Server) -> Result<()> {
     let token: Arc<str> = token::host(&config.token)?.into();
@@ -39,6 +40,7 @@ pub async fn serve(host: Arc<Host>, config: &config::Server) -> Result<()> {
         .route("/v1/skills", get(skills))
         .route("/v1/threads/{id}", get(open).delete(delete))
         .route("/v1/threads/{id}/run", post(start).delete(stop))
+        .route("/v1/threads/{id}/steer", post(steer))
         .route("/v1/threads/{id}/viewed", post(viewed))
         .route("/v1/threads/{id}/archived", put(archive))
         .route("/v1/threads/{id}/fork", post(fork))
@@ -178,6 +180,18 @@ async fn stop(State(host): State<Arc<Host>>, Path(id): Path<SessionId>) -> Statu
     match host.stop(&id) {
         true => StatusCode::NO_CONTENT,
         false => StatusCode::NOT_FOUND,
+    }
+}
+
+/// 409 when the thread is not answering, or its answer is ending.
+async fn steer(
+    State(host): State<Arc<Host>>,
+    Path(id): Path<SessionId>,
+    Json(steer): Json<Steer>,
+) -> StatusCode {
+    match host.steer(&id, steer).await {
+        true => StatusCode::NO_CONTENT,
+        false => StatusCode::CONFLICT,
     }
 }
 

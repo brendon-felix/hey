@@ -6,25 +6,16 @@ use std::borrow::Cow;
 use std::ops::Range;
 use std::sync::Arc;
 
-use crossterm::terminal::{Clear, ClearType};
 use yansi::Paint;
 
 use super::highlight::Highlighter;
 use super::theme::Theme;
-use super::{Style, notice, show, theme, wrap};
+use super::{Style, notice, screen, theme, wrap};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Part {
     Text,
     Reasoning,
-}
-
-/// The last row of the open line, which is redrawn while the line grows.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Tail {
-    Hidden,
-    Shown,
-    Outdated,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -39,7 +30,7 @@ type Segment = (yansi::Style, Range<usize>);
 /// state the lines before it left; the open line is previewed with a copy of
 /// that state, so text is coloured from its first character. Rows the open
 /// line has wrapped past are printed for good, and only its last row is
-/// redrawn.
+/// left to redraw.
 pub struct Reply {
     style: Style,
     width: usize,
@@ -48,7 +39,8 @@ pub struct Reply {
     open: String,
     /// Rows of the open line already printed for good.
     printed: usize,
-    tail: Tail,
+    /// The open line's last row as drawn, until more of the line arrives.
+    tail: Option<String>,
 }
 
 impl Reply {
@@ -60,7 +52,7 @@ impl Reply {
             highlighter: None,
             open: String::new(),
             printed: 0,
-            tail: Tail::Hidden,
+            tail: None,
         }
     }
 
@@ -76,10 +68,9 @@ impl Reply {
         for piece in fragment.split_inclusive('\n') {
             // A tab's width depends on its column, which wrapping cannot know.
             self.open.push_str(&piece.replace('\t', "    "));
+            self.tail = None;
             if piece.ends_with('\n') {
                 self.print(Stage::Complete);
-            } else if self.tail == Tail::Shown {
-                self.tail = Tail::Outdated;
             }
         }
     }
@@ -94,16 +85,13 @@ impl Reply {
         self.highlighter = None;
     }
 
-    /// Draws the open line as far as it has arrived.
-    pub fn draw(&mut self) {
-        if !self.open.is_empty() && self.tail != Tail::Shown {
-            self.print(Stage::Open);
+    /// The open line's last row, as far as it has arrived; the rows before
+    /// it are printed for good.
+    pub fn tail(&mut self) -> Option<String> {
+        if self.tail.is_none() && !self.open.is_empty() {
+            self.tail = self.print(Stage::Open);
         }
-    }
-
-    /// Whether the cursor is at the start of a row, with nothing to redraw.
-    pub fn at_line_start(&self) -> bool {
-        self.open.is_empty()
+        self.tail.clone()
     }
 
     fn begin(&mut self, part: Part) {
@@ -116,35 +104,37 @@ impl Reply {
                     .ok()
             })
             .flatten();
-        show("\n");
+        screen::line("");
     }
 
     /// Prints the open line's rows not yet printed for good: all of them once
-    /// it is complete, else all but the last, which is left to be redrawn.
-    fn print(&mut self, stage: Stage) {
-        let Some(part) = self.part else { return };
+    /// it is complete, else all but the last, which it returns to be drawn
+    /// until the line grows.
+    fn print(&mut self, stage: Stage) -> Option<String> {
+        let part = self.part?;
         let line = match stage {
             Stage::Open => Cow::Borrowed(self.open.as_str()),
             Stage::Complete => Cow::Owned(std::mem::take(&mut self.open)),
         };
         let segments = segments(part, self.highlighter.as_mut(), &line, stage);
         let rows = wrap::rows(line.trim_end_matches('\n'), self.width);
-        let mut out = match self.tail {
-            Tail::Hidden => String::new(),
-            Tail::Shown | Tail::Outdated => format!("\r{}", Clear(ClearType::CurrentLine)),
-        };
-        let last = rows.len() - 1;
-        for (index, row) in rows.iter().enumerate().skip(self.printed) {
-            out.push_str(&paint(&line, &segments, &wrap::trimmed(&line, row)));
-            if index < last || stage == Stage::Complete {
-                out.push('\n');
+        let mut painted = rows
+            .iter()
+            .skip(self.printed)
+            .map(|row| paint(&line, &segments, &wrap::trimmed(&line, row)))
+            .collect::<Vec<_>>();
+        let tail = match stage {
+            Stage::Open => {
+                self.printed = rows.len() - 1;
+                painted.pop()
             }
-        }
-        (self.printed, self.tail) = match stage {
-            Stage::Open => (last, Tail::Shown),
-            Stage::Complete => (0, Tail::Hidden),
+            Stage::Complete => {
+                self.printed = 0;
+                None
+            }
         };
-        show(out);
+        painted.into_iter().for_each(screen::line);
+        tail
     }
 }
 

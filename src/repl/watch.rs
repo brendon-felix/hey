@@ -31,6 +31,9 @@ struct State {
     activities: Activities,
     /// The thread this terminal shows.
     current: SessionId,
+    /// Whether this terminal follows a run of it already, which needs no
+    /// waking for.
+    following: bool,
     /// The line editor's break signal.
     wake: Arc<AtomicBool>,
     repaint: Option<RepaintSignal>,
@@ -48,6 +51,7 @@ impl Watch {
         Self(Arc::new(Mutex::new(State {
             activities: Activities::new(),
             current,
+            following: false,
             wake,
             repaint: None,
         })))
@@ -63,6 +67,10 @@ impl Watch {
 
     pub fn set_current(&self, thread: SessionId) {
         self.lock().current = thread;
+    }
+
+    pub fn set_following(&self, following: bool) {
+        self.lock().following = following;
     }
 
     /// What `thread` last did on the host, as the host last said.
@@ -114,7 +122,7 @@ impl Watch {
         let mut state = self.lock();
         let was = state.activities.get(&state.current).and_then(|activity| activity.run);
         let now = activities.get(&state.current).and_then(|activity| activity.run);
-        if now.is_some() && now != was {
+        if now.is_some() && now != was && !state.following {
             state.wake.store(true, Ordering::Relaxed);
         }
         state.activities = activities;

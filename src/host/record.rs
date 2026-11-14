@@ -62,6 +62,13 @@ impl Record {
         pairing::repair(messages).messages
     }
 
+    /// How many messages the conversation held as the run's latest answer
+    /// began: more than as the run began once it answers what was sent to
+    /// it meanwhile.
+    pub fn held(&self) -> usize {
+        self.lock().before
+    }
+
     fn lock(&self) -> std::sync::MutexGuard<'_, Said> {
         self.0.lock().unwrap_or_else(PoisonError::into_inner)
     }

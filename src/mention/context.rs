@@ -49,12 +49,13 @@ impl Context {
     /// `prompt` as the model gets it: what was typed, then what was attached.
     pub fn message(self, prompt: &str) -> Message {
         let content = std::iter::once(UserContent::text(prompt))
-            .chain(self.into_text().map(UserContent::text))
+            .chain(self.text().map(UserContent::text))
             .collect();
         Message::User { content }
     }
 
-    fn into_text(self) -> Option<String> {
+    /// What was attached, as the part of a message that follows the prompt.
+    pub fn text(self) -> Option<String> {
         let sections: Vec<String> = [
             ("skills", self.skills),
             ("files", self.files),

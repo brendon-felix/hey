@@ -17,12 +17,13 @@ use futures::stream::BoxStream;
 use futures::{Stream, StreamExt, stream};
 use rig_agent::agent::{Agent, StreamingResult};
 use rig_core::completion::GenerationOptions;
+use rig_core::message::Message;
 use rig_tools::{Live, Seen};
 use tokio::sync::watch;
 use tokio_util::task::TaskTracker;
 
 use crate::agent::{self, Model};
-use crate::config::{Config, Providers};
+use crate::config::{Config, Providers, Thinking};
 use crate::gate;
 use crate::memory::{self, Memory, Recalled};
 use crate::permissions::{Origin, Permissions};
@@ -37,6 +38,7 @@ use crate::results::ResultLimit;
 use crate::route::Kit;
 use crate::sessions::{Mark, SessionId, Sessions, Summary};
 use crate::skills::{self, Found};
+use crate::steer::{self, Delivery, Steer};
 use crate::subagents::{self, Crew, Spawn};
 use crate::toolbox::{Toolbox, machine_name};
 
@@ -325,7 +327,12 @@ impl Host {
                 host.publish(&host.lock());
             }
         };
-        let run = Arc::new(Run::new(request.prompt.clone(), history, asking));
+        let run = Arc::new(Run::new(
+            request.prompt.clone(),
+            request.options.model.clone(),
+            history,
+            asking,
+        ));
         if let Some(failure) = self.take_memory_failure() {
             run.emit(Event::Notice { text: failure });
         }
@@ -351,6 +358,16 @@ impl Host {
     /// False when the thread is not answering.
     pub fn stop(&self, id: &SessionId) -> bool {
         self.run(id).inspect(|run| run.stop()).is_some()
+    }
+
+    /// Has the model answering in thread `id` handed `steer` as soon as it
+    /// can; false when the thread is not answering, or its answer is ending.
+    pub async fn steer(&self, id: &SessionId, steer: Steer) -> bool {
+        let Some(run) = self.run(id) else {
+            return false;
+        };
+        let steering = self.steering(steer, &run).await;
+        run.steer(steering)
     }
 
     /// Takes up call `call` for `follower`; false when another client took
@@ -495,7 +512,8 @@ impl Host {
                 bytes: self.result_bytes,
                 spill: agent::spill(),
             })
-            .add_hook(run.record().clone());
+            .add_hook(run.record().clone())
+            .add_hook(Delivery(run.clone()));
         if let Some(crew) = &self.crew {
             builder = builder.tool(self.spawn(crew, id, thread, request, kit));
         }
@@ -526,7 +544,8 @@ impl Host {
 
     /// Answers `request` into `run` until it ends or is stopped, then learns
     /// from an answer once its clients are let go. The agent saves the thread
-    /// as its stream ends; what a run that did not answer said is saved here.
+    /// as each of its streams ends; what a run that did not answer said
+    /// is saved here.
     async fn drive(
         self: Arc<Self>,
         id: SessionId,
@@ -537,10 +556,11 @@ impl Host {
         skills: Found,
     ) {
         let ending = tokio::select! {
-            ending = self.respond(&id, &run, &agent, &model, request, &skills) => ending,
+            ending = self.converse(&id, &run, &agent, &model, request, &skills) => ending,
             () = run.stopped() => Ending::Interrupted,
         };
         tracing::info!(thread = id.as_str(), run = ?run.id(), ?ending, "run ended");
+        run.close_steers();
         self.keep(&id, &run, &ending);
         let answered = matches!(ending, Ending::Answered);
         let saved = self
@@ -568,8 +588,8 @@ impl Host {
     }
 
     /// Saves what a run that did not answer said, which the agent leaves
-    /// unsaved, unless the thread changed since the run began, as when the
-    /// agent saved an answer just as the run was stopped.
+    /// unsaved, unless the thread changed since its latest answer began, as
+    /// when the agent saved an answer just as the run was stopped.
     fn keep(&self, id: &SessionId, run: &Run, ending: &Ending) {
         let reason = match ending {
             Ending::Answered => return,
@@ -581,7 +601,7 @@ impl Host {
             return;
         }
         let count = said.len();
-        match self.sessions.append(id, run.history(), said) {
+        match self.sessions.append(id, run.record().held(), said) {
             Ok(true) => tracing::info!(thread = id.as_str(), messages = count, "saved what an unfinished run said"),
             Ok(false) => tracing::info!(thread = id.as_str(), "an unfinished run's thread changed; saved nothing"),
             Err(error) => {
@@ -593,7 +613,9 @@ impl Host {
         }
     }
 
-    async fn respond(
+    /// Answers `request`, then what the user sent meanwhile that the model
+    /// was not yet handed, until an answer leaves nothing waiting.
+    async fn converse(
         &self,
         id: &SessionId,
         run: &Run,
@@ -608,12 +630,38 @@ impl Host {
             options,
             ..
         } = request;
-        let message = self.message(&prompt, &attachments, skills, model, run).await;
+        let mut message = self.message(&prompt, &attachments, skills, model, run).await;
+        loop {
+            let ending = self.respond(id, run, agent, message, options.thinking).await;
+            let waiting = match ending {
+                Ending::Answered => run.last_steers(),
+                Ending::Interrupted | Ending::Failed { .. } => Vec::new(),
+            };
+            if waiting.is_empty() {
+                return ending;
+            }
+            for steering in &waiting {
+                run.emit(Event::Steered {
+                    prompt: steering.prompt.clone(),
+                });
+            }
+            message = steer::message(waiting);
+        }
+    }
+
+    async fn respond(
+        &self,
+        id: &SessionId,
+        run: &Run,
+        agent: &Agent,
+        message: Message,
+        thinking: Option<Thinking>,
+    ) -> Ending {
         let runner = agent
             .prompt(message)
             .conversation(id.as_str())
             .tool_concurrency(gate::CONCURRENCY);
-        let mut stream: StreamingResult = match options.thinking {
+        let mut stream: StreamingResult = match thinking {
             Some(thinking) => runner.options(GenerationOptions::default().reasoning(thinking)),
             None => runner,
         }
@@ -627,7 +675,7 @@ impl Host {
                         error: error.to_string(),
                     };
                 }
-                Some(Ok(item)) => steps.events(item).for_each(|event| run.emit(event)),
+                Some(Ok(item)) => steps.events(item).into_iter().for_each(|event| run.emit(event)),
             }
         }
     }

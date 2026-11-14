@@ -5,6 +5,7 @@
 mod highlight;
 mod preview;
 mod reply;
+pub mod screen;
 mod stream;
 mod theme;
 mod tool;
@@ -25,6 +26,7 @@ use crate::config::{Display, Output};
 use crate::mention;
 use crate::protocol::Event;
 use crate::route;
+use crate::steer;
 
 pub use reply::{Reply, rows as reply_rows};
 pub use stream::{FRAME, Stream};
@@ -90,7 +92,7 @@ impl Style {
 }
 
 pub fn user_message(text: &str) {
-    println!("\n{}", user_line(text, palette()));
+    screen::line(format_args!("\n{}", user_line(text, palette())));
 }
 
 pub fn user_line(text: &str, palette: Palette) -> String {
@@ -120,7 +122,7 @@ fn machine_arg(args: &str) -> Option<String> {
 
 /// A subagent began its task, `label`.
 pub fn agent_started(label: &str) {
-    println!("\n{} {}", palette().name.paint("◇"), label.bold());
+    screen::line(format_args!("\n{} {}", palette().name.paint("◇"), label.bold()));
 }
 
 /// What the subagent `label` did, as a line: a tool call or a notice.
@@ -141,21 +143,21 @@ pub fn agent_ended(label: &str, error: Option<&str>) {
     let palette = palette();
     let room = terminal_width().saturating_sub(label.chars().count() + 6);
     match error {
-        None => println!("  {} {} {}", palette.name.paint("◆"), label, palette.muted.paint("done")),
-        Some(error) => println!("  {} {} {}", "✗".red(), label.red(), clip(error, room).red()),
+        None => screen::line(format_args!("  {} {} {}", palette.name.paint("◆"), label, palette.muted.paint("done"))),
+        Some(error) => screen::line(format_args!("  {} {} {}", "✗".red(), label.red(), clip(error, room).red())),
     }
 }
 
 /// What a mention attached to the message being sent.
 pub fn attached(target: &dyn std::fmt::Display) {
     let palette = palette();
-    println!("  {} {}", palette.name.paint("@"), palette.muted.paint(&target.to_string()));
+    screen::line(format_args!("  {} {}", palette.name.paint("@"), palette.muted.paint(&target.to_string())));
 }
 
 /// That the model reasoned, where its reasoning is not shown, and for how
 /// long when that is known.
 pub fn thought(duration: Option<Duration>) {
-    println!("\n{}", palette().muted.paint(&thought_text(duration)).italic());
+    screen::line(format_args!("\n{}", palette().muted.paint(&thought_text(duration)).italic()));
 }
 
 fn thought_text(duration: Option<Duration>) -> String {
@@ -173,11 +175,11 @@ fn clock(elapsed: Duration) -> String {
 }
 
 pub fn notice(text: &str) {
-    println!("  {}", palette().muted.paint(text));
+    screen::line(format_args!("  {}", palette().muted.paint(text)));
 }
 
 pub fn error(error: &dyn std::fmt::Display) {
-    println!("\n{} {error}", "Error:".red());
+    screen::line(format_args!("\n{} {error}", "Error:".red()));
 }
 
 /// A conversation already had, shown as it showed live.
@@ -191,7 +193,14 @@ pub fn conversation(messages: &[Message], style: &Style) {
                     stream.settle();
                     user_message(&text.text)
                 }
-                UserContent::ToolResult(result) => stream.result(result),
+                UserContent::ToolResult(result) => {
+                    let (result, steered) = steer::split(result.clone());
+                    stream.result(&result);
+                    for prompt in steered {
+                        stream.settle();
+                        user_message(&prompt);
+                    }
+                }
                 _ => {}
             }),
             Message::Assistant(assistant) => {
@@ -214,7 +223,7 @@ pub fn conversation(messages: &[Message], style: &Style) {
         }
     }
     stream.settle();
-    println!();
+    screen::line("");
 }
 
 fn summarize_args(args: &str) -> String {

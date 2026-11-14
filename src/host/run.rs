@@ -19,6 +19,7 @@ use crate::protocol::{
     AgentId, ApprovalId, Ask, Call, CallId, CallResult, Decision, Event, FollowerId, RunId,
     Running,
 };
+use crate::steer::{self, Steering, Waiting};
 
 /// A run in progress on a thread. The host owns it, not a client: clients
 /// come and go, replaying and following its events, answering its
@@ -28,8 +29,12 @@ pub struct Run {
     id: RunId,
     started: Instant,
     prompt: String,
+    /// The model answering, as `vendor/model`.
+    model: String,
     /// How many messages the thread held when the run began.
     history: usize,
+    /// Messages the user sent meanwhile, for the model to be handed.
+    steers: Mutex<Waiting>,
     log: watch::Sender<Vec<Event>>,
     approvals: Mutex<HashMap<ApprovalId, oneshot::Sender<Decision>>>,
     calls: Mutex<Calls>,
@@ -71,7 +76,12 @@ impl Calls {
 }
 
 impl Run {
-    pub fn new(prompt: String, history: usize, asking_changed: impl Fn() + Send + Sync + 'static) -> Self {
+    pub fn new(
+        prompt: String,
+        model: String,
+        history: usize,
+        asking_changed: impl Fn() + Send + Sync + 'static,
+    ) -> Self {
         // Random rather than counted, so a restarted host cannot reuse the
         // id of a run a client has already shown.
         let id = RunId(getrandom::u64().unwrap_or_else(|_| {
@@ -82,7 +92,9 @@ impl Run {
             id,
             started: Instant::now(),
             prompt,
+            model,
             history,
+            steers: Mutex::default(),
             log: watch::Sender::default(),
             approvals: Mutex::default(),
             calls: Mutex::default(),
@@ -113,6 +125,31 @@ impl Run {
 
     pub fn prompt(&self) -> &str {
         &self.prompt
+    }
+
+    pub fn model(&self) -> &str {
+        &self.model
+    }
+
+    /// Has the model handed `steering` as soon as it can; false once the run
+    /// takes no more.
+    pub fn steer(&self, steering: Steering) -> bool {
+        lock(&self.steers).push(steering)
+    }
+
+    /// The messages waiting, for the next tool result to hand over.
+    pub fn take_steers(&self) -> Vec<Steering> {
+        lock(&self.steers).take()
+    }
+
+    /// The messages waiting as an answer ends; none, and the run takes no more.
+    pub fn last_steers(&self) -> Vec<Steering> {
+        lock(&self.steers).take_last()
+    }
+
+    /// Takes no more messages, dropping those waiting.
+    pub fn close_steers(&self) {
+        lock(&self.steers).close();
     }
 
     /// Whether the run waits for a client to decide something.
@@ -365,29 +402,24 @@ pub struct Steps {
 }
 
 impl Steps {
-    pub fn events(&mut self, item: MultiTurnStreamItem) -> impl Iterator<Item = Event> + use<> {
-        let (thought, event) = match item {
+    pub fn events(&mut self, item: MultiTurnStreamItem) -> Vec<Event> {
+        match item {
             MultiTurnStreamItem::StreamAssistantItem(Item::Event(event)) => {
-                (self.thought_before(&event), self.part(event))
+                self.thought_before(&event).into_iter().chain(self.part(event)).collect()
             }
-            MultiTurnStreamItem::ToolResult { tool_result } => (
-                None,
-                Some(Event::ToolResult {
-                    result: tool_result,
-                }),
-            ),
+            MultiTurnStreamItem::ToolResult { tool_result } => {
+                let (result, prompts) = steer::split(tool_result);
+                let steered = prompts.into_iter().map(|prompt| Event::Steered { prompt });
+                std::iter::once(Event::ToolResult { result }).chain(steered).collect()
+            }
             MultiTurnStreamItem::CompletionCall(call) => {
-                (None, tokens(&call.usage).map(|tokens| Event::Context { tokens }))
+                tokens(&call.usage).map(|tokens| Event::Context { tokens }).into_iter().collect()
             }
-            MultiTurnStreamItem::ModelTurnRetried { .. } => (
-                None,
-                Some(Event::Notice {
-                    text: "retrying…".into(),
-                }),
-            ),
-            _ => (None, None),
-        };
-        thought.into_iter().chain(event)
+            MultiTurnStreamItem::ModelTurnRetried { .. } => vec![Event::Notice {
+                text: "retrying…".into(),
+            }],
+            _ => Vec::new(),
+        }
     }
 
     /// Reasoning ends where the reply moves on, however much later a
@@ -473,7 +505,7 @@ mod tests {
 
     #[tokio::test]
     async fn late_clients_replay_the_run_without_decided_approvals() {
-        let run = std::sync::Arc::new(Run::new("hi".into(), 0, || {}));
+        let run = std::sync::Arc::new(Run::new("hi".into(), "test/model".into(), 0, || {}));
         let mut early = Box::pin(run.events(None));
         run.emit(Event::Text { text: "a".into() });
         let asking = tokio::spawn({
@@ -519,7 +551,7 @@ mod tests {
 
     #[tokio::test]
     async fn every_client_times_the_run_from_when_it_began() {
-        let run = std::sync::Arc::new(Run::new("hi".into(), 0, || {}));
+        let run = std::sync::Arc::new(Run::new("hi".into(), "test/model".into(), 0, || {}));
         std::thread::sleep(std::time::Duration::from_millis(20));
         let joined = Box::pin(run.events(None)).next().await;
         assert!(
@@ -578,7 +610,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_call_fails_at_once_without_a_terminal_on_its_machine() {
-        let run = Arc::new(Run::new("hi".into(), 0, || {}));
+        let run = Arc::new(Run::new("hi".into(), "test/model".into(), 0, || {}));
         let error = run.call(call("read"), None).await.unwrap_err();
         assert!(error.contains("no terminal on `laptop`"), "{error}");
 
@@ -589,7 +621,7 @@ mod tests {
 
     #[tokio::test]
     async fn one_terminal_on_the_machine_runs_a_call_and_its_leaving_fails_it() {
-        let run = Arc::new(Run::new("hi".into(), 0, || {}));
+        let run = Arc::new(Run::new("hi".into(), "test/model".into(), 0, || {}));
         let (mut laptop, follower) = follow(&run, "laptop").await;
         let (_desk, desk) = follow(&run, "desk").await;
 

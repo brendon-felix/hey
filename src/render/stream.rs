@@ -7,9 +7,6 @@ use std::fmt;
 use std::io::IsTerminal;
 use std::time::{Duration, Instant};
 
-use crossterm::Command;
-use crossterm::cursor::MoveUp;
-use crossterm::terminal::{BeginSynchronizedUpdate, Clear, ClearType, EndSynchronizedUpdate};
 use rig_core::message::{CallId, ToolResult};
 use rig_tools::split_status;
 use yansi::Paint;
@@ -18,7 +15,7 @@ use super::preview::{Call, Preview, Source};
 use super::reply::{Part, Reply};
 use super::tool::{self, Mark, line};
 use super::{
-    Style, animations, call_line, clip, clock, machine_arg, palette, show, summarize_args,
+    Style, animations, call_line, clip, clock, machine_arg, palette, screen, summarize_args,
     terminal_height, terminal_width, theme, thought, thought_text,
 };
 use crate::config::Output;
@@ -140,13 +137,6 @@ impl fmt::Display for Activity {
     }
 }
 
-/// The rows at the bottom that are redrawn as they change, as drawn: a
-/// preview, and what the agent is doing while it says nothing.
-struct Status {
-    text: String,
-    rows: usize,
-}
-
 /// A run's reply on the terminal, advanced a frame at a time, with a status
 /// while the agent works without saying anything.
 pub struct Stream {
@@ -167,8 +157,6 @@ pub struct Stream {
     backlog: VecDeque<Chunk>,
     started: Instant,
     quiet_since: Instant,
-    /// The status, while it shows.
-    status: Option<Status>,
 }
 
 impl Stream {
@@ -200,7 +188,6 @@ impl Stream {
             backlog: VecDeque::new(),
             started: now,
             quiet_since: now,
-            status: None,
         }
     }
 
@@ -284,7 +271,7 @@ impl Stream {
         self.activity = Activity::Running(name.to_owned());
         let summary = summarize_args(args);
         let machine = machine.map(str::to_owned).or_else(|| machine_arg(args));
-        println!("\n{}", call_line(name, machine.as_deref(), &summary, terminal_width()));
+        screen::line(format_args!("\n{}", call_line(name, machine.as_deref(), &summary, terminal_width())));
         self.calls.called(
             id,
             Named {
@@ -297,7 +284,7 @@ impl Stream {
             return;
         };
         match self.style.tool_output {
-            Output::Full => changes.iter().for_each(|(mark, text)| println!("{}", line(*mark, text))),
+            Output::Full => changes.iter().for_each(|(mark, text)| screen::line(line(*mark, text))),
             Output::Preview => {
                 let mut preview = Preview::new(Source::Changes);
                 preview.push(&changes.iter().map(|(mark, text)| format!("{}{text}\n", mark.sign())).collect::<String>());
@@ -338,7 +325,7 @@ impl Stream {
         self.settle();
         let called = match placement {
             Placement::Apart(Some(called)) => {
-                println!();
+                screen::line("");
                 Some(called)
             }
             Placement::Under | Placement::Apart(None) => None,
@@ -349,7 +336,7 @@ impl Stream {
         };
         let room = terminal_width().saturating_sub(5);
         if result.is_error {
-            println!("  {} {}", "✗".red(), clip(&marker(&summary), room).red());
+            screen::line(format_args!("  {} {}", "✗".red(), clip(&marker(&summary), room).red()));
             return;
         }
         let name = result.name.as_str();
@@ -367,12 +354,12 @@ impl Stream {
                 return self.end_preview(Ending::Answered(""));
             }
             Output::Full if !shown => {
-                given.lines().for_each(|text| println!("{}", line(Mark::Printed, text)));
+                given.lines().for_each(|text| screen::line(line(Mark::Printed, text)));
             }
             Output::Full | Output::Preview | Output::Hidden => {}
         }
         let muted = palette().muted;
-        println!("  {} {}", muted.paint("╰─"), muted.paint(&clip(&marker(&summary), room)));
+        screen::line(format_args!("  {} {}", muted.paint("╰─"), muted.paint(&clip(&marker(&summary), room))));
     }
 
     /// A line of a running command's output.
@@ -381,7 +368,7 @@ impl Stream {
         match self.style.tool_output {
             Output::Full => {
                 self.settle();
-                println!("{}", line(Mark::Printed, &text));
+                screen::line(line(Mark::Printed, &text));
             }
             Output::Preview => self.preview(Source::Command, &text),
             Output::Hidden => {}
@@ -394,7 +381,7 @@ impl Stream {
             Output::Full => {
                 self.settle();
                 let muted = palette().muted;
-                println!("  {}", muted.paint(&clip(&step, terminal_width().saturating_sub(2))));
+                screen::line(format_args!("  {}", muted.paint(&clip(&step, terminal_width().saturating_sub(2)))));
             }
             Output::Preview => self.preview(Source::Agents, &format!("{step}\n")),
             Output::Hidden => {}
@@ -403,17 +390,15 @@ impl Stream {
 
     pub fn tick(&mut self) {
         if !self.backlog.is_empty() {
-            self.hide_status();
             self.reveal(self.budget());
             self.quiet_since = Instant::now();
         }
         if self.mode == Mode::Lines {
             return;
         }
-        self.reply.draw();
-        if self.reply.at_line_start() {
-            self.draw_status();
-        }
+        let tail = self.reply.tail();
+        let rows = tail.iter().cloned().chain(self.status(tail.iter().len())).collect();
+        screen::set_live(rows);
     }
 
     /// Shows everything received and ends the open part and preview, so
@@ -462,7 +447,7 @@ impl Stream {
             Ending::Interrupted | Ending::Thought(_) => "",
         };
         let rows = preview.framed(self.preview_width(), bottom);
-        show(rows.iter().map(|row| format!("{row}\n")).collect::<String>());
+        rows.into_iter().for_each(screen::line);
     }
 
     fn preview_width(&self) -> usize {
@@ -537,36 +522,20 @@ impl Stream {
         }
     }
 
-    /// Draws the status: the preview, if there is one, then the calls the
-    /// model has written that have yet to run, then, once the agent has
-    /// been quiet a while, the spinner. Each row is narrower than the
-    /// terminal, so none wraps and the rows can be found again to redraw.
-    fn draw_status(&mut self) {
+    /// The status: the preview, if there is one, then the calls the model
+    /// has written that have yet to run, then, once the agent has been
+    /// quiet a while, the spinner, below `above` rows. Each row is narrower
+    /// than the terminal, so none wraps.
+    fn status(&self, above: usize) -> Vec<String> {
         let mut rows = self
             .preview
             .as_ref()
             .map_or_else(Vec::new, |preview| preview.framed(self.preview_width(), ""));
-        rows.extend(self.written(terminal_height().saturating_sub(rows.len() + 2)));
+        rows.extend(self.written(terminal_height().saturating_sub(above + rows.len() + 2)));
         if self.quiet_since.elapsed() >= SPINNER_DELAY {
             rows.push(self.spinner());
         }
-        if rows.is_empty() {
-            return self.hide_status();
-        }
-        let text = rows.join("\n");
-        if self.status.as_ref().is_some_and(|status| status.text == text) {
-            return;
-        }
-        show(format!(
-            "{}{}{text}{}",
-            ansi(BeginSynchronizedUpdate),
-            self.erase_status(),
-            ansi(EndSynchronizedUpdate)
-        ));
-        self.status = Some(Status {
-            text,
-            rows: rows.len(),
-        });
+        rows
     }
 
     /// The calls the model has written that have yet to run, in at most
@@ -597,24 +566,8 @@ impl Stream {
     }
 
     fn hide_status(&mut self) {
-        let erase = self.erase_status();
-        if self.status.take().is_some() {
-            show(erase);
+        if self.mode != Mode::Lines {
+            screen::set_live(Vec::new());
         }
     }
-
-    /// What returns the cursor to where the status began, clearing it.
-    fn erase_status(&self) -> String {
-        let up = match self.status.as_ref().map_or(0, |status| status.rows - 1) {
-            0 => String::new(),
-            rows => MoveUp(rows as u16).to_string(),
-        };
-        format!("\r{up}{}", Clear(ClearType::FromCursorDown))
-    }
-}
-
-fn ansi(command: impl Command) -> String {
-    let mut out = String::new();
-    let _ = command.write_ansi(&mut out);
-    out
 }

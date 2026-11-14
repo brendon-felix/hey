@@ -16,6 +16,7 @@ use crate::protocol::{
 };
 use crate::sessions::SessionId;
 use crate::skills::Found;
+use crate::steer::Steer;
 use crate::workbench::{self, Workbench};
 
 pub type Events = BoxStream<'static, Result<Event>>;
@@ -189,6 +190,15 @@ impl Backend {
         match self {
             Backend::Local(host) => Ok(host.stop(id)),
             Backend::Remote(client, _) => client.stop(id).await,
+        }
+    }
+
+    /// Has the model answering in the thread handed `steer` as soon as it
+    /// can; false when the thread is not answering, or its answer is ending.
+    pub async fn steer(&self, id: &SessionId, steer: &Steer) -> Result<bool> {
+        match self {
+            Backend::Local(host) => Ok(host.steer(id, steer.clone()).await),
+            Backend::Remote(client, _) => client.steer(id, steer).await,
         }
     }
 

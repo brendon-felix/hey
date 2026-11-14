@@ -78,6 +78,10 @@ pub enum Event {
     Attached {
         name: String,
     },
+    /// The model was handed a message the user sent while it answered.
+    Steered {
+        prompt: String,
+    },
     /// The run waits until a client decides `ask`.
     Approval {
         id: ApprovalId,

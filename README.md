@@ -29,6 +29,8 @@ of `hey` is on ease of use, speed, and a pleasant terminal experience.
 - Syntax highlighting via [syntect](https://github.com/trishume/syntect), with bat's themes
 - A rich input editor via [reedline](https://github.com/nushell/reedline): Emacs, Vi or Helix mode,
   command completion with descriptions, a status line, history search, and composing in `$EDITOR`
+- Typing while it answers: steer the answer, queue messages for after it, send one now, or run
+  commands
 - `@` mentions that attach files, directories, saved conversations and skills to a message
 
 ## Installation
@@ -120,8 +122,29 @@ work in one-shot messages too: `hey review @src/main.rs`.
 | Ctrl+R | Search input history |
 | Ctrl+O | Write the message in `$EDITOR` |
 | Alt+Enter | Insert a newline |
+| Enter | Send; while an answer is in progress, steer it |
+| Ctrl+Q | Queue the message for after the answer |
+| Ctrl+S | Send now, stopping the answer |
+| Alt+Up | Take back the message queued last, to edit |
 | Ctrl+C | Stop a running answer, or exit |
 | Ctrl+D | Exit |
+
+### Typing while it answers
+
+The prompt stays at the bottom while an answer streams above it, so you can write the next message,
+run commands such as `/theme` or `/model`, or `/exit`, which leaves an answer on a remote host
+running. A message sent meanwhile is held above the prompt until the answer takes it:
+
+- **Enter** steers the answer. The model is handed the message with the next result of a tool call,
+  so it can change course without starting over; an answer that ends first takes it as its next
+  prompt. It shows in the conversation where the model read it.
+- **Ctrl+Q** queues it, to be sent once the answer ends; queued messages go one per answer, in
+  order. **Alt+Up** takes back the one queued last.
+- **Ctrl+S** sends it now: the answer stops, and the message is sent at once. With nothing typed,
+  it sends the first queued message.
+
+Ctrl+C stops the answer and puts what was queued, or steering but not yet handed over, back in the
+input, as does an answer that fails or is stopped elsewhere. Commands run only with Enter.
 
 ### Conversations
 
@@ -375,7 +398,7 @@ carries on without a client. Opening the conversation elsewhere replays the answ
 follows it live. Tool calls that need confirming wait until any client answers them.
 
 Every terminal showing a conversation shows each answer in it as it streams, whichever terminal
-asked; what you were typing waits until the answer ends. Several conversations can answer at
+asked, and the messages any of them steers it with. Several conversations can answer at
 once. The status at the right of the prompt counts the others: a spinner for those answering, and
 a blue dot for those that finished while no terminal was showing them. `/threads` marks them the
 same way.

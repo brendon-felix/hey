@@ -14,6 +14,7 @@ use crate::mention::{self, Context, Item, Reference, SHARED, SKILL};
 use crate::protocol::{Attachment, Event};
 use crate::sessions::SessionId;
 use crate::skills::{self, Found, Skill};
+use crate::steer::{Steer, Steering};
 use crate::transcript;
 
 /// What the host attaches for a mention: a file or directory of its shared
@@ -41,8 +42,7 @@ impl fmt::Display for Target {
 
 impl Host {
     /// `prompt` as the model gets it: what was typed, then what the client
-    /// attached and what the host's mentions attach, a conversation as
-    /// `model` sums it up, and the `skills` it invokes. Tells `run` of each,
+    /// attached and what the host's mentions attach. Tells `run` of each,
     /// so every client shows them.
     pub(super) async fn message(
         &self,
@@ -52,15 +52,58 @@ impl Host {
         model: &Model,
         run: &Run,
     ) -> Message {
+        let (context, told) = self.context(prompt, attachments, skills, model).await;
+        told.into_iter().for_each(|event| run.emit(event));
+        context.message(prompt)
+    }
+
+    /// What `prompt` sent to `run` while it answers attaches, for the model
+    /// to be handed with it. What failed to attach is told at once; what
+    /// did is not, as the message itself shows only once handed over.
+    pub(super) async fn steering(&self, steer: Steer, run: &Run) -> Steering {
+        let model = Model::connect(run.model(), &self.providers);
+        let context = match &model {
+            Ok(model) => {
+                let skills = self.skills();
+                let (context, told) = self.context(&steer.prompt, &steer.attachments, &skills, model).await;
+                told.into_iter()
+                    .filter(|event| matches!(event, Event::Notice { .. }))
+                    .for_each(|event| run.emit(event));
+                context.text()
+            }
+            Err(error) => {
+                run.emit(Event::Notice {
+                    text: format!("nothing attached: {error:#}"),
+                });
+                None
+            }
+        };
+        Steering {
+            prompt: steer.prompt,
+            context,
+        }
+    }
+
+    /// What the client attached to `prompt` and what the host's mentions in
+    /// it attach, a conversation as `model` sums it up, and the `skills` it
+    /// invokes; and the events that tell of each, in order.
+    async fn context(
+        &self,
+        prompt: &str,
+        attachments: &[Attachment],
+        skills: &Found,
+        model: &Model,
+    ) -> (Context, Vec<Event>) {
         let mut context = Context::default();
+        let mut told = Vec::new();
         for attachment in attachments {
-            run.emit(Event::Attached {
+            told.push(Event::Attached {
                 name: attachment.name(),
             });
             context.attach(attachment);
         }
         for target in self.targets(prompt, skills) {
-            run.emit(Event::Attached {
+            told.push(Event::Attached {
                 name: target.to_string(),
             });
             let attached = match &target {
@@ -72,12 +115,12 @@ impl Host {
                 Target::Skill(skill) => skill.content().map(|content| context.skill(content)),
             };
             if let Err(error) = attached {
-                run.emit(Event::Notice {
+                told.push(Event::Notice {
                     text: format!("{target} not attached: {error:#}"),
                 });
             }
         }
-        context.message(prompt)
+        (context, told)
     }
 
     /// Every path of the shared repository, for completion.

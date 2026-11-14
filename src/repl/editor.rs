@@ -3,33 +3,44 @@
 /* -------------------------------------------------------------------------- */
 
 use std::borrow::Cow;
+use std::cell::Cell;
 use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex, PoisonError};
+use std::time::Duration;
 
-use crossterm::cursor::{MoveToColumn, SetCursorStyle};
+use crossterm::cursor::{MoveToColumn, MoveUp, SetCursorStyle};
 use crossterm::execute;
 use crossterm::terminal::{Clear, ClearType};
 use fuzzy_matcher::skim::SkimMatcherV2;
 use nu_ansi_term::{Color, Style};
 use reedline::{
     ColumnarMenu, Completer, CompletionResult, CursorConfig, DefaultHinter, EditCommand,
-    EditMode, Emacs, FileBackedHistory, Helix, Highlighter, Hinter, History, KeyCode, KeyModifiers,
-    Keybindings, MenuBuilder, Prompt, PromptEditMode, PromptHistorySearch,
+    EditMode, Emacs, FileBackedHistory, Helix, Highlighter, Hinter, History, HistoryItem, KeyCode,
+    KeyModifiers, Keybindings, MenuBuilder, Prompt, PromptEditMode, PromptHistorySearch,
     PromptHistorySearchStatus, PromptHelixMode, PromptViMode, Reedline, ReedlineEvent,
     ReedlineMenu, RepaintSignal, Signal, Span, StatusLine, StyledText, Suggestion, Vi,
     default_emacs_keybindings,
     default_helix_insert_keybindings, default_helix_normal_keybindings,
     default_vi_insert_keybindings, default_vi_normal_keybindings, default_vi_visual_keybindings,
 };
+use textwrap::core::display_width;
 
 use super::commands::{self, Arg, COMMANDS};
 use super::mentions::{self as host, HostIndex, Index, Mentions};
+use super::outbox::Outbox;
 use super::watch::{self, Watch};
 use crate::config::{self, EditMode as Mode, RightPrompt, Thinking};
 use crate::mention::{self, Mention, Reference};
-use crate::render::{self, Palette, palette};
+use crate::render::{self, Palette, palette, screen};
 
 const MENU: &str = "completion_menu";
+
+/// How often the editor looks for output to show while it waits for keys,
+/// and so how smoothly an answer streams above it.
+const POLL: Duration = Duration::from_millis(33);
+
+/// Columns the prompt indicator, `> ` or another, takes before the input.
+const INDICATOR: usize = 2;
 
 /// What the right prompt shows: where the agent runs and how full its context is.
 #[derive(Debug, Default)]
@@ -80,23 +91,42 @@ fn short_name(reference: &str) -> &str {
 pub type SharedStatus = Arc<Mutex<Status>>;
 
 pub enum Read {
+    /// Enter: what was typed, still shown above the cursor.
     Line(String),
-    /// A run started on this terminal's thread elsewhere. What was typed
+    /// Ctrl+Q: what was typed, to send once the answer in progress ends.
+    Queue(String),
+    /// Ctrl+S: what was typed, to send at once, stopping the answer.
+    Now(String),
+    /// Alt+Up: the message queued last, back to edit.
+    Unqueue,
+    /// Ctrl+C, with what was typed.
+    Interrupted(String),
+    /// Something outside the editor needs the terminal. What was typed
     /// stays, for the next read.
     Woken,
     Exit,
 }
 
+/// What keys bound to [`ReedlineEvent::ExecuteHostCommand`] ask for.
+const QUEUE: &str = "queue";
+const NOW: &str = "now";
+const UNQUEUE: &str = "unqueue";
+
 pub struct Editor {
     line_editor: Reedline,
     prompt: HeyPrompt,
+    /// Breaks a read, for [`Read::Woken`].
+    wake: Arc<AtomicBool>,
+    repaint: RepaintSignal,
 }
 
 impl Editor {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         config: &config::Editor,
         colors: bool,
         status: SharedStatus,
+        outbox: Outbox,
         choices: Choices,
         index: &Index,
         watch: Watch,
@@ -127,7 +157,9 @@ impl Editor {
             })
             .use_kitty_keyboard_enhancement(true)
             .use_bracketed_paste(config.bracketed_paste)
-            .with_break_signal(wake);
+            .with_break_signal(wake.clone())
+            .with_external_printer(screen::Feed)
+            .with_poll_interval(POLL);
 
         if config.history
             && let Some(path) = config::config_dir().map(|dir| dir.join("history.txt"))
@@ -140,14 +172,19 @@ impl Editor {
                 Err(error) => render::notice(&format!("input history disabled: {error}")),
             }
         }
+        let repaint = line_editor.repaint_signal();
         Self {
             line_editor: styled(line_editor, palette()),
             prompt: HeyPrompt::Editing {
                 status,
+                outbox,
                 watch,
                 colors,
                 right: config.right_prompt,
+                above: Cell::new(0),
             },
+            wake,
+            repaint,
         }
     }
 
@@ -159,21 +196,26 @@ impl Editor {
     }
 
     /// Redraws the prompt in place while a line is being read.
-    pub fn repaint_signal(&mut self) -> RepaintSignal {
-        self.line_editor.repaint_signal()
+    pub fn repaint_signal(&self) -> RepaintSignal {
+        self.repaint.clone()
     }
 
+    /// Ends a read in progress with [`Read::Woken`].
+    pub fn waker(&self) -> Arc<AtomicBool> {
+        self.wake.clone()
+    }
+
+    /// Reads a line, or a key that sends one another way. A read that
+    /// breaks off leaves the prompt where it is, to be drawn again in place
+    /// by the next; Ctrl+C takes it off the screen.
     pub fn read(&mut self) -> Read {
         match self.line_editor.read_line(&self.prompt) {
             Ok(Signal::Success(line)) => Read::Line(line),
-            Ok(Signal::ExternalBreak(_)) => {
-                // The prompt is redrawn below whatever is shown next.
-                let _ = execute!(
-                    std::io::stdout(),
-                    MoveToColumn(0),
-                    Clear(ClearType::FromCursorDown)
-                );
-                Read::Woken
+            Ok(Signal::HostCommand(command)) => self.host_command(&command),
+            Ok(Signal::ExternalBreak(_)) => Read::Woken,
+            Ok(Signal::CtrlC(typed)) => {
+                erase(self.above() + rows(&typed, render::terminal_width().max(1)));
+                Read::Interrupted(typed)
             }
             Ok(_) => Read::Exit,
             Err(error) => {
@@ -183,11 +225,87 @@ impl Editor {
         }
     }
 
+    /// Takes `line`, submitted with Enter, off the screen.
+    pub fn unprint(&self, line: &str) {
+        erase(rows(line, render::terminal_width().max(1)));
+    }
+
+    /// Puts `text` in the input, before what is typed there.
+    pub fn insert(&mut self, text: &str) {
+        let commands = match self.line_editor.current_buffer_contents().is_empty() {
+            true => vec![EditCommand::InsertString(text.to_owned())],
+            false => vec![
+                EditCommand::MoveToStart { select: false },
+                EditCommand::InsertString(format!("{text}\n")),
+                EditCommand::MoveToEnd { select: false },
+            ],
+        };
+        self.line_editor.run_edit_commands(&commands);
+    }
+
+    /// What a key sending the input another way asks for, the input taken
+    /// and kept in history as a submitted line would be.
+    fn host_command(&mut self, command: &str) -> Read {
+        let send = match command {
+            QUEUE => Read::Queue,
+            NOW => Read::Now,
+            UNQUEUE => return Read::Unqueue,
+            _ => return Read::Woken,
+        };
+        let typed = self.line_editor.current_buffer_contents().to_owned();
+        self.line_editor.run_edit_commands(&[EditCommand::Clear]);
+        if !typed.trim().is_empty() && !typed.starts_with(' ') {
+            let saved = self.line_editor.history_mut().save(HistoryItem::from_command_line(&typed));
+            if let Err(error) = saved {
+                render::notice(&format!("not kept in history: {error}"));
+            }
+        }
+        send(typed)
+    }
+
+    /// Takes the prompt off the screen after a read that broke off, leaving
+    /// the cursor where it began, which the next read draws it from again.
+    /// What is drawn meanwhile must leave the cursor there too.
+    pub fn erase_prompt(&self) {
+        let width = render::terminal_width().max(1);
+        let typed = self.line_editor.current_buffer_contents();
+        let before = typed.get(..self.line_editor.current_insertion_point()).unwrap_or(typed);
+        let (lines, last) = before.rsplit_once('\n').map_or((None, before), |(lines, last)| (Some(lines), last));
+        let above_cursor = self.above() + lines.map_or(0, |lines| rows(lines, width));
+        erase(above_cursor + (INDICATOR + display_width(last)) / width);
+    }
+
+    /// Rows the prompt showed above the input when last drawn.
+    fn above(&self) -> usize {
+        match &self.prompt {
+            HeyPrompt::Editing { above, .. } => above.get(),
+            HeyPrompt::Submitted => 0,
+        }
+    }
+
     pub fn clear_screen(&mut self) {
         if let Err(error) = self.line_editor.clear_screen() {
             render::error(&error);
         }
     }
+}
+
+/// Rows `text` takes as typed after the prompt indicator, each of its lines
+/// starting a row and wrapping at `width` columns.
+fn rows(text: &str, width: usize) -> usize {
+    text.split('\n')
+        .map(|line| (INDICATOR + display_width(line)).div_ceil(width).max(1))
+        .sum()
+}
+
+/// Clears the cursor's row and those below, and the `up` rows above it,
+/// leaving the cursor where the first of them began.
+fn erase(up: usize) {
+    let mut out = std::io::stdout();
+    let _ = match u16::try_from(up) {
+        Ok(0) => execute!(out, MoveToColumn(0), Clear(ClearType::FromCursorDown)),
+        up => execute!(out, MoveToColumn(0), MoveUp(up.unwrap_or(u16::MAX)), Clear(ClearType::FromCursorDown)),
+    };
 }
 
 /// The parts of `line_editor` that keep their colours: the completion menu,
@@ -289,6 +407,13 @@ fn with_menu_bindings(mut keybindings: Keybindings) -> Keybindings {
         KeyCode::BackTab,
         ReedlineEvent::MenuPrevious,
     );
+    for (modifiers, key, command) in [
+        (KeyModifiers::CONTROL, KeyCode::Char('q'), QUEUE),
+        (KeyModifiers::CONTROL, KeyCode::Char('s'), NOW),
+        (KeyModifiers::ALT, KeyCode::Up, UNQUEUE),
+    ] {
+        keybindings.add_binding(modifiers, key, ReedlineEvent::ExecuteHostCommand(command.into()));
+    }
     keybindings
 }
 
@@ -521,24 +646,29 @@ fn compact(tokens: u64) -> String {
     }
 }
 
-/// Reedline weighs the input against the right prompt only when the left prompt
-/// spans exactly one line, and an empty one spans none. This SGR reset is one
-/// line yet takes no columns, so the status hides once the input reaches it
-/// rather than being typed over.
+/// Reedline weighs the input against the right prompt on the left prompt's
+/// last line, and an empty one has none. This SGR reset is a line yet takes
+/// no columns, so the status hides once the input reaches it rather than
+/// being typed over.
 const LEFT: &str = "\x1b[0m";
 
-/// A bare indicator on the left and, while editing, the status on the right
-/// edge, as in nushell; reedline drops the right side once the input reaches
-/// it. The status starts with the other threads that are answering or
-/// answered unseen.
+/// While editing: what an answer in progress redraws and the messages
+/// waiting for it, above a bare indicator, and the status on the right edge
+/// of the input's row, as in nushell; reedline drops the status once the
+/// input reaches it. The status starts with the other threads that are
+/// answering or answered unseen.
 enum HeyPrompt {
     Editing {
         status: SharedStatus,
+        outbox: Outbox,
         watch: Watch,
         colors: bool,
         right: RightPrompt,
+        /// Rows drawn above the input last time, to erase them.
+        above: Cell<usize>,
     },
-    /// How a submitted line stays in the scrollback: without the status.
+    /// How a submitted line stays in the scrollback: without the status or
+    /// anything above it.
     Submitted,
 }
 
@@ -575,7 +705,24 @@ fn status_line(
 
 impl Prompt for HeyPrompt {
     fn render_prompt_left(&self) -> Cow<'_, str> {
-        Cow::Borrowed(LEFT)
+        let Self::Editing { outbox, above, .. } = self else {
+            return Cow::Borrowed(LEFT);
+        };
+        // Each row from a reset, against the prompt colour reedline sets.
+        let rows: Vec<String> = screen::live()
+            .into_iter()
+            .chain(outbox.rows(render::terminal_width().saturating_sub(1)))
+            .map(|row| format!("{LEFT}{row}"))
+            .collect();
+        above.set(rows.len());
+        match rows.is_empty() {
+            true => Cow::Borrowed(LEFT),
+            false => Cow::Owned(format!("{}\n{LEFT}", rows.join("\n"))),
+        }
+    }
+
+    fn right_prompt_on_last_line(&self) -> bool {
+        true
     }
 
     fn render_prompt_right(&self) -> Cow<'_, str> {
@@ -585,6 +732,7 @@ impl Prompt for HeyPrompt {
                 watch,
                 colors,
                 right,
+                ..
             } => {
                 let summary = match right {
                     RightPrompt::Off => return Cow::Borrowed(""),

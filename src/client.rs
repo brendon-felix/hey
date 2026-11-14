@@ -23,6 +23,7 @@ use crate::protocol::{
 };
 use crate::sessions::SessionId;
 use crate::skills::Found;
+use crate::steer::Steer;
 use crate::{render, token, ui};
 
 /// A host served by `hey --serve` on another machine.
@@ -214,6 +215,15 @@ impl Client {
         let path = format!("v1/threads/{}/run", id.as_str());
         self.done(self.http.delete(self.url(&path)?), StatusCode::NOT_FOUND)
             .await
+    }
+
+    pub async fn steer(&self, id: &SessionId, steer: &Steer) -> Result<bool> {
+        let path = format!("v1/threads/{}/steer", id.as_str());
+        self.done(
+            self.http.post(self.url(&path)?).json(steer),
+            StatusCode::CONFLICT,
+        )
+        .await
     }
 
     pub async fn tools(&self, id: &SessionId) -> Result<Tools> {

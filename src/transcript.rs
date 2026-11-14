@@ -9,6 +9,7 @@
 use rig_core::message::{AssistantContent, Message, UserContent};
 
 use crate::mention::is_context;
+use crate::steer;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Speaker {
@@ -50,7 +51,8 @@ pub fn last_reply(messages: &[Message]) -> Option<String> {
 }
 
 /// Who spoke in `message` and what they said, unless it says nothing, as one
-/// carrying only tool results does.
+/// carrying only tool results does; those results may carry what the user
+/// sent while the model worked.
 fn said(message: &Message) -> Option<(Speaker, Vec<&str>)> {
     let (speaker, texts): (_, Vec<&str>) = match message {
         Message::System { .. } => return None,
@@ -58,9 +60,10 @@ fn said(message: &Message) -> Option<(Speaker, Vec<&str>)> {
             Speaker::User,
             content
                 .iter()
-                .filter_map(|content| match content {
-                    UserContent::Text(text) if !is_context(&text.text) => Some(text.text.as_str()),
-                    _ => None,
+                .flat_map(|content| match content {
+                    UserContent::Text(text) if !is_context(&text.text) => vec![text.text.as_str()],
+                    UserContent::ToolResult(result) => steer::prompts(result).collect(),
+                    _ => Vec::new(),
                 })
                 .collect(),
         ),

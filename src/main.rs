@@ -24,6 +24,7 @@ mod route;
 mod server;
 mod sessions;
 mod skills;
+mod steer;
 mod subagents;
 mod token;
 mod toolbox;
