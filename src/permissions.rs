@@ -26,9 +26,9 @@ pub fn default_rules() -> BTreeMap<String, Permission> {
     // Starting a subagent asks nothing, as its tools ask as their own rules
     // say. Loading a skill only reads instructions the user installed,
     // which `read` could read anyway; what following them does asks as usual.
-    ["read", "list", "search", crate::subagents::TOOL, crate::skills::TOOL]
-        .map(|tool| (tool.to_owned(), Permission::Allow))
-        .into()
+    // Compacting changes only what the model reads, and keeps what it replaced.
+    let tools = ["read", "list", "search", crate::subagents::TOOL, crate::skills::TOOL, crate::compaction::TOOL];
+    tools.map(|tool| (tool.to_owned(), Permission::Allow)).into()
 }
 
 /// Where a tool the model can call comes from, which decides the key its

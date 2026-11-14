@@ -14,10 +14,10 @@ use anyhow::{Context, Result};
 use chrono::{Local, NaiveDateTime};
 use rig_core::conversation::Conversation;
 use rig_core::message::{Message, UserContent};
-use rig_memory::{DirStore, Store};
+use rig_memory::{DirStore, Store, SummaryState};
 use serde::{Deserialize, Serialize};
 
-use crate::mention;
+use crate::{compaction, mention};
 
 const ID_FORMAT: &str = "%Y%m%d-%H%M%S%3f";
 
@@ -104,8 +104,16 @@ pub struct Mark {
     pub unseen: bool,
 }
 
+/// A conversation as a compaction of it builds on: its messages, and how
+/// many of the first are a summary already, with that summary.
+pub struct Basis {
+    pub messages: Vec<Arc<Message>>,
+    pub from: usize,
+    pub state: SummaryState,
+}
+
 /// Saved conversations: the agent appends to a session's log after every
-/// run; hey itself only copies, removes and marks them.
+/// run; hey itself copies, removes, marks and compacts them.
 #[derive(Clone)]
 pub struct Sessions {
     store: DirStore,
@@ -147,15 +155,47 @@ impl Sessions {
     /// `held` messages it held when they were said; else nothing, returning
     /// false.
     pub fn append(&self, id: &SessionId, held: usize, messages: Vec<Message>) -> Result<bool> {
-        let mut conversation = rig_memory::load(&self.store, id.as_str())
-            .with_context(|| format!("cannot read session {id}"))?;
+        let mut conversation = self.conversation(id)?;
         if conversation.messages().len() != held {
             return Ok(false);
         }
         conversation.extend(messages);
-        rig_memory::save(&self.store, id.as_str(), &mut conversation)
-            .with_context(|| format!("cannot save session {id}"))?;
+        self.save(id, &mut conversation)?;
         Ok(true)
+    }
+
+    /// The conversation `id` as a compaction of it builds on.
+    pub fn basis(&self, id: &SessionId) -> Result<Basis> {
+        let conversation = self.conversation(id)?;
+        Ok(Basis {
+            messages: conversation.messages().to_vec(),
+            from: rig_memory::summarized_prefix(&conversation),
+            state: rig_memory::summary_state(&conversation),
+        })
+    }
+
+    /// Puts the summary of `state` in place of the messages of `id` before
+    /// its `at`th, provided that is still `kept`; else nothing, returning
+    /// false. What it replaces stays in the log.
+    pub fn summarize(&self, id: &SessionId, at: usize, kept: &Message, state: &SummaryState) -> Result<bool> {
+        let mut conversation = self.conversation(id)?;
+        if conversation.messages().get(at).map(|message| &**message) != Some(kept) {
+            return Ok(false);
+        }
+        let keep_from = conversation.id(at);
+        if rig_memory::apply_summary(&mut conversation, keep_from, state).is_none() {
+            return Ok(false);
+        }
+        self.save(id, &mut conversation)?;
+        Ok(true)
+    }
+
+    fn conversation(&self, id: &SessionId) -> Result<Conversation> {
+        rig_memory::load(&self.store, id.as_str()).with_context(|| format!("cannot read session {id}"))
+    }
+
+    fn save(&self, id: &SessionId, conversation: &mut Conversation) -> Result<()> {
+        rig_memory::save(&self.store, id.as_str(), conversation).with_context(|| format!("cannot save session {id}"))
     }
 
     /// Every session with at least one message, newest first.
@@ -171,10 +211,25 @@ impl Sessions {
         Ok(ids
             .into_iter()
             .filter_map(|id| {
-                let title = title(&self.messages(&id).ok()?)?;
+                let title = self.title(&id)?;
                 Some(Summary { id, title })
             })
             .collect())
+    }
+
+    /// The start of the first thing the user typed in `id`, which a
+    /// compaction may have replaced with a summary; its log keeps it.
+    fn title(&self, id: &SessionId) -> Option<String> {
+        let messages = self.messages(id).ok()?;
+        let compacted = messages.first().is_some_and(is_summary);
+        let first = compacted
+            .then(|| rig_memory::summarized_in_log(&self.store, id.as_str()).ok())
+            .flatten()
+            .and_then(|summarized| {
+                let replaced = summarized.replaced.into_values().flatten();
+                replaced.min_by_key(|entry| entry.made).map(|entry| entry.message)
+            });
+        first.and_then(|message| title(std::slice::from_ref(&*message))).or_else(|| title(&messages))
     }
 
     /// The saved session `id`, if there is one.
@@ -249,12 +304,22 @@ impl Sessions {
 fn title(messages: &[Message]) -> Option<String> {
     messages.iter().find_map(|message| match message {
         Message::User { content } => content.iter().find_map(|content| match content {
-            UserContent::Text(text) if !mention::is_context(&text.text) => {
+            UserContent::Text(text) if !mention::is_context(&text.text) && compaction::summary_in(&text.text).is_none() => {
                 Some(rig_memory::title_of(&text.text))
             }
             _ => None,
         }),
         _ => None,
+    })
+}
+
+fn is_summary(message: &Message) -> bool {
+    let Message::User { content } = message else {
+        return false;
+    };
+    content.iter().any(|content| match content {
+        UserContent::Text(text) => compaction::summary_in(&text.text).is_some(),
+        _ => false,
     })
 }
 
@@ -293,6 +358,34 @@ mod tests {
         assert!(sessions.messages(&original).unwrap().is_empty());
         assert!(!sessions.delete(&original).unwrap(), "already gone");
         assert_eq!(sessions.list().unwrap().len(), 1);
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn a_summary_replaces_older_messages_but_not_the_title() {
+        let dir = std::env::temp_dir().join(format!("hey-compaction-test-{}", std::process::id()));
+        let sessions = Sessions::open(dir.clone()).unwrap();
+        let id: SessionId = "20260101-000000000".parse().unwrap();
+        let said = ["first question", "first answer", "second question", "second answer"];
+        let messages = said.iter().enumerate().map(|(at, text)| match at % 2 {
+            0 => Message::user(*text),
+            _ => Message::assistant(*text),
+        });
+        let mut conversation = Conversation::from_messages(messages);
+        rig_memory::save(&sessions.store, id.as_str(), &mut conversation).unwrap();
+        let state = SummaryState {
+            summary: "Asked twice.".into(),
+            ..SummaryState::default()
+        };
+
+        let stale = Message::user("not what is there");
+        assert!(!sessions.summarize(&id, 2, &stale, &state).unwrap(), "a changed thread is left alone");
+        assert!(sessions.summarize(&id, 2, &Message::user("second question"), &state).unwrap());
+
+        let basis = sessions.basis(&id).unwrap();
+        assert_eq!(basis.messages.len(), 3);
+        assert_eq!((basis.from, basis.state.summary.as_str()), (1, "Asked twice."));
+        assert_eq!(sessions.list().unwrap()[0].title, "first question");
         fs::remove_dir_all(dir).unwrap();
     }
 }

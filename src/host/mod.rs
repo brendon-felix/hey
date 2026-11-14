@@ -14,23 +14,25 @@ use std::time::Duration;
 
 use anyhow::{Context, Result};
 use futures::stream::BoxStream;
-use futures::{Stream, StreamExt, stream};
+use futures::{FutureExt, Stream, StreamExt, stream};
 use rig_agent::agent::{Agent, StreamingResult};
 use rig_core::completion::GenerationOptions;
 use rig_core::message::Message;
+use rig_memory::CompactReason;
 use rig_tools::{Live, Seen};
 use tokio::sync::watch;
 use tokio_util::task::TaskTracker;
 
 use crate::agent::{self, Model};
-use crate::config::{Config, Providers, Thinking};
+use crate::compaction::{self, Applied, Compactor};
+use crate::config::{self, Config, Providers, Thinking};
 use crate::gate;
 use crate::memory::{self, Memory, Recalled};
 use crate::permissions::{Origin, Permissions};
 use crate::preamble::{Hosting, Setting};
 use crate::protocol::{
     Activities, Activity, ApprovalId, Ask, CallId, CallResult, Decision, Defaults, Ending, Event,
-    FollowerId, Machine, ModelInfo, Revision, RunId, RunRequest, Snapshot, ThreadInfo,
+    FollowerId, Machine, ModelInfo, Revision, RunId, RunRequest, Snapshot, Task, ThreadInfo,
     ThreadStatus, Tools,
 };
 use crate::render;
@@ -73,6 +75,7 @@ pub struct Host {
     memory: Option<Memory>,
     /// The last time memory failed, until a client is told.
     memory_failure: Mutex<Option<String>>,
+    compaction: config::Compaction,
     permissions: Permissions,
     /// Runs subagents here, when the config offers them.
     crew: Option<Arc<Crew>>,
@@ -89,9 +92,13 @@ pub struct Host {
 struct Thread {
     seen: Seen,
     permissions: Arc<Permissions>,
-    /// Recalled as the thread started here and kept, so the preamble stays
-    /// the same and the provider's prompt cache keeps working.
-    memories: Vec<String>,
+    /// Recalled as the thread's first answer here started and kept, so the
+    /// preamble stays the same and the provider's prompt cache keeps
+    /// working.
+    memories: Option<Vec<String>>,
+    /// Tokens its last model call took in and gave back, to tell when it is
+    /// due to compact; unknown once it was compacted after.
+    context: Option<u64>,
     run: Option<Arc<Run>>,
     /// The latest run, going or not.
     last: Option<RunId>,
@@ -105,6 +112,22 @@ fn status(run: Option<&Run>, mark: Mark) -> ThreadStatus {
         Some(_) => ThreadStatus::Running,
         None if mark.unseen => ThreadStatus::Unseen,
         None => ThreadStatus::Idle,
+    }
+}
+
+/// What a run answering a request works with, besides its agent.
+struct Answering {
+    model: Model,
+    request: RunRequest,
+    skills: Found,
+    live: Arc<compaction::Live>,
+}
+
+/// What `work` came to, unless `run` was stopped first.
+async fn until_stopped<T>(run: &Run, work: impl Future<Output = T>) -> Option<T> {
+    tokio::select! {
+        done = work => Some(done),
+        () = run.stopped() => None,
     }
 }
 
@@ -138,7 +161,7 @@ impl Host {
         let toolbox = Toolbox::new(config).await?;
         let crew = config.subagents.enabled.then(|| Arc::new(Crew::new(config)));
         let spawn = crew.as_ref().map(|_| subagents::TOOL);
-        let host_only = std::iter::once(skills::TOOL).chain(spawn);
+        let host_only = [skills::TOOL, compaction::TOOL].into_iter().chain(spawn);
         let host_only = host_only.map(|name| (name, &Origin::Builtin));
         let permissions = Permissions::resolve(toolbox.origins().chain(host_only), &config.tools);
         Ok(Self {
@@ -162,6 +185,7 @@ impl Host {
             shared: config.shared.dir()?,
             memory: Memory::open(&config.memory, &config.providers)?,
             memory_failure: Mutex::default(),
+            compaction: config.compaction.clone(),
             permissions,
             crew,
             subagent_model: config.subagents.model.clone(),
@@ -282,9 +306,9 @@ impl Host {
         })
     }
 
-    /// Starts answering `request` in thread `id`, returning the run's events,
-    /// which a client on `machine` that runs tool calls follows the run by.
-    /// A thread new to this host first recalls what it should know.
+    /// Starts `request` in thread `id`, returning the run's events, which a
+    /// client on `machine` that runs tool calls follows the run by. A
+    /// thread's first answer here first recalls what it should know.
     pub async fn start(
         self: &Arc<Self>,
         id: SessionId,
@@ -299,27 +323,28 @@ impl Host {
         }
         let model = Model::connect(&request.options.model, &self.providers)
             .map_err(ThreadError::Other)?;
-        let known = self.lock().contains_key(&id);
-        let memories = match known {
-            true => Vec::new(),
-            false => self.recall(&request.prompt).await,
+        let compactor = Compactor::new(&self.compaction, &model, &self.providers).map_err(ThreadError::Other)?;
+        let recalled = self.lock().get(&id).is_some_and(|thread| thread.memories.is_some());
+        let memories = match (recalled, request.task) {
+            (false, Task::Answer) => Some(self.recall(&request.prompt).await),
+            _ => None,
         };
         let mut threads = self.lock();
         let thread = threads.entry(id.clone()).or_insert_with(|| Thread {
             seen: Seen::default(),
             permissions: Arc::new(self.permissions.fork()),
-            memories,
+            memories: None,
+            context: None,
             run: None,
             last: None,
         });
         if thread.run.is_some() {
             return Err(ThreadError::Busy);
         }
-        let history = self
-            .sessions
-            .messages(&id)
-            .map_err(ThreadError::Other)?
-            .len();
+        if thread.memories.is_none() {
+            thread.memories = memories;
+        }
+        let basis = self.sessions.basis(&id).map_err(ThreadError::Other)?;
         // Whether a tool call waits shows in the activity, as it changes.
         let host = Arc::downgrade(self);
         let asking = move || {
@@ -327,26 +352,52 @@ impl Host {
                 host.publish(&host.lock());
             }
         };
+        let shown = match request.task {
+            Task::Answer => request.prompt.clone(),
+            Task::Compact => format!("/compact {}", request.prompt).trim_end().to_owned(),
+        };
         let run = Arc::new(Run::new(
-            request.prompt.clone(),
+            shown,
             request.options.model.clone(),
-            history,
+            basis.messages.len(),
             asking,
         ));
         if let Some(failure) = self.take_memory_failure() {
             run.emit(Event::Notice { text: failure });
         }
-        let skills = self.skills();
-        let agent = self.agent(&id, thread, &model, &request, &skills, &run);
         let events = run.events(machine).boxed();
+        tracing::info!(thread = id.as_str(), run = ?run.id(), model = %request.options.model, task = ?request.task, "run started");
+        let work = match request.task {
+            Task::Answer => {
+                let history = basis.messages.len();
+                let live = compaction::Live::new(compactor, run.clone(), history, basis.from, basis.state, thread.context);
+                let answering = Answering {
+                    model,
+                    request,
+                    skills: self.skills(),
+                    live: Arc::new(live),
+                };
+                let agent = self.agent(&id, thread, &run, &answering);
+                self.clone().drive(id, run.clone(), agent, answering).boxed()
+            }
+            Task::Compact => {
+                run.close_compactions();
+                self.clone().drive_compaction(id, run.clone(), compactor, request.prompt).boxed()
+            }
+        };
         thread.run = Some(run.clone());
         thread.last = Some(run.id());
         self.publish(&threads);
         drop(threads);
-        tracing::info!(thread = id.as_str(), run = ?run.id(), model = %request.options.model, "run started");
-        self.tasks
-            .spawn(self.clone().drive(id, run, agent, model, request, skills));
+        self.tasks.spawn(work);
         Ok(events)
+    }
+
+    /// Has the run answering in thread `id` compact before its next model
+    /// call, or once it answered; false when the thread is not answering,
+    /// or its answer is ending.
+    pub fn compact_running(&self, id: &SessionId, focus: &str) -> bool {
+        self.run(id).is_some_and(|run| run.compact(focus))
     }
 
     /// False when the approval is not waiting.
@@ -457,15 +508,13 @@ impl Host {
         }
     }
 
-    fn agent(
-        &self,
-        id: &SessionId,
-        thread: &Thread,
-        model: &Model,
-        request: &RunRequest,
-        skills: &Found,
-        run: &Arc<Run>,
-    ) -> Agent {
+    fn agent(&self, id: &SessionId, thread: &Thread, run: &Arc<Run>, answering: &Answering) -> Agent {
+        let Answering {
+            model,
+            request,
+            skills,
+            live: compaction,
+        } = answering;
         let live = Live::new({
             let run = run.clone();
             move |text| {
@@ -513,11 +562,13 @@ impl Host {
                 spill: agent::spill(),
             })
             .add_hook(run.record().clone())
-            .add_hook(Delivery(run.clone()));
+            .add_hook(Delivery(run.clone()))
+            .add_hook(compaction::Hook(compaction.clone()))
+            .tool(compaction::Compact { run: run.clone() });
         if let Some(crew) = &self.crew {
             builder = builder.tool(self.spawn(crew, id, thread, request, kit));
         }
-        if let Some(memories) = memory::preamble(&thread.memories) {
+        if let Some(memories) = memory::preamble(thread.memories.as_deref().unwrap_or_default()) {
             builder = builder.append_preamble(&memories);
         }
         if let Some(max_tokens) = self.max_tokens {
@@ -542,49 +593,124 @@ impl Host {
         }
     }
 
-    /// Answers `request` into `run` until it ends or is stopped, then learns
-    /// from an answer once its clients are let go. The agent saves the thread
-    /// as each of its streams ends; what a run that did not answer said
-    /// is saved here.
-    async fn drive(
-        self: Arc<Self>,
-        id: SessionId,
-        run: Arc<Run>,
-        agent: Agent,
-        model: Model,
-        request: RunRequest,
-        skills: Found,
-    ) {
-        let ending = tokio::select! {
-            ending = self.converse(&id, &run, &agent, &model, request, &skills) => ending,
-            () = run.stopped() => Ending::Interrupted,
-        };
-        tracing::info!(thread = id.as_str(), run = ?run.id(), ?ending, "run ended");
+    /// Answers into `run` until it ends or is stopped, then learns from an
+    /// answer once its clients are let go. The agent saves the thread as
+    /// each of its streams ends; what a run that did not answer said, and
+    /// the summary it compacted to, are saved here.
+    async fn drive(self: Arc<Self>, id: SessionId, run: Arc<Run>, agent: Agent, answering: Answering) {
+        let Answering {
+            model,
+            request,
+            skills,
+            live,
+        } = answering;
+        let conversing = self.converse(&id, &run, &agent, &model, request, &skills);
+        let ending = until_stopped(&run, conversing).await.unwrap_or(Ending::Interrupted);
         run.close_steers();
         self.keep(&id, &run, &ending);
         let answered = matches!(ending, Ending::Answered);
-        let saved = self
-            .sessions
-            .messages(&id)
-            .map_or(run.history(), |messages| messages.len());
+        // Read before a summary takes the place of what the answer said.
+        let exchange = (answered && self.memory.is_some()).then(|| {
+            let messages = self.sessions.messages(&id)?;
+            anyhow::Ok(messages.get(run.history()..).unwrap_or_default().to_vec())
+        });
+        let mut context = live.context();
+        if let Some(applied) = live.applied()
+            && !self.save_summary(&id, &run, &applied)
         {
-            // Under the lock, so `open` sees either the run or all it saved,
-            // and the thread is marked before any client hears it ended.
-            let mut threads = self.lock();
-            if let Err(error) = self.sessions.mark(&id, |mark| mark.unseen = true) {
+            context = None;
+        }
+        // Asked as the answer ended, with no model call left to make it.
+        if let (Ending::Answered, Some(focus)) = (&ending, run.close_compactions()) {
+            context = None;
+            if let Some(Err(error)) = until_stopped(&run, self.compact_saved(&id, &run, live.compactor(), focus)).await {
                 run.emit(Event::Notice {
-                    text: format!("not marked as new: {error:#}"),
+                    text: format!("not compacted: {error:#}"),
                 });
             }
-            run.emit(Event::End { ending, saved });
-            if let Some(thread) = threads.get_mut(&id) {
-                thread.run = None;
-            }
-            self.publish(&threads);
         }
-        if answered && let Err(error) = self.learn(&id, run.history(), &model).await {
+        self.end(&id, &run, ending, context);
+        if let Some(exchange) = exchange
+            && let Err(error) = async { self.learn(&exchange?, &model).await }.await
+        {
             *self.lock_memory_failure() = Some(format!("memory not updated: {error:#}"));
         }
+    }
+
+    /// Compacts the thread as saved into `run`, `focus` saying what the
+    /// summary should keep above all.
+    async fn drive_compaction(self: Arc<Self>, id: SessionId, run: Arc<Run>, compactor: Compactor, focus: String) {
+        let ending = match until_stopped(&run, self.compact_saved(&id, &run, &compactor, focus)).await {
+            None => Ending::Interrupted,
+            Some(Ok(())) => Ending::Answered,
+            Some(Err(error)) => Ending::Failed {
+                error: format!("not compacted: {error:#}"),
+            },
+        };
+        self.end(&id, &run, ending, None);
+    }
+
+    /// Replaces the older messages of the thread as saved with a summary,
+    /// telling `run`'s clients.
+    async fn compact_saved(&self, id: &SessionId, run: &Run, compactor: &Compactor, focus: String) -> Result<()> {
+        let basis = self.sessions.basis(id)?;
+        run.emit(Event::Notice {
+            text: "compacting the conversation…".into(),
+        });
+        let reason = CompactReason::Asked { focus };
+        let Some(summary) = compactor.summarize(&basis.messages, basis.from, &basis.state, &reason).await? else {
+            run.emit(Event::Notice {
+                text: "nothing to compact yet".into(),
+            });
+            return Ok(());
+        };
+        let kept = basis.messages.get(summary.upto).context("nothing is kept after the summary")?;
+        anyhow::ensure!(
+            self.sessions.summarize(id, summary.upto, kept, &summary.state)?,
+            "the conversation changed while it was summarized"
+        );
+        tracing::info!(thread = id.as_str(), tokens = summary.before, "compacted");
+        run.emit(summary.event());
+        Ok(())
+    }
+
+    /// Saves the summary a run compacted to in place of what it replaced;
+    /// false when it could not, as when the run's end saved the thread
+    /// other than it was answered.
+    fn save_summary(&self, id: &SessionId, run: &Run, applied: &Applied) -> bool {
+        let failure = match self.sessions.summarize(id, applied.at, &applied.kept, &applied.state) {
+            Ok(true) => return true,
+            Ok(false) => "the conversation was saved otherwise".to_owned(),
+            Err(error) => format!("{error:#}"),
+        };
+        tracing::warn!(thread = id.as_str(), failure, "cannot save a summary");
+        run.emit(Event::Notice {
+            text: format!("the summary is not saved, so it is compacted again when due: {failure}"),
+        });
+        false
+    }
+
+    /// Lets clients know `run` ended with `ending`, and the thread is free.
+    fn end(&self, id: &SessionId, run: &Run, ending: Ending, context: Option<u64>) {
+        tracing::info!(thread = id.as_str(), run = ?run.id(), ?ending, "run ended");
+        let saved = self
+            .sessions
+            .messages(id)
+            .map_or(run.history(), |messages| messages.len());
+        // Under the lock, so `open` sees either the run or all it saved,
+        // and the thread is marked before any client hears it ended.
+        let mut threads = self.lock();
+        if let Err(error) = self.sessions.mark(id, |mark| mark.unseen = true) {
+            run.emit(Event::Notice {
+                text: format!("not marked as new: {error:#}"),
+            });
+        }
+        run.emit(Event::End { ending, saved });
+        if let Some(thread) = threads.get_mut(id) {
+            thread.run = None;
+            thread.context = context;
+        }
+        self.publish(&threads);
     }
 
     /// Saves what a run that did not answer said, which the agent leaves
@@ -680,14 +806,11 @@ impl Host {
         }
     }
 
-    /// Learns from what the thread's run said after its first `history`
-    /// messages.
-    async fn learn(&self, id: &SessionId, history: usize, model: &Model) -> Result<()> {
+    /// Learns from what a run said: the `exchange` its answer added.
+    async fn learn(&self, exchange: &[Message], model: &Model) -> Result<()> {
         let Some(memory) = &self.memory else {
             return Ok(());
         };
-        let messages = self.sessions.messages(id)?;
-        let exchange = messages.get(history..).unwrap_or_default();
         let configured = memory
             .model()
             .map(|reference| Model::connect(reference, &self.providers))

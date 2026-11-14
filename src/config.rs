@@ -29,6 +29,7 @@ pub struct Config {
     pub sessions: Sessions,
     pub shared: Shared,
     pub memory: Memory,
+    pub compaction: Compaction,
     pub tools: Tools,
     pub subagents: Subagents,
     /// Where a remote host's agents may work on each machine, by its name.
@@ -58,6 +59,7 @@ impl Default for Config {
             sessions: Sessions::default(),
             shared: Shared::default(),
             memory: Memory::default(),
+            compaction: Compaction::default(),
             tools: Tools::default(),
             subagents: Subagents::default(),
             machines: BTreeMap::new(),
@@ -404,6 +406,30 @@ impl Memory {
             None => data_dir()
                 .map(|dir| dir.join("memories.md"))
                 .context("set `memory.file`"),
+        }
+    }
+}
+
+/// When and how a conversation's older messages are replaced by a summary.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct Compaction {
+    /// Compact on its own once `threshold` is passed; `/compact` and the
+    /// model's `compact` tool work either way.
+    pub auto: bool,
+    /// Tokens a model call may take in and give back before the
+    /// conversation is compacted; at most 90% of the model's window.
+    pub threshold: u64,
+    /// The model that writes summaries; else the conversation's.
+    pub model: Option<String>,
+}
+
+impl Default for Compaction {
+    fn default() -> Self {
+        Self {
+            auto: true,
+            threshold: 100_000,
+            model: None,
         }
     }
 }
@@ -768,6 +794,9 @@ mod tests {
         assert_eq!(documented.memory.enabled, built_in.memory.enabled);
         assert_eq!(documented.memory.recall, built_in.memory.recall);
         assert_eq!(documented.memory.embedding_model, built_in.memory.embedding_model);
+        assert_eq!(documented.compaction.auto, built_in.compaction.auto);
+        assert_eq!(documented.compaction.threshold, built_in.compaction.threshold);
+        assert_eq!(documented.compaction.model, built_in.compaction.model);
         assert_eq!(documented.tools.allow_all, built_in.tools.allow_all);
         assert_eq!(documented.tools.default, built_in.tools.default);
         assert_eq!(documented.tools.permissions, built_in.tools.permissions);

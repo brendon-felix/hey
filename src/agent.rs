@@ -9,10 +9,10 @@ use anyhow::{Context, Result, bail};
 use rig_agent::agent::AgentBuilder;
 use rig_agent::tool::server::ToolServer;
 use rig_core::DynModel;
-use rig_core::catalog::Catalog;
+use rig_core::catalog::{Catalog, ModelSpec};
 use rig_core::operation::{Completion, Embedding};
 use rig_core::providers::ollama::OllamaConfig;
-use rig_core::providers::registry::ConnectOptions;
+use rig_core::providers::registry::{ConnectOptions, ProviderId};
 use rig_core::tool::DynamicTool;
 use rig_tools::Spill;
 
@@ -64,11 +64,31 @@ impl Model {
         self.inner.clone()
     }
 
+    /// A model that answers as `inner` says, for tests.
+    #[cfg(test)]
+    pub fn scripted(reference: &str, inner: impl Into<DynModel<Completion>>) -> Self {
+        Self {
+            reference: reference.to_owned(),
+            inner: inner.into(),
+        }
+    }
+
     pub fn info(&self) -> ModelInfo {
         ModelInfo {
             reference: self.reference.clone(),
             context_window: self.inner.spec().and_then(|spec| spec.context_window),
         }
+    }
+
+    /// What the catalog knows of the model; of one it does not list, only
+    /// its vendor and id.
+    pub fn spec(&self) -> Result<ModelSpec> {
+        if let Some(spec) = self.inner.spec() {
+            return Ok(spec.clone());
+        }
+        let (vendor, id) = self.reference.split_once('/').unwrap_or((&self.reference, ""));
+        let provider = ProviderId::catalog(vendor).with_context(|| format!("unknown vendor `{vendor}`"))?;
+        Ok(ModelSpec::new(provider, id))
     }
 }
 

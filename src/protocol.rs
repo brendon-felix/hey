@@ -119,6 +119,13 @@ pub enum Event {
     Context {
         tokens: u64,
     },
+    /// The conversation's older messages were replaced by `summary`;
+    /// `before` and `after` estimate the tokens of each.
+    Compacted {
+        summary: String,
+        before: u64,
+        after: u64,
+    },
     End {
         ending: Ending,
         /// How many messages the thread holds now, its answer saved.
@@ -268,6 +275,8 @@ pub struct RunOptions {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RunRequest {
+    /// What to answer; for [`Task::Compact`], what the summary should keep
+    /// above all, if anything.
     pub prompt: String,
     /// What the prompt's mentions attach from the user's working directory.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -278,6 +287,18 @@ pub struct RunRequest {
     /// process, or the client is older than this field.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub client: Option<ClientInfo>,
+    #[serde(default)]
+    pub task: Task,
+}
+
+/// What a run does with its prompt.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Task {
+    #[default]
+    Answer,
+    /// Compact the conversation, with no answer.
+    Compact,
 }
 
 /// A machine hey runs on, as the model is told of it.

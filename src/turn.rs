@@ -12,7 +12,7 @@ use tokio::time::{Interval, MissedTickBehavior};
 use crate::backend::{Backend, Events};
 use crate::mention;
 use crate::protocol::{
-    AgentId, ApprovalId, Ask, Attachment, Ending, Event, FollowerId, RunId, RunOptions, RunRequest,
+    AgentId, ApprovalId, Ask, Attachment, Ending, Event, FollowerId, RunId, RunOptions, RunRequest, Task,
 };
 use crate::render::{self, Stream, Style, screen};
 use crate::sessions::SessionId;
@@ -45,6 +45,19 @@ pub fn request(prompt: String, options: RunOptions) -> RunRequest {
         prompt,
         options,
         client: None,
+        task: Task::Answer,
+    }
+}
+
+/// A request to compact the thread, `focus` saying what its summary should
+/// keep above all.
+pub fn compaction(focus: String, options: RunOptions) -> RunRequest {
+    RunRequest {
+        prompt: focus,
+        attachments: Vec::new(),
+        options,
+        client: None,
+        task: Task::Compact,
     }
 }
 
@@ -293,6 +306,7 @@ impl Follow {
             Event::ToolCallArguments { json } => stream.arguments(&json),
             Event::Decided { .. } | Event::Claimed { .. } => {}
             Event::Context { tokens } => self.seen.context = Some(tokens),
+            Event::Compacted { summary, before, after } => stream.compacted(&summary, Some((before, after))),
             Event::Approval { id, ask } => {
                 stream.settle();
                 return Step::Ask { id, ask };
@@ -424,6 +438,7 @@ fn report(event: Event) -> Option<Outcome> {
         | Event::Approval { .. }
         | Event::Decided { .. }
         | Event::Context { .. }
+        | Event::Compacted { .. }
         | Event::AgentStarted { .. }
         | Event::Agent { .. }
         | Event::AgentEnded { .. }

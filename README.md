@@ -24,6 +24,8 @@ of `hey` is on ease of use, speed, and a pleasant terminal experience.
   answer you have not seen, to open, archive, delete or fork them
 - Memory across conversations: lasting facts about you and your work are learned from answers and
   recalled when a conversation starts
+- Compaction: a long conversation's older messages are replaced by a summary, on its own past a
+  token threshold, or when you `/compact` or the agent asks
 - Remote hosting: run the agent and keep conversations on a server, and pick them up from any
   machine, even while an answer is in progress
 - Syntax highlighting via [syntect](https://github.com/trishume/syntect), with bat's themes
@@ -75,6 +77,7 @@ Type `/` or press Tab to see commands and skills; the status line describes the 
 | `/history` | Show this conversation |
 | `/copy` | Copy the latest reply as Markdown |
 | `/copy-all` | Copy this conversation as Markdown |
+| `/compact [focus]` | Replace older messages with a summary, keeping above all what `focus` names |
 | `/model [vendor/model]`, `/m` | Switch model |
 | `/think [level]` | Set thinking: `off`, `minimal`…`max`, or `default` |
 | `/theme [theme]`, `/t` | Switch theme; without one, pick with a live preview |
@@ -179,6 +182,32 @@ the reply it was writing.
 With a remote, the list is the host's, so every machine sees the same conversations and marks.
 `hey -r` skips archived conversations.
 
+### Compaction
+
+A long conversation is compacted: its older messages are replaced by a summary the model writes of
+them (the goal, progress, decisions, next steps, and exact names, paths and errors), and the newest
+stay as they are, so it fits the model's window and each call reads less. It happens:
+
+- **On its own**, once a model call takes in and gives back more than `threshold` tokens
+  (100,000), or 90% of the model's window if that is fewer. It is checked before every model call,
+  so a long answer is compacted while it goes on.
+- **With `/compact [focus]`**, at any time. While an answer is in progress it compacts before the
+  model's next step; otherwise at once, followed like an answer. `focus` says what the summary
+  should keep above all.
+- **When the agent asks**, with its `compact` tool, such as between unrelated tasks.
+
+The summary shows where it was made, in every terminal following the conversation and in
+`/history`, as `[display] tool_output` shows what a tool gave back. A later compaction folds the
+earlier summary into the new one. What a summary replaced stays in the conversation's log, and the
+conversation keeps its title.
+
+```toml
+[compaction]
+threshold = 150000                 # compact later
+model = "openai/gpt-5.4-mini"      # a cheaper model to write summaries
+# auto = false                     # only /compact and the agent's tool compact
+```
+
 ## Configuration
 
 `hey` reads a TOML file, if present:
@@ -226,7 +255,7 @@ Each tool call is shown as it happens. Whether it runs depends on its permission
 - `confirm` asks first, and offers to allow that tool for the rest of the conversation.
 - `deny` tells the model it is not allowed.
 
-`read`, `list`, `search`, `skill` and `spawn_agents` are allowed by default; everything else asks. Rules are
+`read`, `list`, `search`, `skill`, `spawn_agents` and `compact` are allowed by default; everything else asks. Rules are
 keyed by tool name, or `mcp:<server>:<tool>` and `mcp:<server>` for MCP tools, which the model sees
 as `mcp__<server>__<tool>`.
 

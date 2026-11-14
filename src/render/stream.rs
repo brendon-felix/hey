@@ -15,7 +15,7 @@ use super::preview::{Call, Preview, Source};
 use super::reply::{Part, Reply};
 use super::tool::{self, Mark, line};
 use super::{
-    Style, animations, call_line, clip, clock, machine_arg, palette, screen, summarize_args,
+    Style, animations, call_line, clip, clock, compacted, machine_arg, palette, screen, summarize_args,
     terminal_height, terminal_width, theme, thought, thought_text,
 };
 use crate::config::Output;
@@ -406,6 +406,13 @@ impl Stream {
     pub fn settle(&mut self) {
         self.end_preview(Ending::Interrupted);
         self.flush();
+    }
+
+    /// The conversation was compacted to `summary`, from and to about
+    /// `sizes` tokens when known.
+    pub fn compacted(&mut self, summary: &str, sizes: Option<(u64, u64)>) {
+        self.settle();
+        compacted(summary, sizes, &self.style);
     }
 
     /// [`Self::settle`], but a preview carries on: only text revealed

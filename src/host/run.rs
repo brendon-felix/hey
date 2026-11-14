@@ -15,6 +15,7 @@ use rig_core::streaming::{Item, PartKind, StreamEvent};
 use tokio::sync::{Notify, oneshot, watch};
 
 use super::record::Record;
+use crate::compaction;
 use crate::protocol::{
     AgentId, ApprovalId, Ask, Call, CallId, CallResult, Decision, Event, FollowerId, RunId,
     Running,
@@ -35,6 +36,8 @@ pub struct Run {
     history: usize,
     /// Messages the user sent meanwhile, for the model to be handed.
     steers: Mutex<Waiting>,
+    /// Compactions asked for the next model call to make.
+    compactions: Mutex<compaction::Requests>,
     log: watch::Sender<Vec<Event>>,
     approvals: Mutex<HashMap<ApprovalId, oneshot::Sender<Decision>>>,
     calls: Mutex<Calls>,
@@ -95,6 +98,7 @@ impl Run {
             model,
             history,
             steers: Mutex::default(),
+            compactions: Mutex::default(),
             log: watch::Sender::default(),
             approvals: Mutex::default(),
             calls: Mutex::default(),
@@ -150,6 +154,22 @@ impl Run {
     /// Takes no more messages, dropping those waiting.
     pub fn close_steers(&self) {
         lock(&self.steers).close();
+    }
+
+    /// Has the next model call compact first, `focus` saying what the
+    /// summary should keep above all; false once the run makes no more.
+    pub fn compact(&self, focus: &str) -> bool {
+        lock(&self.compactions).push(focus)
+    }
+
+    /// The focus of the compaction asked for, if one was.
+    pub fn take_compaction(&self) -> Option<String> {
+        lock(&self.compactions).take()
+    }
+
+    /// Takes no more compactions, returning the one asked and not made.
+    pub fn close_compactions(&self) -> Option<String> {
+        lock(&self.compactions).close()
     }
 
     /// Whether the run waits for a client to decide something.

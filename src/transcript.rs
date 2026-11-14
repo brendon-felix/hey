@@ -8,6 +8,7 @@
 
 use rig_core::message::{AssistantContent, Message, UserContent};
 
+use crate::compaction::summary_in;
 use crate::mention::is_context;
 use crate::steer;
 
@@ -15,6 +16,8 @@ use crate::steer;
 enum Speaker {
     User,
     Assistant,
+    /// The summary a compaction put in place of what was said before it.
+    Summary,
 }
 
 impl Speaker {
@@ -22,6 +25,7 @@ impl Speaker {
         match self {
             Speaker::User => "## User",
             Speaker::Assistant => "## Assistant",
+            Speaker::Summary => "## Summary of the earlier conversation",
         }
     }
 }
@@ -44,7 +48,7 @@ pub fn last_reply(messages: &[Message]) -> Option<String> {
     let end = said.iter().rposition(|(speaker, _)| *speaker == Speaker::Assistant)? + 1;
     let start = said[..end]
         .iter()
-        .rposition(|(speaker, _)| *speaker == Speaker::User)
+        .rposition(|(speaker, _)| *speaker != Speaker::Assistant)
         .map_or(0, |prompt| prompt + 1);
     let texts: Vec<&str> = said[start..end].iter().flat_map(|(_, texts)| texts).copied().collect();
     Some(texts.join("\n\n"))
@@ -56,17 +60,26 @@ pub fn last_reply(messages: &[Message]) -> Option<String> {
 fn said(message: &Message) -> Option<(Speaker, Vec<&str>)> {
     let (speaker, texts): (_, Vec<&str>) = match message {
         Message::System { .. } => return None,
-        Message::User { content } => (
-            Speaker::User,
-            content
-                .iter()
-                .flat_map(|content| match content {
-                    UserContent::Text(text) if !is_context(&text.text) => vec![text.text.as_str()],
-                    UserContent::ToolResult(result) => steer::prompts(result).collect(),
-                    _ => Vec::new(),
-                })
-                .collect(),
-        ),
+        Message::User { content } => {
+            let summary = content.iter().find_map(|content| match content {
+                UserContent::Text(text) => summary_in(&text.text),
+                _ => None,
+            });
+            match summary {
+                Some(summary) => (Speaker::Summary, vec![summary]),
+                None => (
+                    Speaker::User,
+                    content
+                        .iter()
+                        .flat_map(|content| match content {
+                            UserContent::Text(text) if !is_context(&text.text) => vec![text.text.as_str()],
+                            UserContent::ToolResult(result) => steer::prompts(result).collect(),
+                            _ => Vec::new(),
+                        })
+                        .collect(),
+                ),
+            }
+        }
         Message::Assistant(reply) => (
             Speaker::Assistant,
             reply

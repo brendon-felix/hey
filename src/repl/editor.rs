@@ -61,8 +61,8 @@ impl Status {
             None => name.to_owned(),
         };
         let context = self.context.map(|used| match self.window {
-            Some(window) => format!("{}/{}", compact(used), compact(u64::from(window))),
-            None => compact(used),
+            Some(window) => format!("{}/{}", render::tokens(used), render::tokens(u64::from(window))),
+            None => render::tokens(used),
         });
         self.after_remote(std::iter::once(model).chain(context))
     }
@@ -70,8 +70,8 @@ impl Status {
     fn full(&self) -> String {
         let thinking = self.thinking.map(|level| format!("thinking {}", level.as_str()));
         let context = self.context.map(|used| match self.window {
-            Some(window) => format!("{} / {} tokens", compact(used), compact(u64::from(window))),
-            None => format!("{} tokens", compact(used)),
+            Some(window) => format!("{} / {} tokens", render::tokens(used), render::tokens(u64::from(window))),
+            None => format!("{} tokens", render::tokens(used)),
         });
         self.after_remote(std::iter::once(self.model.clone()).chain(thinking).chain(context))
     }
@@ -515,7 +515,7 @@ impl Choices {
                     .map(|summary| host::thread_suggestion(summary, span))
                     .collect();
             }
-            None => return Vec::new(),
+            Some(Arg::Focus) | None => return Vec::new(),
         };
         values
             .iter()
@@ -635,20 +635,6 @@ impl InputHelp {
             None if word.is_empty() => (muted, "Tab for commands and skills".into()),
             None => (Color::Yellow.normal(), format!("unknown command /{word}")),
         }
-    }
-}
-
-/// A token count in at most four columns: a tenth only below ten, as in
-/// `9.5k`, `24k` and `1M`.
-fn compact(tokens: u64) -> String {
-    let (value, unit) = match tokens {
-        0..1_000 => return tokens.to_string(),
-        1_000..999_500 => (tokens as f64 / 1e3, "k"),
-        _ => (tokens as f64 / 1e6, "M"),
-    };
-    match value < 9.95 {
-        true => format!("{value:.1}").trim_end_matches(".0").to_owned() + unit,
-        false => format!("{value:.0}{unit}"),
     }
 }
 

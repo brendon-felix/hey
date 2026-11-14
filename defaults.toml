@@ -120,6 +120,23 @@ embedding_model = "ollama/qwen3-embedding:0.6b"
 # Default: the platform's data directory, under hey/memories.md.
 # file = "~/.hey/memories.md"
 
+[compaction]
+# A long conversation is compacted: its older messages are replaced by a
+# summary the model writes of them, so it fits the model's window and each
+# call reads less. The newest messages stay as they are, and what was
+# replaced is kept in the conversation's log. `/compact` compacts at any
+# time, and the agent has a `compact` tool to compact before its next step.
+#
+# Compact on its own once `threshold` is passed, checked before every model
+# call, so a long answer is compacted while it goes on.
+auto = true
+# Tokens a model call may take in and give back before the conversation is
+# compacted, or 90% of the model's window if that is fewer.
+threshold = 100000
+# Model that writes summaries, as `vendor/model`. When unset, the
+# conversation's.
+# model = "openai/gpt-5.4-mini"
+
 [tools]
 # Run every tool, in every conversation, without asking. Overrides `default`
 # and every rule below, including "deny".
@@ -138,7 +155,7 @@ default = "confirm"
 result_bytes = 16384
 
 # Rules by tool. Built-in tools: read, list, search, write, edit, move, delete,
-# shell, skill, fetch, web_search, spawn_agents. MCP tools are
+# shell, skill, fetch, web_search, spawn_agents, compact. MCP tools are
 # "mcp:<server>:<tool>", or "mcp:<server>" for all of a server's tools. Your
 # rules extend these defaults rather than replace them.
 [tools.permissions]
@@ -147,6 +164,7 @@ list = "allow"
 search = "allow"
 skill = "allow"
 spawn_agents = "allow"
+compact = "allow"
 
 [subagents]
 # Let the agent start subagents (the `spawn_agents` tool): agents that each

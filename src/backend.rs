@@ -202,6 +202,16 @@ impl Backend {
         }
     }
 
+    /// Has the answer in progress in the thread compact before its next
+    /// model call, or once it answered; false when the thread is not
+    /// answering, or its answer is ending.
+    pub async fn compact(&self, id: &SessionId, focus: &str) -> Result<bool> {
+        match self {
+            Backend::Local(host) => Ok(host.compact_running(id, focus)),
+            Backend::Remote(client, _) => client.compact(id, focus).await,
+        }
+    }
+
     pub async fn tools(&self, id: &SessionId) -> Result<Tools> {
         match self {
             Backend::Local(host) => Ok(host.tools(id)),

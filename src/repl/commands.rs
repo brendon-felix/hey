@@ -11,6 +11,9 @@ pub enum Command {
     Fork,
     History,
     Copy(Scope),
+    /// Compact the conversation, with what its summary should keep above
+    /// all.
+    Compact(Option<String>),
     Model(Option<String>),
     Think(Option<String>),
     Theme(Option<String>),
@@ -35,6 +38,8 @@ pub enum Arg {
     Thinking,
     Theme,
     Thread,
+    /// Free text, which completes to nothing.
+    Focus,
 }
 
 impl Arg {
@@ -44,6 +49,7 @@ impl Arg {
             Arg::Thinking => "level",
             Arg::Theme => "theme",
             Arg::Thread => "thread",
+            Arg::Focus => "focus",
         }
     }
 }
@@ -121,6 +127,13 @@ pub const COMMANDS: &[Spec] = &[
         arg: None,
         about: "Copy this conversation as Markdown",
         build: |_| Command::Copy(Scope::Thread),
+    },
+    Spec {
+        name: "compact",
+        aliases: &[],
+        arg: Some(Arg::Focus),
+        about: "Replace older messages with a summary, keeping what focus names",
+        build: Command::Compact,
     },
     Spec {
         name: "model",
@@ -246,5 +259,9 @@ mod tests {
         assert_eq!(parse("/nope"), Input::Invalid("unknown command /nope".into()));
         assert_eq!(parse(" /deploy to staging"), Input::Message("/deploy to staging".into()));
         assert_eq!(parse("/new"), Input::Command(Command::New), "commands win");
+        assert_eq!(
+            parse("/compact the parser work"),
+            Input::Command(Command::Compact(Some("the parser work".into())))
+        );
     }
 }

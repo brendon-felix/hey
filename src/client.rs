@@ -226,6 +226,15 @@ impl Client {
         .await
     }
 
+    pub async fn compact(&self, id: &SessionId, focus: &str) -> Result<bool> {
+        let path = format!("v1/threads/{}/compact", id.as_str());
+        self.done(
+            self.http.post(self.url(&path)?).json(focus),
+            StatusCode::CONFLICT,
+        )
+        .await
+    }
+
     pub async fn tools(&self, id: &SessionId) -> Result<Tools> {
         self.json(self.get(&format!("v1/threads/{}/tools", id.as_str()))?)
             .await

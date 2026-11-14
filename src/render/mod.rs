@@ -22,11 +22,13 @@ use textwrap::core::display_width;
 use unicode_segmentation::UnicodeSegmentation;
 use yansi::Paint;
 
+use crate::compaction;
 use crate::config::{Display, Output};
 use crate::mention;
 use crate::protocol::Event;
 use crate::route;
 use crate::steer;
+use preview::{Preview, Source};
 
 pub use reply::{Reply, rows as reply_rows};
 pub use stream::{FRAME, Stream};
@@ -178,6 +180,48 @@ pub fn notice(text: &str) {
     screen::line(format_args!("  {}", palette().muted.paint(text)));
 }
 
+/// The conversation was compacted to `summary`, from and to about `sizes`
+/// tokens when known. The summary shows as `tool_output` shows what a tool
+/// gave back.
+fn compacted(summary: &str, sizes: Option<(u64, u64)>, style: &Style) {
+    let palette = palette();
+    let sizes = sizes.map(|(before, after)| format!(" ~{} → ~{} tokens", tokens(before), tokens(after)));
+    screen::line(format_args!(
+        "\n{} {}{}",
+        palette.name.paint("◇"),
+        "Compacted the conversation".bold(),
+        palette.muted.paint(&sizes.unwrap_or_default())
+    ));
+    match style.tool_output {
+        Output::Full => {
+            let mut reply = Reply::new(style);
+            reply.text(summary);
+            reply.finish();
+        }
+        Output::Preview => {
+            let mut preview = Preview::new(Source::Returned);
+            preview.label("summary".into());
+            preview.push(summary);
+            preview.framed(style.width(), "").into_iter().for_each(screen::line);
+        }
+        Output::Hidden => {}
+    }
+}
+
+/// A token count in at most four columns: a tenth only below ten, as in
+/// `9.5k`, `24k` and `1M`.
+pub fn tokens(count: u64) -> String {
+    let (value, unit) = match count {
+        0..1_000 => return count.to_string(),
+        1_000..999_500 => (count as f64 / 1e3, "k"),
+        _ => (count as f64 / 1e6, "M"),
+    };
+    match value < 9.95 {
+        true => format!("{value:.1}").trim_end_matches(".0").to_owned() + unit,
+        false => format!("{value:.0}{unit}"),
+    }
+}
+
 pub fn error(error: &dyn std::fmt::Display) {
     screen::line(format_args!("\n{} {error}", "Error:".red()));
 }
@@ -190,8 +234,13 @@ pub fn conversation(messages: &[Message], style: &Style) {
             Message::System { .. } => {}
             Message::User { content } => content.iter().for_each(|content| match content {
                 UserContent::Text(text) if !mention::is_context(&text.text) => {
-                    stream.settle();
-                    user_message(&text.text)
+                    match compaction::summary_in(&text.text) {
+                        Some(summary) => stream.compacted(summary, None),
+                        None => {
+                            stream.settle();
+                            user_message(&text.text)
+                        }
+                    }
                 }
                 UserContent::ToolResult(result) => {
                     let (result, steered) = steer::split(result.clone());

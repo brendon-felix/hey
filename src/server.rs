@@ -41,6 +41,7 @@ pub async fn serve(host: Arc<Host>, config: &config::Server) -> Result<()> {
         .route("/v1/threads/{id}", get(open).delete(delete))
         .route("/v1/threads/{id}/run", post(start).delete(stop))
         .route("/v1/threads/{id}/steer", post(steer))
+        .route("/v1/threads/{id}/compact", post(compact))
         .route("/v1/threads/{id}/viewed", post(viewed))
         .route("/v1/threads/{id}/archived", put(archive))
         .route("/v1/threads/{id}/fork", post(fork))
@@ -190,6 +191,20 @@ async fn steer(
     Json(steer): Json<Steer>,
 ) -> StatusCode {
     match host.steer(&id, steer).await {
+        true => StatusCode::NO_CONTENT,
+        false => StatusCode::CONFLICT,
+    }
+}
+
+/// Compacts the answer in progress, the body saying what to focus on; 409
+/// when the thread is not answering, or its answer is ending. A thread that
+/// is not answering compacts on a run of its own.
+async fn compact(
+    State(host): State<Arc<Host>>,
+    Path(id): Path<SessionId>,
+    Json(focus): Json<String>,
+) -> StatusCode {
+    match host.compact_running(&id, &focus) {
         true => StatusCode::NO_CONTENT,
         false => StatusCode::CONFLICT,
     }

@@ -7,6 +7,7 @@ mod backend;
 mod browser;
 mod client;
 mod clipboard;
+mod compaction;
 mod config;
 mod gate;
 mod host;

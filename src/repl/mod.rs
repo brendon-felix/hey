@@ -593,6 +593,7 @@ impl Session {
             Command::Fork => self.fork().await?,
             Command::History => self.show_thread(true).await,
             Command::Copy(scope) => self.copy(scope).await?,
+            Command::Compact(focus) => self.compact(focus.unwrap_or_default()).await?,
             Command::Model(reference) => self.switch_model(reference).await?,
             Command::Think(level) => self.set_thinking(level)?,
             Command::Theme(theme) => self.switch_theme(theme, editor)?,
@@ -696,6 +697,22 @@ impl Session {
                 render::notice(&format!("{why}; by OSC 52, which some terminals ignore"));
                 println!();
             }
+        }
+        Ok(())
+    }
+
+    /// Compacts this conversation: an answer in progress before its next
+    /// model call, else on a run of its own, followed as an answer is.
+    async fn compact(&mut self, focus: String) -> Result<()> {
+        if self.current.is_none() {
+            let request = turn::compaction(focus, self.options.clone());
+            let follow = turn::start(&self.backend, &self.thread, request, &self.style).await?;
+            self.follow(follow);
+            return Ok(());
+        }
+        match self.backend.compact(&self.thread, &focus).await? {
+            true => render::notice("compacts before the model's next step"),
+            false => render::notice("not now: the answer is ending, or compacting already"),
         }
         Ok(())
     }
