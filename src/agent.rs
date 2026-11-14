@@ -117,6 +117,7 @@ pub fn builder<R: Reporter>(
     let server = ToolServer::new().run();
     let approval = Approval::new(permissions, reporter, Gate::new(server.clone()), routes);
     AgentBuilder::new(model.inner.clone())
+        .record_content_telemetry(crate::log::content())
         .tool_server_handle(server)
         .add_hook(approval)
         .dynamic_tools(tools)

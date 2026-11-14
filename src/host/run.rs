@@ -14,6 +14,7 @@ use rig_core::message::AssistantContent;
 use rig_core::streaming::{Item, PartKind, StreamEvent};
 use tokio::sync::{Notify, oneshot, watch};
 
+use super::record::Record;
 use crate::protocol::{
     AgentId, ApprovalId, Ask, Call, CallId, CallResult, Decision, Event, FollowerId, RunId,
     Running,
@@ -34,6 +35,8 @@ pub struct Run {
     calls: Mutex<Calls>,
     next_id: AtomicU64,
     stop: Notify,
+    /// What the run said, for when it ends without saving it.
+    record: Record,
     /// Called when whether the run waits for a client changes.
     asking_changed: Box<dyn Fn() + Send + Sync>,
 }
@@ -85,6 +88,7 @@ impl Run {
             calls: Mutex::default(),
             next_id: AtomicU64::new(0),
             stop: Notify::new(),
+            record: Record::default(),
             asking_changed: Box::new(asking_changed),
         }
     }
@@ -101,6 +105,10 @@ impl Run {
 
     pub fn history(&self) -> usize {
         self.history
+    }
+
+    pub fn record(&self) -> &Record {
+        &self.record
     }
 
     pub fn prompt(&self) -> &str {

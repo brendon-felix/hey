@@ -4,7 +4,7 @@
 
 //! Which machine each of an agent's tools runs on: the host, or the remote
 //! client following the run, which lends its own tools. A tool both offer
-//! takes a `machine` argument, the host's when it is left out.
+//! takes a `machine` argument, which every call to it names.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -69,7 +69,7 @@ impl Kit {
         let definition = tool.definition();
         let (host, client) = (&self.host, routes.client.as_deref().unwrap_or_default());
         let description = format!(
-            "{}\n\nRuns on `{host}`, where you run, unless `{ARG}` names `{client}`, the user's machine.",
+            "{}\n\nRuns on the machine `{ARG}` names: `{host}`, where you run, or `{client}`, the user's machine.",
             definition.description
         );
         let parameters = with_machine(definition.parameters, host, client);
@@ -178,17 +178,24 @@ impl Routes {
         self.target(tool, args.get(ARG).and_then(Value::as_str))
     }
 
-    /// Where a call to `tool` naming `machine` runs.
+    /// Where a call to `tool` naming `machine` runs. A call to a tool both
+    /// have must name one: taking the host for a call that left it out sent
+    /// calls meant for the user's machine, such as writes to their paths,
+    /// to the host, where they failed in ways that did not say why.
     fn target(&self, tool: &str, machine: Option<&str>) -> Result<Target, String> {
         let client = || self.client.clone().unwrap_or_default();
         match (self.on.get(tool), machine) {
             (None, _) => Ok(Target::Host),
             (Some(On::Client), _) => Ok(Target::Client(client())),
-            (Some(On::Either), None) => Ok(Target::Host),
             (Some(On::Either), Some(machine)) if machine == self.host => Ok(Target::Host),
             (Some(On::Either), Some(machine)) if Some(machine) == self.client.as_deref() => {
                 Ok(Target::Client(client()))
             }
+            (Some(On::Either), None) => Err(format!(
+                "`{ARG}` is required: `{}`, where you run, or `{}`, the user's machine",
+                self.host,
+                client()
+            )),
             (Some(On::Either), Some(machine)) => Err(format!(
                 "no machine `{machine}`; `{ARG}` is `{}` or `{}`",
                 self.host,
@@ -198,19 +205,24 @@ impl Routes {
     }
 }
 
-/// `parameters` with the `machine` argument, which names `host` or `client`.
+/// `parameters` with the required `machine` argument, which names `host` or
+/// `client`.
 fn with_machine(mut parameters: Value, host: &str, client: &str) -> Value {
     let argument = json!({
         "type": "string",
         "enum": [host, client],
         "description": format!(
-            "The machine it runs on: `{host}`, where you run (the default), or `{client}`, the user's machine."
+            "The machine it runs on: `{host}`, where you run, or `{client}`, the user's machine."
         ),
     });
     if let Some(schema) = parameters.as_object_mut() {
         let properties = schema.entry("properties").or_insert_with(|| json!({}));
         if let Some(properties) = properties.as_object_mut() {
             properties.insert(ARG.to_owned(), argument);
+        }
+        let required = schema.entry("required").or_insert_with(|| json!([]));
+        if let Some(required) = required.as_array_mut() {
+            required.push(json!(ARG));
         }
     }
     parameters
@@ -251,10 +263,10 @@ mod tests {
     }
 
     #[test]
-    fn calls_run_on_the_host_unless_they_name_the_client_or_only_it_has_the_tool() {
+    fn calls_to_a_tool_both_have_name_the_machine_and_others_run_where_the_tool_is() {
         let routes = routes();
         let laptop = || Ok(Target::Client("laptop".into()));
-        assert_eq!(routes.target_of("read", r#"{"path": "a"}"#), Ok(Target::Host));
+        assert!(routes.target_of("read", r#"{"path": "a"}"#).unwrap_err().contains("`machine` is required"));
         assert_eq!(routes.target_of("read", r#"{"machine": "fermi"}"#), Ok(Target::Host));
         assert_eq!(routes.target_of("read", r#"{"machine": "laptop"}"#), laptop());
         assert!(routes.target_of("read", r#"{"machine": "desk"}"#).unwrap_err().contains("no machine `desk`"));
@@ -268,10 +280,10 @@ mod tests {
     }
 
     #[test]
-    fn the_machine_argument_is_offered_and_taken_out_before_the_tool_sees_it() {
-        let parameters = with_machine(json!({ "type": "object" }), "fermi", "laptop");
+    fn the_machine_argument_is_required_and_taken_out_before_the_tool_sees_it() {
+        let parameters = with_machine(json!({ "type": "object", "required": ["path"] }), "fermi", "laptop");
         assert_eq!(parameters["properties"]["machine"]["enum"], json!(["fermi", "laptop"]));
-        assert!(parameters.get("required").is_none(), "it stays optional");
+        assert_eq!(parameters["required"], json!(["path", "machine"]));
 
         let mut args = json!({ "path": "a", "machine": "laptop" });
         assert_eq!(take_machine(&mut args).as_deref(), Some("laptop"));

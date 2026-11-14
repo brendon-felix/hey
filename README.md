@@ -134,7 +134,9 @@ work in one-shot messages too: `hey review @src/main.rs`.
 | `●` | Finished an answer you have not seen yet |
 
 An answer carries on if you close the terminal that asked; its conversation shows `●` until you
-open it. Opening a conversation that is still answering follows the answer live.
+open it. Opening a conversation that is still answering follows the answer live. An answer you
+stop with Ctrl+C, or that fails, keeps what it said up to then: its tool calls and results, and
+the reply it was writing.
 
 | Keys | Action |
 | --- | --- |
@@ -180,6 +182,15 @@ args = ["stdio"]
 env = { GITHUB_PERSONAL_ACCESS_TOKEN = "${GITHUB_TOKEN}" }
 ```
 
+### Logs
+
+hey logs what it does to a file a day in the cache directory's `hey/logs` (`[log] dir`): runs
+starting and ending, each tool call with the machine it ran on and why it failed, and rig's
+[spans](https://rig.rs/docs/concepts/observability) for agent runs, model calls and tool calls,
+with their timing and token usage. `[log] filter` or `HEY_LOG` sets what is logged, as `tracing`
+filter directives, and `[log] content = true` adds what is said. A host logs on its machine, and
+each client on its own.
+
 ### Tool permissions
 
 Each tool call is shown as it happens. Whether it runs depends on its permission:
@@ -212,9 +223,9 @@ hey (or, with a remote, the host) restarts. Subagents cannot start subagents.
 
 With a remote, the agent and its subagents run on the host, but they can call your machine's
 tools too: its built-in tools, its web tools and its MCP servers, run inside your `hey`. A tool
-both machines have takes a `machine` argument and runs on the host unless the call names your
-machine; one only your machine has, such as an MCP server only your config lists, runs there.
-Calls that run on your machine show as `● read on laptop …` in every terminal following the
+both machines have takes a `machine` argument, which every call to it names: the host or your
+machine. One only your machine has, such as an MCP server only your config lists, runs there.
+Calls show the machine they run on, as `● read on laptop …`, in every terminal following the
 conversation.
 
 Such a call needs a terminal on your machine showing the conversation; without one, or if that

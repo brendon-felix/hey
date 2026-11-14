@@ -172,6 +172,9 @@ impl<R: Reporter> AgentHook for Approval<R> {
 
     async fn on_outcome(&self, _ctx: &HookContext, event: OutcomeEvent<'_>) -> OutcomeAction {
         self.gate.release(event.id);
+        if let (Some(tool), Some(error)) = (event.tool_name(), event.tool_result().and_then(|result| result.error())) {
+            tracing::warn!(tool, call = ?event.call_id, %error, "tool call failed");
+        }
         OutcomeAction::proceed()
     }
 }
@@ -179,6 +182,7 @@ impl<R: Reporter> AgentHook for Approval<R> {
 impl<R: Reporter> Approval<R> {
     async fn decide(&self, name: &str, args: &str, call: Option<&CallId>) -> DispatchAction {
         let target = self.routes.target_of(name, args);
+        tracing::info!(tool = name, call = ?call, ?target, "tool call");
         let machine = match &target {
             Ok(Target::Client(machine)) => Some(machine.clone()),
             _ => None,

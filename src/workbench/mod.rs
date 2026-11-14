@@ -86,6 +86,15 @@ impl Workbench {
     /// directories it works in allow it, showing its output and asking its
     /// questions through `reporter`.
     pub async fn run(&self, thread: &SessionId, call: &Call, reporter: &impl Reporter) -> CallResult {
+        tracing::info!(thread = thread.as_str(), tool = %call.tool, agent = ?call.agent, "running a call for the host");
+        let result = self.attempt(thread, call, reporter).await;
+        if let Err(error) = &result {
+            tracing::warn!(thread = thread.as_str(), tool = %call.tool, %error, "call for the host failed");
+        }
+        result
+    }
+
+    async fn attempt(&self, thread: &SessionId, call: &Call, reporter: &impl Reporter) -> CallResult {
         let lending = self.lending(thread);
         self.permit(&lending, call, reporter).await?;
         let args: Value = serde_json::from_str(&call.args)

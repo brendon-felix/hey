@@ -230,3 +230,22 @@ listen = "127.0.0.1:7700"
 # so one in a folder synced to the clients needs no copying. With neither,
 # the token is generated in the data directory's hey/server-token.
 # token_file = "~/Sync/hey-token"
+
+# What hey records of what it does, for working out what went wrong: runs
+# starting and ending, every tool call with the machine it ran on and why it
+# failed, and rig's spans for agent runs, model calls and tool calls
+# (https://rig.rs/docs/concepts/observability), each as it closes, with its
+# timing and token usage. One file a day, the last 7 kept. A host
+# (`hey --serve`) and each client log on their own machine.
+[log]
+# What is recorded, as `tracing` filter directives
+# (https://docs.rs/tracing-subscriber/latest/tracing_subscriber/filter/struct.EnvFilter.html).
+# `HEY_LOG` overrides it for one run, e.g. `HEY_LOG=debug hey`.
+filter = "warn,hey=info,rig=info"
+# Record what is said too: system prompts, messages, replies, and tool calls'
+# arguments and results. Makes logs much larger, and holds whatever you and
+# the agent say.
+content = false
+# Where the logs are kept.
+# Default: the platform's cache directory, under hey/logs.
+# dir = "~/.hey/logs"

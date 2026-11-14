@@ -143,6 +143,21 @@ impl Sessions {
             .collect())
     }
 
+    /// Adds `messages` to the conversation `id`, provided it still holds the
+    /// `held` messages it held when they were said; else nothing, returning
+    /// false.
+    pub fn append(&self, id: &SessionId, held: usize, messages: Vec<Message>) -> Result<bool> {
+        let mut conversation = rig_memory::load(&self.store, id.as_str())
+            .with_context(|| format!("cannot read session {id}"))?;
+        if conversation.messages().len() != held {
+            return Ok(false);
+        }
+        conversation.extend(messages);
+        rig_memory::save(&self.store, id.as_str(), &mut conversation)
+            .with_context(|| format!("cannot save session {id}"))?;
+        Ok(true)
+    }
+
     /// Every session with at least one message, newest first.
     pub fn list(&self) -> Result<Vec<Summary>> {
         let mut ids: Vec<SessionId> = self

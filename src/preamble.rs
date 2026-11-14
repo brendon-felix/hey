@@ -146,7 +146,7 @@ impl Setting<'_> {
             ),
             Hosting::Served { listen } => format!(
                 "You run on a hey host, {host}, served by `hey --serve` listening on {listen}. \
-                 Your tools act on the host, from {cwd}, unless a call names the user's machine."
+                 Your tools act on the host, from {cwd}, or on the machine a call names."
             ),
         }
     }
@@ -163,10 +163,10 @@ impl Setting<'_> {
                     .unwrap_or_default();
                 let reach = match lent {
                     Some(lent) => format!(
-                        "Tools with a `machine` argument also run on their machine, `{}`, \
-                         while they have this conversation open there, and tools described as \
-                         running there run only there; files they mention with `@` arrive \
-                         attached to their message.",
+                        "Tools with a `machine` argument run on the machine each call names: the \
+                         host, or theirs, `{}`, while they have this conversation open there. \
+                         Tools described as running there run only there; files they mention \
+                         with `@` arrive attached to their message.",
                         lent.machine
                     ),
                     None => unreachable.to_owned(),

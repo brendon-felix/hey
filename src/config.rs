@@ -37,6 +37,7 @@ pub struct Config {
     pub remote: Option<String>,
     pub remotes: BTreeMap<String, Remote>,
     pub server: Server,
+    pub log: Log,
     /// The file this was read from, or would be once created.
     #[serde(skip)]
     pub file: Option<PathBuf>,
@@ -64,6 +65,7 @@ impl Default for Config {
             remote: None,
             remotes: BTreeMap::new(),
             server: Server::default(),
+            log: Log::default(),
             file: None,
         }
     }
@@ -318,6 +320,36 @@ impl Sessions {
             None => data_dir()
                 .map(|dir| dir.join("sessions"))
                 .context("set `sessions.dir`"),
+        }
+    }
+}
+
+/// What hey records of what it does, in a log file a day.
+#[derive(Debug, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct Log {
+    /// What is recorded, as `tracing` filter directives; `HEY_LOG` overrides it.
+    pub filter: String,
+    /// Record prompts, replies and tool arguments and results too.
+    pub content: bool,
+    dir: Option<String>,
+}
+
+impl Default for Log {
+    fn default() -> Self {
+        Self {
+            filter: "warn,hey=info,rig=info".into(),
+            content: false,
+            dir: None,
+        }
+    }
+}
+
+impl Log {
+    pub fn dir(&self) -> Result<PathBuf> {
+        match &self.dir {
+            Some(dir) => expand_path(dir),
+            None => cache_dir().map(|dir| dir.join("logs")).context("set `log.dir`"),
         }
     }
 }
@@ -743,6 +775,8 @@ mod tests {
         assert_eq!(documented.subagents.enabled, built_in.subagents.enabled);
         assert_eq!(documented.subagents.model, built_in.subagents.model);
         assert_eq!(documented.server.listen, built_in.server.listen);
+        assert_eq!(documented.log.filter, built_in.log.filter);
+        assert_eq!(documented.log.content, built_in.log.content);
     }
 
     #[test]

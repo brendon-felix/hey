@@ -10,6 +10,7 @@ mod clipboard;
 mod config;
 mod gate;
 mod host;
+mod log;
 mod mcp;
 mod memory;
 mod mention;
@@ -121,6 +122,10 @@ async fn main() -> ExitCode {
 async fn run(args: Args) -> Result<ExitCode> {
     let config = Config::load(args.config.as_deref())?;
     render::configure(&config.display);
+    let _logging = log::init(&config.log)
+        .inspect_err(|error| render::notice(&format!("not logging: {error:#}")))
+        .ok();
+    tracing::info!(version = env!("CARGO_PKG_VERSION"), serve = args.serve, "hey started");
     if args.serve {
         let hosting = Hosting::Served {
             listen: config.server.listen,

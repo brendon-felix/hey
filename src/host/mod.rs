@@ -3,6 +3,7 @@
 /* -------------------------------------------------------------------------- */
 
 mod attach;
+mod record;
 mod run;
 
 use std::collections::HashMap;
@@ -335,6 +336,7 @@ impl Host {
         thread.last = Some(run.id());
         self.publish(&threads);
         drop(threads);
+        tracing::info!(thread = id.as_str(), run = ?run.id(), model = %request.options.model, "run started");
         self.tasks
             .spawn(self.clone().drive(id, run, agent, model, request, skills));
         Ok(events)
@@ -492,7 +494,8 @@ impl Host {
             .add_hook(ResultLimit {
                 bytes: self.result_bytes,
                 spill: agent::spill(),
-            });
+            })
+            .add_hook(run.record().clone());
         if let Some(crew) = &self.crew {
             builder = builder.tool(self.spawn(crew, id, thread, request, kit));
         }
@@ -523,7 +526,7 @@ impl Host {
 
     /// Answers `request` into `run` until it ends or is stopped, then learns
     /// from an answer once its clients are let go. The agent saves the thread
-    /// as its stream ends.
+    /// as its stream ends; what a run that did not answer said is saved here.
     async fn drive(
         self: Arc<Self>,
         id: SessionId,
@@ -537,6 +540,8 @@ impl Host {
             ending = self.respond(&id, &run, &agent, &model, request, &skills) => ending,
             () = run.stopped() => Ending::Interrupted,
         };
+        tracing::info!(thread = id.as_str(), run = ?run.id(), ?ending, "run ended");
+        self.keep(&id, &run, &ending);
         let answered = matches!(ending, Ending::Answered);
         let saved = self
             .sessions
@@ -559,6 +564,32 @@ impl Host {
         }
         if answered && let Err(error) = self.learn(&id, run.history(), &model).await {
             *self.lock_memory_failure() = Some(format!("memory not updated: {error:#}"));
+        }
+    }
+
+    /// Saves what a run that did not answer said, which the agent leaves
+    /// unsaved, unless the thread changed since the run began, as when the
+    /// agent saved an answer just as the run was stopped.
+    fn keep(&self, id: &SessionId, run: &Run, ending: &Ending) {
+        let reason = match ending {
+            Ending::Answered => return,
+            Ending::Interrupted => "the user stopped the reply",
+            Ending::Failed { error } => error,
+        };
+        let said = run.record().said(reason);
+        if said.is_empty() {
+            return;
+        }
+        let count = said.len();
+        match self.sessions.append(id, run.history(), said) {
+            Ok(true) => tracing::info!(thread = id.as_str(), messages = count, "saved what an unfinished run said"),
+            Ok(false) => tracing::info!(thread = id.as_str(), "an unfinished run's thread changed; saved nothing"),
+            Err(error) => {
+                tracing::warn!(thread = id.as_str(), error = format!("{error:#}"), "cannot save an unfinished run");
+                run.emit(Event::Notice {
+                    text: format!("what was said is not saved: {error:#}"),
+                });
+            }
         }
     }
 
