@@ -35,6 +35,12 @@ max_turns = 50
 # Show "Hey!" when starting and "Bye!" when exiting.
 greetings = true
 
+# Stay in the REPL after answering a message given on the command line, as
+# `hey --interactive` does. Otherwise `hey MESSAGE` answers and exits, and
+# the messages sent so in one terminal go on one conversation (see the
+# README's "One-off messages").
+interactive = false
+
 # Per-vendor settings, keyed by the vendor in `model`. Values may use
 # `~` and `$VAR`.
 # [providers.ollama]

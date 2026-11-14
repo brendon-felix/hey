@@ -23,6 +23,9 @@ pub struct Config {
     pub max_tokens: Option<u64>,
     pub max_turns: usize,
     pub greetings: bool,
+    /// Stay in the REPL after answering a message given on the command
+    /// line, as `--interactive` does.
+    pub interactive: bool,
     pub providers: Providers,
     pub display: Display,
     pub editor: Editor,
@@ -53,6 +56,7 @@ impl Default for Config {
             max_tokens: None,
             max_turns: 50,
             greetings: true,
+            interactive: false,
             providers: Providers::default(),
             display: Display::default(),
             editor: Editor::default(),
@@ -783,6 +787,7 @@ mod tests {
         let built_in = Config::default();
         assert_eq!(documented.model, built_in.model);
         assert_eq!(documented.max_turns, built_in.max_turns);
+        assert_eq!(documented.interactive, built_in.interactive);
         assert_eq!(documented.display.theme, built_in.display.theme);
         assert_eq!(documented.display.wrap_width, built_in.display.wrap_width);
         assert_eq!(documented.display.thinking_output, built_in.display.thinking_output);

@@ -27,6 +27,7 @@ mod sessions;
 mod skills;
 mod steer;
 mod subagents;
+mod terminal;
 mod token;
 mod toolbox;
 mod transcript;
@@ -86,7 +87,7 @@ struct Args {
     #[arg(long, conflicts_with_all = ["resume", "threads", "interactive", "message"])]
     memories: bool,
 
-    /// Stay in the REPL after answering MESSAGE
+    /// Stay in the REPL after answering MESSAGE, as `interactive` configures
     #[arg(long, short)]
     interactive: bool,
 
@@ -152,20 +153,26 @@ async fn run(args: Args) -> Result<ExitCode> {
     let defaults = backend.defaults().await?;
     let model = backend.model(args.model.as_deref().unwrap_or(&defaults.model)).await?;
     let thinking = args.think.or(defaults.thinking);
+    let message = (!args.message.is_empty()).then(|| args.message.join(" "));
+    let launch = match message {
+        Some(prompt) if !(args.interactive || config.interactive) => Launch::Once(prompt),
+        first => Launch::Repl(first),
+    };
     let thread = match (args.threads, args.resume) {
         (true, _) => match browser::threads::browse(&backend, None).await?.open {
             Some(thread) => thread,
             None => return Ok(ExitCode::SUCCESS),
         },
         (false, true) => latest(&backend).await?,
-        (false, false) => SessionId::new(),
+        (false, false) => match launch {
+            Launch::Once(_) => terminal::thread(),
+            Launch::Repl(_) => SessionId::new(),
+        },
     };
 
     let style = render::Style::from(&config.display);
-    let message = (!args.message.is_empty()).then(|| args.message.join(" "));
-
-    match message {
-        Some(prompt) if !args.interactive => {
+    match launch {
+        Launch::Once(prompt) => {
             let request = turn::request(
                 prompt,
                 protocol::RunOptions {
@@ -181,7 +188,7 @@ async fn run(args: Args) -> Result<ExitCode> {
                 turn::Outcome::Interrupted | turn::Outcome::Failed => ExitCode::FAILURE,
             })
         }
-        first => {
+        Launch::Repl(first) => {
             let repl = Repl::new(repl::Setup {
                 backend,
                 thread,
@@ -199,6 +206,14 @@ async fn run(args: Args) -> Result<ExitCode> {
             Ok(ExitCode::SUCCESS)
         }
     }
+}
+
+/// What hey was launched to do with the conversation.
+enum Launch {
+    /// Answer a message given on the command line, then exit.
+    Once(String),
+    /// Start the REPL, sending a message given on the command line first.
+    Repl(Option<String>),
 }
 
 /// The newest conversation that is not archived, else a new one.

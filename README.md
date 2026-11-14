@@ -52,6 +52,7 @@ export OPENAI_API_KEY=your_api_key_here
 ```bash
 hey                                   # interactive REPL
 hey who was Ada Lovelace?             # one answer, then exit
+hey and his daughter?                 # follows on, in the same terminal
 hey -i explain this repo              # answer, then stay in the REPL
 hey -r what did we decide?            # continue the most recent conversation
 hey -l                                # list conversations to open, archive, delete or fork
@@ -181,6 +182,19 @@ the reply it was writing.
 
 With a remote, the list is the host's, so every machine sees the same conversations and marks.
 `hey -r` skips archived conversations.
+
+### One-off messages
+
+`hey MESSAGE` answers and exits, and the messages sent so in one terminal go on one conversation:
+the first in a terminal starts it, and each later one follows on from what came before. It is a
+conversation like any other, so `hey -r` or `hey -l` opens it in the REPL, and messages sent from
+the terminal afterwards carry on from there. `hey -r MESSAGE` sends to the most recent
+conversation instead, and `-i`, or `interactive = true` in the config, stays in the REPL after
+answering, in a conversation of its own.
+
+A terminal is told apart by the shell it started (on Windows, the shell hey is typed in), so a
+new tab, window or tmux pane starts a new conversation, while a shell or script started inside
+the terminal keeps its conversation. hey forgets a terminal once it is closed.
 
 ### Compaction
 
