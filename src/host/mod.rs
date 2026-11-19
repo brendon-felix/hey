@@ -10,12 +10,13 @@ use std::collections::HashMap;
 use std::fmt;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use futures::stream::BoxStream;
 use futures::{FutureExt, Stream, StreamExt, stream};
-use rig_agent::agent::{Agent, StreamingResult};
+use rig_agent::agent::{Agent, MultiTurnStreamItem, StreamingResult};
+use rig_agent::completion::PromptError;
 use rig_core::completion::GenerationOptions;
 use rig_core::message::{Message, UserContent};
 use rig_memory::CompactReason;
@@ -26,28 +27,29 @@ use tokio_util::task::TaskTracker;
 use crate::agent::{self, Model};
 use crate::checkpoint::{Checkpoints, Turn};
 use crate::compaction::{self, Applied, Compactor};
-use crate::instructions::Instructions;
 use crate::config::{self, Config, Providers, Thinking};
 use crate::gate;
 use crate::goal;
 use crate::hooks::{HookEvent, Hooks, MAX_STOP_BLOCKS, Scope, ToolHooks};
+use crate::instructions::Instructions;
 use crate::memory::{self, Memory, Recalled};
 use crate::models;
 use crate::notes::Notes;
 use crate::permissions::{Origin, Permissions};
 use crate::preamble::{Hosting, Setting};
 use crate::protocol::{
-    Activities, Activity, ApprovalId, Ask, CallId, CallResult, Decision, Defaults, Ending, Event,
-    FollowerId, Machine, ModelInfo, Models, Revision, RunId, RunRequest, Snapshot, Task,
-    ThreadInfo, ThreadStatus, Tools, Undone,
+    Activities, Activity, AgentId, AgentInfo, AgentSnapshot, ApprovalId, Ask, CallId, CallResult,
+    Decision, Defaults, Ending, Event, FollowerId, Logged, Machine, ModelInfo, Models, Revision,
+    RunId, RunRequest, Snapshot, Task, ThreadInfo, ThreadStatus, Tools, Undone,
 };
 use crate::render;
 use crate::results::ResultLimit;
+use crate::retry::{self, Attempts, Backoff};
 use crate::route::Kit;
 use crate::sessions::{Mark, SessionId, Sessions, Summary};
 use crate::skills::{self, Found};
-use crate::subagents::Kinds;
 use crate::steer::{self, Delivery, Steer};
+use crate::subagents::Kinds;
 use crate::subagents::{self, Crew, Spawn};
 use crate::toolbox::{Toolbox, machine_name};
 use crate::tools;
@@ -55,12 +57,20 @@ use crate::transcript;
 
 pub use run::Run;
 
-pub type Events = BoxStream<'static, Event>;
+pub type Events = BoxStream<'static, Logged>;
 
 /// How often a stream to a client says something when nothing happens, so a
 /// client can tell a quiet host from a lost connection, and proxies between
 /// them keep it open.
 pub const HEARTBEAT: Duration = Duration::from_secs(30);
+
+/// How long a client that lost a run's stream can still follow the run
+/// again to its end, once it ended.
+const RESUMABLE: Duration = Duration::from_secs(300);
+
+/// What the model is asked once what it said before its connection failed
+/// is saved.
+const CONTINUE: &str = "The connection to you failed before you finished. Continue where you left off.";
 
 /// Runs the agent and keeps its threads: in-process for a local `hey`, or
 /// behind `hey --serve` for clients on other machines. Runs belong to the
@@ -119,8 +129,16 @@ struct Thread {
     /// due to compact; unknown once it was compacted after.
     context: Option<u64>,
     run: Option<Arc<Run>>,
+    /// The run that last ended, for a client that lost its stream to see
+    /// the end of, for [`RESUMABLE`].
+    ended: Option<Ended>,
     /// The latest run, going or not.
     last: Option<RunId>,
+}
+
+struct Ended {
+    run: Arc<Run>,
+    at: Instant,
 }
 
 /// What a thread is doing: its run's state while it has one, else what
@@ -183,9 +201,15 @@ impl Host {
             .enabled
             .then(|| Arc::new(Crew::new(config)));
         let spawn = crew.as_ref().map(|_| subagents::TOOL);
-        let host_only = [skills::TOOL, compaction::TOOL, tools::TODO, tools::ASK_USER, tools::EXIT_PLAN]
-            .into_iter()
-            .chain(spawn);
+        let host_only = [
+            skills::TOOL,
+            compaction::TOOL,
+            tools::TODO,
+            tools::ASK_USER,
+            tools::EXIT_PLAN,
+        ]
+        .into_iter()
+        .chain(spawn);
         let host_only = host_only.map(|name| (name, &Origin::Builtin));
         let permissions = Permissions::resolve(toolbox.origins().chain(host_only), &config.tools);
         Ok(Self {
@@ -212,7 +236,10 @@ impl Host {
             compaction: config.compaction.clone(),
             instructions: config.instructions.clone(),
             checkpoints: match config.checkpoints.enabled {
-                true => Some(Checkpoints::new(&config::data_dir()?, agent::working_directory())),
+                true => Some(Checkpoints::new(
+                    &config::data_dir()?,
+                    agent::working_directory(),
+                )),
                 false => None,
             },
             goal: config.goal.clone(),
@@ -320,11 +347,18 @@ impl Host {
 
     /// Where the notes of thread `id` are saved.
     fn notes_file(&self, id: &SessionId) -> PathBuf {
-        self.sessions.dir().join("notes").join(format!("{}.json", id.as_str()))
+        self.sessions
+            .dir()
+            .join("notes")
+            .join(format!("{}.json", id.as_str()))
     }
 
     /// Thread `id` as kept here, kept from now on if it was not.
-    fn thread<'a>(&self, threads: &'a mut HashMap<SessionId, Thread>, id: &SessionId) -> &'a mut Thread {
+    fn thread<'a>(
+        &self,
+        threads: &'a mut HashMap<SessionId, Thread>,
+        id: &SessionId,
+    ) -> &'a mut Thread {
         threads.entry(id.clone()).or_insert_with(|| {
             let permissions = Arc::new(self.permissions.fork());
             Thread {
@@ -335,6 +369,7 @@ impl Host {
                 instructions: None,
                 context: None,
                 run: None,
+                ended: None,
                 last: None,
             }
         })
@@ -377,8 +412,18 @@ impl Host {
                 running: run.as_ref().map(|run| run.running()),
                 plan,
             },
-            events: run.map(|run| run.events(machine).boxed()),
+            events: run.map(|run| run.events(machine, 0).boxed()),
         })
+    }
+
+    /// The events of run `run` of thread `id` after its first `after`, for
+    /// a client that lost its stream of them; `None` once the run is gone.
+    pub fn follow(&self, id: &SessionId, run: RunId, after: usize, machine: Option<String>) -> Option<Events> {
+        let threads = self.lock();
+        let thread = threads.get(id)?;
+        let ended = thread.ended.as_ref().map(|ended| &ended.run);
+        let found = thread.run.iter().chain(ended).find(|found| found.id() == run)?;
+        Some(found.events(machine, after).boxed())
     }
 
     /// Starts `request` in thread `id`, returning the run's events, which a
@@ -447,7 +492,7 @@ impl Host {
         if let Some(failure) = self.take_memory_failure() {
             run.emit(Event::Notice { text: failure });
         }
-        let events = run.events(machine).boxed();
+        let events = run.events(machine, 0).boxed();
         tracing::info!(thread = id.as_str(), run = ?run.id(), model = %request.options.model, task = ?request.task, "run started");
         let work = match request.task {
             Task::Answer => {
@@ -503,7 +548,9 @@ impl Host {
             return Err(ThreadError::Busy);
         }
         let checkpoints = self.checkpoints.as_ref().ok_or_else(|| {
-            ThreadError::Other(anyhow::anyhow!("checkpoints are off in the host's config (`checkpoints.enabled`)"))
+            ThreadError::Other(anyhow::anyhow!(
+                "checkpoints are off in the host's config (`checkpoints.enabled`)"
+            ))
         })?;
         let undone = checkpoints.undo(id).map_err(ThreadError::Other)?;
         drop(threads);
@@ -593,6 +640,20 @@ impl Host {
     /// The kinds of subagent the agent may start, found from where it works.
     pub fn agents(&self) -> Kinds {
         subagents::kinds(&agent::working_directory())
+    }
+
+    /// The subagents thread `id` started since the host did.
+    pub fn subagents(&self, id: &SessionId) -> Vec<AgentInfo> {
+        self.team(id).map(|team| team.roster()).unwrap_or_default()
+    }
+
+    /// What subagent `agent` of thread `id` said, and the task it works on.
+    pub fn subagent(&self, id: &SessionId, agent: &AgentId) -> Option<AgentSnapshot> {
+        self.team(id)?.snapshot(agent)
+    }
+
+    fn team(&self, id: &SessionId) -> Option<Arc<subagents::Team>> {
+        self.crew.as_ref()?.find(id)
     }
 
     /// The prompts the host's MCP servers offer.
@@ -704,7 +765,9 @@ impl Host {
             .add_hook(Delivery(run.clone()))
             .add_hook(compaction::Hook(compaction.clone()))
             .tool(compaction::Compact { run: run.clone() })
-            .tool(tools::Todos { notes: notes.clone() })
+            .tool(tools::Todos {
+                notes: notes.clone(),
+            })
             .tool(tools::AskUser { run: run.clone() })
             .tool(tools::ExitPlan {
                 run: run.clone(),
@@ -719,7 +782,11 @@ impl Host {
         if let Some(memories) = memory::preamble(thread.memories.as_deref().unwrap_or_default()) {
             builder = builder.append_preamble(&memories);
         }
-        if let Some(instructions) = thread.instructions.as_ref().and_then(Instructions::preamble) {
+        if let Some(instructions) = thread
+            .instructions
+            .as_ref()
+            .and_then(Instructions::preamble)
+        {
             builder = builder.append_preamble(&instructions);
         }
         if let Some(max_tokens) = self.max_tokens {
@@ -730,7 +797,9 @@ impl Host {
 
     /// A new answer's checkpoint in thread `id`, when checkpoints are on.
     fn turn(&self, id: &SessionId) -> Option<Arc<Turn>> {
-        self.checkpoints.as_ref().map(|checkpoints| checkpoints.turn(id))
+        self.checkpoints
+            .as_ref()
+            .map(|checkpoints| checkpoints.turn(id))
     }
 
     /// The tool that starts subagents with the run's tools, sharing the
@@ -808,6 +877,7 @@ impl Host {
             if let Some(Err(error)) =
                 until_stopped(&run, self.compact_saved(&id, &run, live.compactor(), focus)).await
             {
+                tracing::warn!(thread = id.as_str(), error = format!("{error:#}"), "cannot compact");
                 run.emit(Event::Notice {
                     text: format!("not compacted: {error:#}"),
                 });
@@ -817,6 +887,7 @@ impl Host {
         if let Some(exchange) = exchange
             && let Err(error) = async { self.learn(&exchange?, &model).await }.await
         {
+            tracing::warn!(thread = id.as_str(), error = format!("{error:#}"), "memory not updated");
             *self.lock_memory_failure() = Some(format!("memory not updated: {error:#}"));
         }
     }
@@ -899,7 +970,12 @@ impl Host {
 
     /// Lets clients know `run` ended with `ending`, and the thread is free.
     fn end(&self, id: &SessionId, run: &Run, ending: Ending, context: Option<u64>) {
-        tracing::info!(thread = id.as_str(), run = ?run.id(), ?ending, "run ended");
+        match &ending {
+            Ending::Failed { error } => tracing::warn!(thread = id.as_str(), run = ?run.id(), error, "run failed"),
+            Ending::Answered | Ending::Interrupted => {
+                tracing::info!(thread = id.as_str(), run = ?run.id(), ?ending, "run ended")
+            }
+        }
         let saved = self
             .sessions
             .messages(id)
@@ -908,13 +984,18 @@ impl Host {
         // and the thread is marked before any client hears it ended.
         let mut threads = self.lock();
         if let Err(error) = self.sessions.mark(id, |mark| mark.unseen = true) {
+            tracing::warn!(thread = id.as_str(), error = format!("{error:#}"), "cannot mark as new");
             run.emit(Event::Notice {
                 text: format!("not marked as new: {error:#}"),
             });
         }
         run.emit(Event::End { ending, saved });
+        for thread in threads.values_mut() {
+            thread.ended.take_if(|ended| ended.at.elapsed() > RESUMABLE);
+        }
         if let Some(thread) = threads.get_mut(id) {
-            thread.run = None;
+            let ended = thread.run.take();
+            thread.ended = ended.map(|run| Ended { run, at: Instant::now() });
             thread.context = context;
         }
         self.publish(&threads);
@@ -979,7 +1060,9 @@ impl Host {
         let scope = self.scope(id);
         let mut added = Vec::new();
         if run.history() == 0 && scope.has(HookEvent::SessionStart) {
-            let verdict = scope.fire(HookEvent::SessionStart, None, serde_json::json!({})).await;
+            let verdict = scope
+                .fire(HookEvent::SessionStart, None, serde_json::json!({}))
+                .await;
             verdict.tell(run);
             added.extend(verdict.context());
         }
@@ -1051,7 +1134,13 @@ impl Host {
 
     /// Why a `Stop` hook sends the agent back to work after `reply`, at most
     /// [`MAX_STOP_BLOCKS`] times in a row.
-    async fn stop_hooks(&self, scope: &Scope, run: &Run, reply: &str, stops: &mut usize) -> Option<String> {
+    async fn stop_hooks(
+        &self,
+        scope: &Scope,
+        run: &Run,
+        reply: &str,
+        stops: &mut usize,
+    ) -> Option<String> {
         if !scope.has(HookEvent::Stop) {
             return None;
         }
@@ -1061,7 +1150,9 @@ impl Host {
         let reason = verdict.block?;
         if *stops >= MAX_STOP_BLOCKS {
             run.emit(Event::Notice {
-                text: format!("a Stop hook blocked {MAX_STOP_BLOCKS} times in a row; stopping anyway"),
+                text: format!(
+                    "a Stop hook blocked {MAX_STOP_BLOCKS} times in a row; stopping anyway"
+                ),
             });
             return None;
         }
@@ -1074,12 +1165,23 @@ impl Host {
 
     /// What the agent is told to go on with when `reply` does not meet
     /// `goal`, as the judge decides, for at most `[goal] max_rounds`.
-    async fn pursue(&self, run: &Run, model: &Model, goal: Option<&str>, reply: &str, rounds: &mut usize) -> Option<String> {
+    async fn pursue(
+        &self,
+        run: &Run,
+        model: &Model,
+        goal: Option<&str>,
+        reply: &str,
+        rounds: &mut usize,
+    ) -> Option<String> {
         let goal = goal?;
         let reference = self.goal.model.as_ref().or(self.compaction.model.as_ref());
-        let judge = match reference.map(|reference| Model::connect(reference, &self.providers)).transpose() {
+        let judge = match reference
+            .map(|reference| Model::connect(reference, &self.providers))
+            .transpose()
+        {
             Ok(judge) => judge,
             Err(error) => {
+                tracing::warn!(error = format!("{error:#}"), "goal not judged");
                 run.emit(Event::Notice {
                     text: format!("goal not judged: {error:#}"),
                 });
@@ -1089,28 +1191,41 @@ impl Host {
         run.emit(Event::Notice {
             text: "judging the goal…".into(),
         });
-        let judged = until_stopped(run, goal::judge(judge.as_ref().unwrap_or(model), goal, reply)).await?;
+        let judged = until_stopped(
+            run,
+            goal::judge(judge.as_ref().unwrap_or(model), goal, reply),
+        )
+        .await?;
         match judged {
             Ok(judged) if judged.met => {
                 run.emit(Event::Notice {
-                    text: format!("goal met: {}", judged.reason).trim_end_matches([' ', ':']).to_owned(),
+                    text: format!("goal met: {}", judged.reason)
+                        .trim_end_matches([' ', ':'])
+                        .to_owned(),
                 });
                 None
             }
             Ok(_) if *rounds >= self.goal.max_rounds => {
                 run.emit(Event::Notice {
-                    text: format!("goal not met after {} rounds; stopping", self.goal.max_rounds),
+                    text: format!(
+                        "goal not met after {} rounds; stopping",
+                        self.goal.max_rounds
+                    ),
                 });
                 None
             }
             Ok(judged) => {
                 *rounds += 1;
                 run.emit(Event::Notice {
-                    text: format!("goal not met ({}/{}): {}", rounds, self.goal.max_rounds, judged.reason),
+                    text: format!(
+                        "goal not met ({}/{}): {}",
+                        rounds, self.goal.max_rounds, judged.reason
+                    ),
                 });
                 Some(goal::prompt(goal, &judged.reason))
             }
             Err(error) => {
+                tracing::warn!(error = format!("{error:#}"), "goal not judged");
                 run.emit(Event::Notice {
                     text: format!("goal not judged: {error:#}"),
                 });
@@ -1119,14 +1234,49 @@ impl Host {
         }
     }
 
+    /// Answers `message`, going on from where the answer got to while the
+    /// model fails for a reason that may pass, as long as retries are left.
     async fn respond(
+        &self,
+        id: &SessionId,
+        run: &Run,
+        agent: &Agent,
+        mut message: Message,
+        thinking: Option<Thinking>,
+    ) -> Ending {
+        let mut attempts = Attempts::new(Backoff::MODEL);
+        loop {
+            let error = match self.attempt(id, run, agent, message.clone(), thinking, &mut attempts).await {
+                Ok(()) => return Ending::Answered,
+                Err(error) => error,
+            };
+            let told = crate::log::chain(&error);
+            let Some(retry) = retry::transient(&error).and_then(|transient| attempts.next(transient.asked)) else {
+                return Ending::Failed { error: told };
+            };
+            let Some(resumed) = self.resume(id, run, &told, message) else {
+                return Ending::Failed { error: told };
+            };
+            message = resumed;
+            tracing::warn!(thread = id.as_str(), run = ?run.id(), error = told, %retry, "model call failed");
+            run.emit(Event::Notice {
+                text: format!("{told}; {retry}"),
+            });
+            tokio::time::sleep(retry.delay).await;
+        }
+    }
+
+    /// One try at answering `message`. The retries made start counting
+    /// again once a tool call's result shows the answer got somewhere.
+    async fn attempt(
         &self,
         id: &SessionId,
         run: &Run,
         agent: &Agent,
         message: Message,
         thinking: Option<Thinking>,
-    ) -> Ending {
+        attempts: &mut Attempts,
+    ) -> Result<(), Box<PromptError>> {
         let runner = agent
             .prompt(message)
             .conversation(id.as_str())
@@ -1137,20 +1287,31 @@ impl Host {
         }
         .stream();
         let mut steps = run::Steps::default();
-        loop {
-            match stream.next().await {
-                None => return Ending::Answered,
-                Some(Err(error)) => {
-                    return Ending::Failed {
-                        error: error.to_string(),
-                    };
-                }
-                Some(Ok(item)) => steps
-                    .events(item)
-                    .into_iter()
-                    .for_each(|event| run.emit(event)),
+        while let Some(item) = stream.next().await {
+            let item = item.map_err(Box::new)?;
+            if matches!(item, MultiTurnStreamItem::ToolResult { .. }) {
+                attempts.reset();
             }
+            steps.events(item).into_iter().for_each(|event| run.emit(event));
         }
+        Ok(())
+    }
+
+    /// What to answer after the answer to `message` failed for `reason`:
+    /// `message` again when nothing past it was said, else a request to go
+    /// on, once what was said is saved; `None` when it could not be.
+    fn resume(&self, id: &SessionId, run: &Run, reason: &str, message: Message) -> Option<Message> {
+        let said = run.record().said(reason);
+        if said.len() <= 1 {
+            return Some(message);
+        }
+        let failure = match self.sessions.append(id, run.record().held(), said) {
+            Ok(true) => return Some(Message::user(CONTINUE)),
+            Ok(false) => "the conversation changed meanwhile".to_owned(),
+            Err(error) => format!("{error:#}"),
+        };
+        tracing::warn!(thread = id.as_str(), failure, "cannot save a failed answer to go on from");
+        None
     }
 
     /// Learns from what a run said: the `exchange` its answer added.

@@ -11,13 +11,14 @@ use futures::stream::BoxStream;
 use crate::client::Client;
 use crate::host::{self, Host};
 use crate::protocol::{
-    Activities, ApprovalId, Call, CallId, Decision, Defaults, Event, FollowerId, ModelInfo, Models,
-    Revision, RunRequest, Snapshot, ThreadInfo, Tools, Undone,
+    Activities, AgentId, AgentInfo, AgentSnapshot, ApprovalId, Call, CallId, Decision, Defaults,
+    Event, FollowerId, ModelInfo, Models, Revision, RunRequest, Snapshot, ThreadInfo, Tools,
+    Undone,
 };
 use crate::sessions::SessionId;
 use crate::skills::Found;
-use crate::subagents::Kinds;
 use crate::steer::Steer;
+use crate::subagents::Kinds;
 use crate::workbench::{self, Workbench};
 
 pub type Events = BoxStream<'static, Result<Event>>;
@@ -158,17 +159,44 @@ impl Backend {
                 let host::Opened { snapshot, events } = host.open(id, None)?;
                 Ok(Opened {
                     snapshot,
-                    events: events.map(|events| events.map(Ok).boxed()),
+                    events: events.map(|events| events.map(|logged| Ok(logged.event)).boxed()),
                 })
             }
             Backend::Remote(client, _) => client.open(id).await,
         }
     }
 
+    /// The thread as [`Self::open`] gives it, to look at: its run's tool
+    /// calls for this machine are never handed to this view.
+    pub async fn view(&self, id: &SessionId) -> Result<Opened> {
+        match self {
+            Backend::Local(_) => self.open(id).await,
+            Backend::Remote(client, _) => client.view(id).await,
+        }
+    }
+
+    /// The subagents the thread started since the host did.
+    pub async fn subagents(&self, id: &SessionId) -> Result<Vec<AgentInfo>> {
+        match self {
+            Backend::Local(host) => Ok(host.subagents(id)),
+            Backend::Remote(client, _) => client.subagents(id).await,
+        }
+    }
+
+    /// What a subagent of the thread said, and the task it works on; `None`
+    /// when the host knows no such subagent.
+    pub async fn subagent(&self, id: &SessionId, agent: &AgentId) -> Result<Option<AgentSnapshot>> {
+        match self {
+            Backend::Local(host) => Ok(host.subagent(id, agent)),
+            Backend::Remote(client, _) => client.subagent(id, agent).await,
+        }
+    }
+
     pub async fn start(&self, id: &SessionId, request: RunRequest) -> Result<Events> {
         match self {
             Backend::Local(host) => {
-                Ok(host.start(id.clone(), request, None).await?.map(Ok).boxed())
+                let events = host.start(id.clone(), request, None).await?;
+                Ok(events.map(|logged| Ok(logged.event)).boxed())
             }
             Backend::Remote(client, _) => client.start(id, request).await,
         }

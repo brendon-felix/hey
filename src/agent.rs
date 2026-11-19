@@ -170,7 +170,8 @@ pub fn spill_dir() -> Option<PathBuf> {
 pub async fn summarize(model: &Model, transcript: &str) -> Result<String> {
     let summarizer = AgentBuilder::new(model.inner.clone()).build();
     let request = format!("<conversation>\n{transcript}\n</conversation>\n\n{SUMMARY_PROMPT}");
-    Ok(summarizer.prompt(request).await?.output())
+    let summary = crate::retry::model("summarizing", || async { summarizer.prompt(request.clone()).await }).await?;
+    Ok(summary.output())
 }
 
 /// This process's working directory, or `unknown`.

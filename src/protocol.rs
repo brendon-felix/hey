@@ -145,6 +145,18 @@ pub enum Ending {
     Failed { error: String },
 }
 
+/// An event as the host streams it: `at` counts the run's events through
+/// it, so a client whose stream broke follows the run again from there.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Logged {
+    /// `None` from a host older than this field, which cannot be followed
+    /// again from where a stream broke.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub at: Option<usize>,
+    #[serde(flatten)]
+    pub event: Event,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct ApprovalId(pub u64);
@@ -449,6 +461,31 @@ pub struct Running {
     pub prompt: String,
 }
 
+/// A subagent a thread's runs started, as the host kept it since it started.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AgentInfo {
+    pub agent: AgentId,
+    pub label: String,
+    pub working: bool,
+}
+
+/// A subagent's conversation as saved, and the task it works on, if any.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AgentSnapshot {
+    pub label: String,
+    pub messages: Vec<Message>,
+    pub working: Option<Working>,
+}
+
+/// A subagent's task in progress: its conversation saves it once it ends.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Working {
+    pub message: String,
+    pub elapsed: Duration,
+    /// What the subagent did of it so far, as its parent's run told it.
+    pub steps: Vec<Event>,
+}
+
 /// A conversation as a listing shows it.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ThreadInfo {
@@ -507,3 +544,29 @@ pub struct Undone {
     /// How many earlier answers can still be undone.
     pub left: usize,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_logged_event_reads_as_the_event_and_an_older_hosts_event_as_logged() {
+        let logged = Logged {
+            at: Some(7),
+            event: Event::Agent {
+                agent: AgentId("a1".into()),
+                step: Box::new(Event::Text { text: "hi".into() }),
+            },
+        };
+        let line = serde_json::to_string(&logged).unwrap();
+        let older: Event = serde_json::from_str(&line).unwrap();
+        assert!(matches!(older, Event::Agent { step, .. } if matches!(*step, Event::Text { .. })));
+
+        let read: Logged = serde_json::from_str(&line).unwrap();
+        assert_eq!(read.at, Some(7));
+        let older = serde_json::to_string(&Event::PartEnd).unwrap();
+        let read: Logged = serde_json::from_str(&older).unwrap();
+        assert!(read.at.is_none() && matches!(read.event, Event::PartEnd));
+    }
+}
+

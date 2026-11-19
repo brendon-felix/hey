@@ -88,10 +88,10 @@ Type `/` or press Tab to see commands and skills; the status line describes the 
 | --- | --- |
 | `/help`, `/h` | Show commands and shortcuts |
 | `/new`, `/reset`, `/r` | Start a new conversation |
-| `/threads`, `/load`, `/l` | List conversations to open, archive, delete or fork |
+| `/threads`, `/load`, `/l` | List conversations to view, open, archive, delete or fork |
 | `/resume [thread]` | Continue the newest other conversation that is not archived, or the one named |
 | `/fork` | Continue in a copy of this conversation, leaving the original as it is |
-| `/history` | Show this conversation |
+| `/view [agent]`, `/v` | View this conversation full-screen, or one of its subagents; see [Viewing a conversation](#viewing-a-conversation) |
 | `/copy` | Copy the latest reply as Markdown |
 | `/copy-all` | Copy this conversation as Markdown |
 | `/compact [focus]` | Replace older messages with a summary, keeping above all what `focus` names |
@@ -210,7 +210,8 @@ the reply it was writing.
 | Keys | Action |
 | --- | --- |
 | ↑ ↓, `j` `k`, `g` `G` | Move |
-| Enter | Open the conversation |
+| Enter, `v` | View the conversation, then come back to the list |
+| `o` | Open the conversation, to continue it in this terminal |
 | `a` | Archive it, or restore it among the archived |
 | `d` | Delete it, after you confirm with `y` |
 | `f` | Fork it: a copy to continue apart |
@@ -220,6 +221,33 @@ the reply it was writing.
 
 With a remote, the list is the host's, so every machine sees the same conversations and marks.
 `hey -r` skips archived conversations.
+
+### Viewing a conversation
+
+`/view`, or Enter in `/threads`, shows a whole conversation full-screen, as Zed's agent panel
+shows a thread: messages and replies in full, thinking as a preview of its latest lines, and each
+tool call and subagent as a line that unfolds. It keeps up with an answer in progress as it
+streams, and with one that starts while you look, whichever terminal sent it. Looking changes
+nothing: tool calls for your machine and approvals stay with the terminal following the
+conversation, so one that waits for you says so in the title.
+
+Unfolded, a tool call shows its arguments and what it gave back: a command's output, a file's
+contents, an edit's lines removed and added. A subagent's card shows its task, its latest steps
+and its report, and opens its own conversation. `/view <agent>` opens a subagent's directly, by
+the id Tab completes or part of its label. The host keeps subagents' conversations until it
+restarts.
+
+| Keys | Action |
+| --- | --- |
+| ↑ ↓, `j` `k` | Move between entries, through a long one a half screen at a time |
+| PgUp PgDn, `b` `f`, Ctrl+U Ctrl+D | Scroll |
+| `g` `G` | First entry; the end, following what is added |
+| Space, Tab | Unfold or fold the entry |
+| Enter, → | Open a subagent's conversation; on anything else, unfold or fold it |
+| `e`, `c` | Unfold or fold every entry |
+| `o` | From `/threads`: open the conversation to continue it here |
+| Esc, ← | Back from a subagent's conversation, else close |
+| `q` | Close |
 
 ### One-off messages
 
@@ -287,8 +315,9 @@ stay as they are, so it fits the model's window and each call reads less. It hap
   should keep above all.
 - **When the agent asks**, with its `compact` tool, such as between unrelated tasks.
 
-The summary shows where it was made, in every terminal following the conversation and in
-`/history`, as `[display] tool_output` shows what a tool gave back. A later compaction folds the
+The summary shows where it was made, in every terminal following the conversation, as
+`[display] tool_output` shows what a tool gave back, and `/view` shows it as an entry that
+unfolds. A later compaction folds the
 earlier summary into the new one. What a summary replaced stays in the conversation's log, and the
 conversation keeps its title.
 
@@ -400,10 +429,20 @@ args = ["stdio"]
 env = { GITHUB_PERSONAL_ACCESS_TOKEN = "${GITHUB_TOKEN}" }
 ```
 
+### Retries
+
+A model call that fails for a reason that may pass, such as a lost connection, a rate limit or an
+overloaded provider, is made again up to 4 times, after the wait the provider asks for or 5, 10,
+20 and 40 seconds. A reply cut short is kept and the model asked to go on from it. A failure that
+will not pass, such as a refused API key or a conversation too long for the model, ends the answer
+at once, as does a provider asking to wait longer than a minute. Ctrl+C stops the waiting.
+
 ### Logs
 
 hey logs what it does to a file a day in the cache directory's `hey/logs` (`[log] dir`): runs
-starting and ending, each tool call with the machine it ran on and why it failed, and rig's
+starting and ending, warnings for whatever failed along the way (runs, retries, compaction,
+memory, attachments, hooks, and every error shown to you), errors that end hey and panics, each
+tool call with the machine it ran on and why it failed, and rig's
 [spans](https://rig.rs/docs/concepts/observability) for agent runs, model calls and tool calls,
 with their timing and token usage. `[log] filter` or `HEY_LOG` sets what is logged, as `tracing`
 filter directives, and `[log] content = true` adds what is said. A host logs on its machine, and
@@ -450,7 +489,9 @@ The agent can hand tasks to subagents with its `spawn_agents` tool, several at o
 on one task with the agent's own tools and replies with a report, which is all the agent sees;
 its tool calls show under its label as it works, and are permitted as the agent's are. The agent
 can follow up with a subagent later in the conversation, which remembers its earlier work until
-hey (or, with a remote, the host) restarts. Subagents cannot start subagents.
+hey (or, with a remote, the host) restarts. Subagents cannot start subagents. `/view` shows each
+subagent as a card in its conversation, which opens the subagent's own; see
+[Viewing a conversation](#viewing-a-conversation).
 `[subagents] model` picks a cheaper model for them, and `enabled = false` turns them off.
 
 #### Agent types
@@ -739,7 +780,9 @@ network such as Tailscale, WireGuard or an SSH tunnel, or behind an HTTPS revers
 A proxy that wants its own credentials, such as Cloudflare Access in front of a Cloudflare Tunnel,
 gets them from `headers`, sent with every request. Like `token`, they may name environment
 variables. A quiet stream carries a blank line every 30 seconds, so proxies keep it open through
-long tool calls.
+long tool calls. When the stream of a run breaks, or stays silent for a minute, the client follows
+the run again from the last event it got, retrying for about a minute; the server keeps a finished
+run for 5 minutes for a client that comes back late.
 
 ```toml
 [remotes.fermi]

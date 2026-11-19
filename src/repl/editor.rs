@@ -262,7 +262,8 @@ impl Editor {
 
     /// Types `text` at the cursor.
     pub fn type_text(&mut self, text: &str) {
-        self.line_editor.run_edit_commands(&[EditCommand::InsertString(text.to_owned())]);
+        self.line_editor
+            .run_edit_commands(&[EditCommand::InsertString(text.to_owned())]);
     }
 
     /// Puts `text` in the input, before what is typed there.
@@ -574,7 +575,10 @@ impl Choices {
             let prompts = index
                 .prompts
                 .iter()
-                .filter(|prompt| prompt.command().starts_with(typed) || format!("{}:{}", prompt.server, prompt.name).starts_with(typed))
+                .filter(|prompt| {
+                    prompt.command().starts_with(typed)
+                        || format!("{}:{}", prompt.server, prompt.name).starts_with(typed)
+                })
                 .map(|prompt| Suggestion {
                     value: format!("/{}", prompt.command()),
                     description: prompt.description.clone(),
@@ -593,6 +597,11 @@ impl Choices {
             Some(Arg::Thread) => {
                 return host::thread_matches(matcher, &index.threads, arg.trim())
                     .map(|summary| host::thread_suggestion(summary, span))
+                    .collect();
+            }
+            Some(Arg::Agent) => {
+                return host::agent_matches(matcher, &index.agents, arg.trim())
+                    .map(|info| host::agent_suggestion(info, span))
                     .collect();
             }
             Some(Arg::Focus | Arg::Condition) | None => return Vec::new(),
@@ -720,7 +729,11 @@ impl InputHelp {
         }
         let index = host::lock(&self.0);
         if let Some(prompt) = index.prompt(word) {
-            let arguments: String = prompt.arguments.iter().map(|name| format!(" [{name}=…]")).collect();
+            let arguments: String = prompt
+                .arguments
+                .iter()
+                .map(|name| format!(" [{name}=…]"))
+                .collect();
             let about = prompt.description.as_deref().unwrap_or("an MCP prompt");
             return (muted, format!("/{}{arguments}  {about}", prompt.command()));
         }

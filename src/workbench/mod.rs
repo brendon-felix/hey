@@ -181,6 +181,7 @@ impl Workbench {
             Decision::Once => {}
             Decision::Always => {
                 if let Err(error) = self.access.allow_always(&dir) {
+                    tracing::warn!(dir = %dir.display(), error = format!("{error:#}"), "cannot allow a directory always");
                     let text = format!("{} allowed for this conversation only: {error:#}", dir.display());
                     reporter.emit(Event::Notice { text }).await;
                 }

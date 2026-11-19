@@ -101,7 +101,11 @@ impl Tool for Spawn {
         args_schema::<SpawnArgs>()
     }
 
-    async fn call(&self, _context: &mut ToolContext, args: SpawnArgs) -> Result<Vec<Report>, ToolExecutionError> {
+    async fn call(
+        &self,
+        _context: &mut ToolContext,
+        args: SpawnArgs,
+    ) -> Result<Vec<Report>, ToolExecutionError> {
         if args.agents.len() > MAX_AGENTS {
             return Err(ToolExecutionError::new(
                 ToolErrorKind::InvalidArgs,
@@ -116,12 +120,16 @@ impl Spawn {
     async fn start(&self, args: TaskArgs) -> Report {
         let (agent, result) = match args.agent.map(AgentId) {
             Some(agent) if !self.team.remembers(&agent) => {
-                let error = format!("no agent `{agent}` in this conversation; leave `agent` out to start one");
+                let error = format!(
+                    "no agent `{agent}` in this conversation; leave `agent` out to start one"
+                );
                 (agent, Err(error))
             }
             Some(agent) => {
                 let kind = self.team.kind(&agent);
-                let result = self.work(&agent, &args.label, &args.message, kind.as_ref()).await;
+                let result = self
+                    .work(&agent, &args.label, &args.message, kind.as_ref())
+                    .await;
                 (agent, result)
             }
             None => {
@@ -131,7 +139,8 @@ impl Spawn {
                         if let Some(kind) = &kind {
                             self.team.set_kind(&agent, kind.clone());
                         }
-                        self.work(&agent, &args.label, &args.message, kind.as_ref()).await
+                        self.work(&agent, &args.label, &args.message, kind.as_ref())
+                            .await
                     }
                     Err(error) => Err(error),
                 };
@@ -156,7 +165,12 @@ impl Spawn {
             return Ok(None);
         };
         self.kinds.get(name).cloned().map(Some).ok_or_else(|| {
-            let known: Vec<&str> = self.kinds.kinds.iter().map(|kind| kind.name.as_str()).collect();
+            let known: Vec<&str> = self
+                .kinds
+                .kinds
+                .iter()
+                .map(|kind| kind.name.as_str())
+                .collect();
             match known.is_empty() {
                 true => format!("no agent type `{name}`; there are none, so leave `type` out"),
                 false => format!("no agent type `{name}`; there are: {}", known.join(", ")),
@@ -164,7 +178,13 @@ impl Spawn {
         })
     }
 
-    async fn work(&self, agent: &AgentId, label: &str, message: &str, kind: Option<&Kind>) -> Result<String, String> {
+    async fn work(
+        &self,
+        agent: &AgentId,
+        label: &str,
+        message: &str,
+        kind: Option<&Kind>,
+    ) -> Result<String, String> {
         let run = &self.kit.run;
         run.emit(Event::AgentStarted {
             agent: agent.clone(),
@@ -184,10 +204,13 @@ impl Spawn {
             };
             let reporter = Tagged {
                 run: run.clone(),
+                team: self.team.clone(),
                 agent: agent.clone(),
                 label: label.to_owned(),
             };
+            self.team.begin(agent, label, &message);
             let result = self.crew.run(&self.team, &self.kit, turn, reporter).await;
+            self.team.end(agent);
             match (&result, self.stopped(agent, label, &result).await) {
                 (Ok(_), Some(reason)) if blocked < MAX_STOP_BLOCKS => {
                     blocked += 1;
@@ -219,7 +242,10 @@ fn describe(kinds: &Kinds) -> String {
                 .replace('&', "&amp;")
                 .replace('<', "&lt;")
                 .replace('>', "&gt;");
-            format!("\n  <agent_type name=\"{}\">{description}</agent_type>", kind.name)
+            format!(
+                "\n  <agent_type name=\"{}\">{description}</agent_type>",
+                kind.name
+            )
         })
         .collect();
     format!(
@@ -230,8 +256,16 @@ fn describe(kinds: &Kinds) -> String {
 
 impl Spawn {
     /// Why a `SubagentStop` hook sends the subagent back to work, if one does.
-    async fn stopped(&self, agent: &AgentId, label: &str, result: &Result<String, String>) -> Option<String> {
-        let scope = self.hooks.as_ref().filter(|scope| scope.has(HookEvent::SubagentStop))?;
+    async fn stopped(
+        &self,
+        agent: &AgentId,
+        label: &str,
+        result: &Result<String, String>,
+    ) -> Option<String> {
+        let scope = self
+            .hooks
+            .as_ref()
+            .filter(|scope| scope.has(HookEvent::SubagentStop))?;
         let fields = serde_json::json!({
             "agent_id": agent.as_str(),
             "label": label,
@@ -244,15 +278,18 @@ impl Spawn {
     }
 }
 
-/// Shows a subagent as part of its parent's run.
+/// Shows a subagent as part of its parent's run, and keeps what it does for
+/// clients that view it.
 struct Tagged {
     run: Arc<Run>,
+    team: Arc<Team>,
     agent: AgentId,
     label: String,
 }
 
 impl Reporter for Tagged {
     async fn emit(&self, event: Event) {
+        self.team.step(&self.agent, &event);
         self.run.emit(Event::Agent {
             agent: self.agent.clone(),
             step: Box::new(event),
@@ -299,10 +336,13 @@ mod tests {
             ..Kinds::default()
         };
         let text = describe(&kinds);
-        assert!(text.contains("<agent_type name=\"reviewer\">Reviews &lt;/agent_types&gt; code</agent_type>"));
+        assert!(text.contains(
+            "<agent_type name=\"reviewer\">Reviews &lt;/agent_types&gt; code</agent_type>"
+        ));
         assert_eq!(text.matches("</agent_types>").count(), 1);
         let args: SpawnArgs =
-            serde_json::from_str(r#"{"agents":[{"label":"l","message":"m","type":"reviewer"}]}"#).unwrap();
+            serde_json::from_str(r#"{"agents":[{"label":"l","message":"m","type":"reviewer"}]}"#)
+                .unwrap();
         assert_eq!(args.agents[0].kind.as_deref(), Some("reviewer"));
     }
 }

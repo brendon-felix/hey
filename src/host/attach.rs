@@ -77,6 +77,7 @@ impl Host {
                 context.text()
             }
             Err(error) => {
+                tracing::warn!(error = format!("{error:#}"), "nothing attached to a steering message");
                 run.emit(Event::Notice {
                     text: format!("nothing attached: {error:#}"),
                 });
@@ -115,9 +116,12 @@ impl Host {
             let arguments = prompt.trim_start().get(invoked.len() + 1..).unwrap_or_default();
             match self.toolbox.prompt(mcp_prompt, arguments).await {
                 Ok(text) => context.prompt(text),
-                Err(error) => told.push(Event::Notice {
-                    text: format!("{name} not attached: {error:#}"),
-                }),
+                Err(error) => {
+                    tracing::warn!(error = format!("{error:#}"), "{name} not attached");
+                    told.push(Event::Notice {
+                        text: format!("{name} not attached: {error:#}"),
+                    });
+                }
             }
         }
         for target in self.targets(prompt, skills) {
@@ -133,6 +137,7 @@ impl Host {
                 Target::Skill(skill) => skill.content().map(|content| context.skill(content)),
             };
             if let Err(error) = attached {
+                tracing::warn!(error = format!("{error:#}"), "{target} not attached");
                 told.push(Event::Notice {
                     text: format!("{target} not attached: {error:#}"),
                 });

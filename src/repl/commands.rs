@@ -9,7 +9,8 @@ pub enum Command {
     Threads,
     Resume(Option<String>),
     Fork,
-    History,
+    /// View this conversation full-screen, or the subagent of it named.
+    View(Option<String>),
     Copy(Scope),
     /// Compact the conversation, with what its summary should keep above
     /// all.
@@ -49,6 +50,8 @@ pub enum Arg {
     Thinking,
     Theme,
     Thread,
+    /// A subagent of the conversation, by id or label.
+    Agent,
     /// Free text, which completes to nothing.
     Focus,
     Condition,
@@ -61,6 +64,7 @@ impl Arg {
             Arg::Thinking => "level",
             Arg::Theme => "theme",
             Arg::Thread => "thread",
+            Arg::Agent => "agent",
             Arg::Focus => "focus",
             Arg::Condition => "condition",
         }
@@ -121,11 +125,11 @@ pub const COMMANDS: &[Spec] = &[
         build: |_| Command::Fork,
     },
     Spec {
-        name: "history",
-        aliases: &[],
-        arg: None,
-        about: "Show this conversation",
-        build: |_| Command::History,
+        name: "view",
+        aliases: &["v"],
+        arg: Some(Arg::Agent),
+        about: "View this conversation full-screen, or one of its subagents",
+        build: Command::View,
     },
     Spec {
         name: "copy",
@@ -306,13 +310,22 @@ mod tests {
             parse("/m  openai/gpt-5.5 "),
             Input::Command(Command::Model(Some("openai/gpt-5.5".into())))
         );
-        assert_eq!(parse("/new now"), Input::Invalid("/new takes no argument".into()));
+        assert_eq!(
+            parse("/new now"),
+            Input::Invalid("/new takes no argument".into())
+        );
         assert_eq!(
             parse("/resume auth bug"),
             Input::Command(Command::Resume(Some("auth bug".into())))
         );
-        assert_eq!(parse("/nope"), Input::Invalid("unknown command /nope".into()));
-        assert_eq!(parse(" /deploy to staging"), Input::Message("/deploy to staging".into()));
+        assert_eq!(
+            parse("/nope"),
+            Input::Invalid("unknown command /nope".into())
+        );
+        assert_eq!(
+            parse(" /deploy to staging"),
+            Input::Message("/deploy to staging".into())
+        );
         assert_eq!(parse("/new"), Input::Command(Command::New), "commands win");
         assert_eq!(parse("/init"), Input::Command(Command::Init));
         assert_eq!(parse("/undo"), Input::Command(Command::Undo));
@@ -322,6 +335,15 @@ mod tests {
             Input::Command(Command::Goal(Some("all tests pass".into())))
         );
         assert_eq!(parse("/goal"), Input::Command(Command::Goal(None)));
+        assert_eq!(parse("/view"), Input::Command(Command::View(None)));
+        assert_eq!(
+            parse("/v a1b2c3"),
+            Input::Command(Command::View(Some("a1b2c3".into())))
+        );
+        assert_eq!(
+            parse("/history"),
+            Input::Invalid("unknown command /history".into())
+        );
         assert_eq!(
             parse("/compact the parser work"),
             Input::Command(Command::Compact(Some("the parser work".into())))

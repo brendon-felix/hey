@@ -12,6 +12,7 @@ mod spawn;
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::{Arc, Mutex, PoisonError};
+use std::time::Instant;
 
 use rig_agent::agent::Agent;
 use rig_core::completion::GenerationOptions;
@@ -23,7 +24,7 @@ use crate::config::{Config, Providers, Thinking};
 use crate::gate;
 use crate::hooks::{Scope, ToolHooks};
 use crate::permissions::{Permissions, Reporter};
-use crate::protocol::AgentId;
+use crate::protocol::{AgentId, AgentInfo, AgentSnapshot, Event, Working};
 use crate::results::ResultLimit;
 use crate::route::{Kit, Tag};
 use crate::sessions::SessionId;
@@ -60,6 +61,22 @@ pub struct Team {
     seen: Mutex<HashMap<AgentId, Seen>>,
     /// The kind each agent started as, which its follow-ups keep.
     kinds: Mutex<HashMap<AgentId, Kind>>,
+    /// Every agent, in the order they first started, for clients to view.
+    roster: Mutex<Vec<Member>>,
+}
+
+struct Member {
+    agent: AgentId,
+    /// The label of its latest task.
+    label: String,
+    task: Option<Task>,
+}
+
+/// A task a subagent works on, until its conversation saves it.
+struct Task {
+    message: String,
+    started: Instant,
+    steps: Vec<Event>,
 }
 
 /// One turn of a subagent's conversation.
@@ -99,12 +116,28 @@ impl Crew {
         lock(&self.teams).remove(thread);
     }
 
+    /// The subagents of conversation `thread`, if it has had any since the
+    /// host started.
+    pub fn find(&self, thread: &SessionId) -> Option<Arc<Team>> {
+        lock(&self.teams).get(thread).cloned()
+    }
+
     /// Runs `turn` with the tools of `kit`, reporting its tool calls and
     /// asking its questions through `reporter`. Gives the agent's final
     /// reply.
-    pub async fn run(&self, team: &Team, kit: &Kit, turn: Turn<'_>, reporter: impl Reporter) -> Result<String, String> {
-        let model_name = turn.kind.and_then(|kind| kind.model.as_deref()).unwrap_or(turn.model);
-        let model = Model::connect(model_name, &self.providers).map_err(|error| format!("{error:#}"))?;
+    pub async fn run(
+        &self,
+        team: &Team,
+        kit: &Kit,
+        turn: Turn<'_>,
+        reporter: impl Reporter,
+    ) -> Result<String, String> {
+        let model_name = turn
+            .kind
+            .and_then(|kind| kind.model.as_deref())
+            .unwrap_or(turn.model);
+        let model =
+            Model::connect(model_name, &self.providers).map_err(|error| format!("{error:#}"))?;
         let agent = self.agent(team, kit, &turn, &model, reporter);
         let runner = agent
             .prompt(turn.message.to_owned())
@@ -120,7 +153,14 @@ impl Crew {
             .map_err(|error| error.to_string())
     }
 
-    fn agent(&self, team: &Team, kit: &Kit, turn: &Turn<'_>, model: &Model, reporter: impl Reporter) -> Agent {
+    fn agent(
+        &self,
+        team: &Team,
+        kit: &Kit,
+        turn: &Turn<'_>,
+        model: &Model,
+        reporter: impl Reporter,
+    ) -> Agent {
         let tag = Tag {
             agent: turn.agent.clone(),
             label: turn.label.to_owned(),
@@ -129,14 +169,23 @@ impl Crew {
         if let Some(kind) = turn.kind {
             tools.retain(|tool| kind.allows(&tool.name()));
         }
-        let hooks = turn.hooks.map(|scope| ToolHooks::new(scope.clone(), kit.run.clone()));
+        let hooks = turn
+            .hooks
+            .map(|scope| ToolHooks::new(scope.clone(), kit.run.clone()));
         let cwd = agent::working_directory();
         let client = kit.lent.as_ref().map(|lent| lent.machine.as_str());
         let prompt = turn.kind.map_or(PROMPT, |kind| kind.prompt.as_str());
-        let builder = agent::builder(model, tools, routes, team.permissions.clone(), Arc::new(reporter), hooks)
-            .name("hey subagent")
-            .preamble(prompt)
-            .append_preamble(&environment(&cwd, &kit.host, client));
+        let builder = agent::builder(
+            model,
+            tools,
+            routes,
+            team.permissions.clone(),
+            Arc::new(reporter),
+            hooks,
+        )
+        .name("hey subagent")
+        .preamble(prompt)
+        .append_preamble(&environment(&cwd, &kit.host, client));
         let builder = match kit.toolbox.preamble() {
             Some(deferred) => builder.append_preamble(&deferred),
             None => builder,
@@ -166,6 +215,7 @@ impl Team {
             store: MemoryStore::default(),
             seen: Mutex::default(),
             kinds: Mutex::default(),
+            roster: Mutex::default(),
         }
     }
 
@@ -186,6 +236,87 @@ impl Team {
 
     fn seen(&self, agent: &AgentId) -> Seen {
         lock(&self.seen).entry(agent.clone()).or_default().clone()
+    }
+
+    /// `agent` starts work on `message`, under `label`.
+    fn begin(&self, agent: &AgentId, label: &str, message: &str) {
+        let task = Task {
+            message: message.to_owned(),
+            started: Instant::now(),
+            steps: Vec::new(),
+        };
+        let mut roster = lock(&self.roster);
+        match roster.iter_mut().find(|member| &member.agent == agent) {
+            Some(member) => {
+                member.label = label.to_owned();
+                member.task = Some(task);
+            }
+            None => roster.push(Member {
+                agent: agent.clone(),
+                label: label.to_owned(),
+                task: Some(task),
+            }),
+        }
+    }
+
+    fn step(&self, agent: &AgentId, event: &Event) {
+        let mut roster = lock(&self.roster);
+        let task = roster
+            .iter_mut()
+            .find(|member| &member.agent == agent)
+            .and_then(|member| member.task.as_mut());
+        if let Some(task) = task {
+            task.steps.push(event.clone());
+        }
+    }
+
+    /// `agent` is done with its task, which its conversation holds if it
+    /// went well.
+    fn end(&self, agent: &AgentId) {
+        if let Some(member) = lock(&self.roster)
+            .iter_mut()
+            .find(|member| &member.agent == agent)
+        {
+            member.task = None;
+        }
+    }
+
+    pub fn roster(&self) -> Vec<AgentInfo> {
+        lock(&self.roster)
+            .iter()
+            .map(|member| AgentInfo {
+                agent: member.agent.clone(),
+                label: member.label.clone(),
+                working: member.task.is_some(),
+            })
+            .collect()
+    }
+
+    pub fn snapshot(&self, agent: &AgentId) -> Option<AgentSnapshot> {
+        let (label, working) = {
+            let roster = lock(&self.roster);
+            let member = roster.iter().find(|member| &member.agent == agent)?;
+            let working = member.task.as_ref().map(|task| Working {
+                message: task.message.clone(),
+                elapsed: task.started.elapsed(),
+                steps: task.steps.clone(),
+            });
+            (member.label.clone(), working)
+        };
+        let messages = rig_memory::load(&self.store, agent.as_str())
+            .map(|conversation| {
+                conversation
+                    .messages()
+                    .iter()
+                    .map(|message| rig_core::message::Message::clone(message))
+                    .collect()
+            })
+            .unwrap_or_default();
+        Some(AgentSnapshot {
+            label,
+            messages,
+            working,
+        })
     }
 }
 

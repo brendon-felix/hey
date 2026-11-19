@@ -4,9 +4,11 @@
 
 //! Full-screen lists of what a host keeps, to look through and change.
 
+mod entries;
 mod field;
 pub mod memories;
 pub mod threads;
+pub mod viewer;
 
 use std::io::{IsTerminal, Write, stdout};
 use std::time::Duration;
@@ -21,6 +23,7 @@ use crate::backend::Backend;
 use crate::render::palette;
 
 const REFRESH: Duration = Duration::from_secs(2);
+const SPINNER: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 /// Rows above and below the list: the title and filter, a gap and the keys.
 const CHROME: usize = 4;
 
@@ -39,7 +42,10 @@ struct Note {
 
 impl Note {
     fn said(text: String) -> Self {
-        Self { text, failed: false }
+        Self {
+            text,
+            failed: false,
+        }
     }
 
     fn failed(error: anyhow::Error) -> Self {
@@ -74,9 +80,15 @@ fn header(backend: &Backend, view: &str, tallies: &[String], width: usize) -> St
         None => String::new(),
     };
     let title = format!(" {view}{place}");
-    let tally_width: usize = tallies.iter().map(|tally| visible(tally)).sum::<usize>() + 3 * tallies.len().saturating_sub(1);
+    let tally_width: usize = tallies.iter().map(|tally| visible(tally)).sum::<usize>()
+        + 3 * tallies.len().saturating_sub(1);
     let gap = width.saturating_sub(title.chars().count() + tally_width + 1);
-    format!("{}{}{} ", title.bold(), " ".repeat(gap), tallies.join(" · "))
+    format!(
+        "{}{}{} ",
+        title.bold(),
+        " ".repeat(gap),
+        tallies.join(" · ")
+    )
 }
 
 fn filter_line(filtering: bool, filter: &str) -> String {
@@ -91,7 +103,10 @@ fn filter_line(filtering: bool, filter: &str) -> String {
 fn footer(note: Option<&Note>, keys: &str, width: usize) -> String {
     match note {
         Some(note) if note.failed => fit(&format!(" {}", note.text), width).red().to_string(),
-        Some(note) => palette().muted.paint(&fit(&format!(" {}", note.text), width)).to_string(),
+        Some(note) => palette()
+            .muted
+            .paint(&fit(&format!(" {}", note.text), width))
+            .to_string(),
         None => palette().muted.paint(&fit(keys, width)).to_string(),
     }
 }
@@ -109,7 +124,12 @@ fn paint(mut lines: Vec<String>, footer: String, height: usize) -> Result<()> {
     let mut out = stdout().lock();
     queue!(out, BeginSynchronizedUpdate)?;
     for (row, line) in lines.iter().enumerate() {
-        queue!(out, cursor::MoveTo(0, row as u16), Print(line), Clear(ClearType::UntilNewLine))?;
+        queue!(
+            out,
+            cursor::MoveTo(0, row as u16),
+            Print(line),
+            Clear(ClearType::UntilNewLine)
+        )?;
     }
     queue!(out, EndSynchronizedUpdate)?;
     out.flush()?;
@@ -118,10 +138,17 @@ fn paint(mut lines: Vec<String>, footer: String, height: usize) -> Result<()> {
 
 /// `text` on one line in at most `width` characters.
 fn fit(text: &str, width: usize) -> String {
-    let line: String = text.chars().map(|c| if c.is_control() { ' ' } else { c }).collect();
+    let line: String = text
+        .chars()
+        .map(|c| if c.is_control() { ' ' } else { c })
+        .collect();
     match line.chars().count() <= width {
         true => line,
-        false => line.chars().take(width.saturating_sub(1)).chain(['…']).collect(),
+        false => line
+            .chars()
+            .take(width.saturating_sub(1))
+            .chain(['…'])
+            .collect(),
     }
 }
 

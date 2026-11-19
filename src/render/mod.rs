@@ -34,7 +34,6 @@ pub use reply::{Reply, rows as reply_rows};
 pub use stream::{FRAME, Stream};
 pub use theme::{Color, Palette, Theme, palette, themes};
 
-
 static ANIMATIONS: AtomicBool = AtomicBool::new(false);
 
 pub fn configure(display: &Display) {
@@ -102,21 +101,29 @@ pub fn user_message(text: &str) {
 }
 
 pub fn user_line(text: &str, palette: Palette) -> String {
-    format!("{}{}", palette.accent.paint("> "), palette.input.paint(text))
+    format!(
+        "{}{}",
+        palette.accent.paint("> "),
+        palette.input.paint(text)
+    )
 }
 
 /// A tool call as it shows, `width` columns at most: its name, the machine
 /// it runs on when that is named, and the argument that identifies it.
 fn call_line(name: &str, machine: Option<&str>, summary: &str, width: usize) -> String {
     let palette = palette();
-    let on = machine.map(|machine| format!(" on {machine}")).unwrap_or_default();
+    let on = machine
+        .map(|machine| format!(" on {machine}"))
+        .unwrap_or_default();
     let room = width.saturating_sub(name.chars().count() + on.chars().count() + 3);
     format!(
         "{} {}{} {}",
         palette.name.paint("●"),
         name.bold(),
         palette.muted.paint(&on),
-        palette.muted.paint(&clip(&summary.replace('\t', " "), room))
+        palette
+            .muted
+            .paint(&clip(&summary.replace('\t', " "), room))
     )
 }
 
@@ -128,15 +135,26 @@ fn machine_arg(args: &str) -> Option<String> {
 
 /// A subagent began its task, `label`.
 pub fn agent_started(label: &str) {
-    screen::line(format_args!("\n{} {}", palette().name.paint("◇"), label.bold()));
+    screen::line(format_args!(
+        "\n{} {}",
+        palette().name.paint("◇"),
+        label.bold()
+    ));
 }
 
 /// What the subagent `label` did, as a line: a tool call or a notice.
 pub fn agent_step(label: &str, event: &Event) -> Option<String> {
     let step = match event {
-        Event::ToolCall { name, args, machine, .. } => {
+        Event::ToolCall {
+            name,
+            args,
+            machine,
+            ..
+        } => {
             let on = machine.clone().or_else(|| machine_arg(args));
-            let on = on.map(|machine| format!(" on {machine}")).unwrap_or_default();
+            let on = on
+                .map(|machine| format!(" on {machine}"))
+                .unwrap_or_default();
             format!("{name}{on} {}", summarize_args(args))
         }
         Event::Notice { text } => text.clone(),
@@ -149,24 +167,41 @@ pub fn agent_ended(label: &str, error: Option<&str>) {
     let palette = palette();
     let room = terminal_width().saturating_sub(label.chars().count() + 6);
     match error {
-        None => screen::line(format_args!("  {} {} {}", palette.name.paint("◆"), label, palette.muted.paint("done"))),
-        Some(error) => screen::line(format_args!("  {} {} {}", "✗".red(), label.red(), clip(error, room).red())),
+        None => screen::line(format_args!(
+            "  {} {} {}",
+            palette.name.paint("◆"),
+            label,
+            palette.muted.paint("done")
+        )),
+        Some(error) => screen::line(format_args!(
+            "  {} {} {}",
+            "✗".red(),
+            label.red(),
+            clip(error, room).red()
+        )),
     }
 }
 
 /// What a mention attached to the message being sent.
 pub fn attached(target: &dyn std::fmt::Display) {
     let palette = palette();
-    screen::line(format_args!("  {} {}", palette.name.paint("@"), palette.muted.paint(&target.to_string())));
+    screen::line(format_args!(
+        "  {} {}",
+        palette.name.paint("@"),
+        palette.muted.paint(&target.to_string())
+    ));
 }
 
 /// That the model reasoned, where its reasoning is not shown, and for how
 /// long when that is known.
 pub fn thought(duration: Option<Duration>) {
-    screen::line(format_args!("\n{}", palette().muted.paint(&thought_text(duration)).italic()));
+    screen::line(format_args!(
+        "\n{}",
+        palette().muted.paint(&thought_text(duration)).italic()
+    ));
 }
 
-fn thought_text(duration: Option<Duration>) -> String {
+pub fn thought_text(duration: Option<Duration>) -> String {
     match duration {
         Some(duration) => format!("Thought for {}", clock(duration)),
         None => "Thought".to_owned(),
@@ -189,7 +224,8 @@ pub fn notice(text: &str) {
 /// gave back.
 fn compacted(summary: &str, sizes: Option<(u64, u64)>, style: &Style) {
     let palette = palette();
-    let sizes = sizes.map(|(before, after)| format!(" ~{} → ~{} tokens", tokens(before), tokens(after)));
+    let sizes =
+        sizes.map(|(before, after)| format!(" ~{} → ~{} tokens", tokens(before), tokens(after)));
     screen::line(format_args!(
         "\n{} {}{}",
         palette.name.paint("◇"),
@@ -206,7 +242,10 @@ fn compacted(summary: &str, sizes: Option<(u64, u64)>, style: &Style) {
             let mut preview = Preview::new(Source::Returned);
             preview.label("summary".into());
             preview.push(summary);
-            preview.framed(style.width(), "").into_iter().for_each(screen::line);
+            preview
+                .framed(style.width(), "")
+                .into_iter()
+                .for_each(screen::line);
         }
         Output::Hidden => {}
     }
@@ -227,6 +266,7 @@ pub fn tokens(count: u64) -> String {
 }
 
 pub fn error(error: &dyn std::fmt::Display) {
+    tracing::warn!(%error, "shown");
     screen::line(format_args!("\n{} {error}", "Error:".red()));
 }
 
@@ -262,7 +302,12 @@ pub fn conversation(messages: &[Message], style: &Style) {
                         AssistantContent::Text(text) => stream.text(text.text.clone()),
                         AssistantContent::ToolCall(call) => {
                             let args = serde_json::Value::Object(call.function.arguments.clone());
-                            stream.call(call.function.name.as_str(), &args.to_string(), None, Some(call.id.clone()));
+                            stream.call(
+                                call.function.name.as_str(),
+                                &args.to_string(),
+                                None,
+                                Some(call.id.clone()),
+                            );
                         }
                         AssistantContent::Reasoning(reasoning) => {
                             stream.reasoning(reasoning.text.clone());
@@ -285,6 +330,70 @@ fn summarize_args(args: &str) -> String {
         Some(map) => summarize(&map),
         None => args.to_owned(),
     }
+}
+
+/// The argument a call is known by, as its line shows it.
+pub fn call_summary(args: &str) -> String {
+    summarize_args(args)
+}
+
+/// The machine a call's arguments name, if any.
+pub fn call_machine(args: &str) -> Option<String> {
+    machine_arg(args)
+}
+
+/// A call's arguments without the machine it runs on, pretty-printed.
+pub fn call_input(args: &str) -> String {
+    tool_args(args)
+        .and_then(|map| serde_json::to_string_pretty(&serde_json::Value::Object(map)).ok())
+        .unwrap_or_else(|| args.to_owned())
+}
+
+/// The lines a call to `write` or `edit` adds, marked `+`, and removes,
+/// marked `-`.
+pub fn changed_lines(name: &str, args: &str) -> Option<Vec<(char, String)>> {
+    let changes = tool::changes(name, args)?;
+    let lines = changes.into_iter().map(|(mark, text)| match mark {
+        tool::Mark::Removed => ('-', text),
+        tool::Mark::Added | tool::Mark::Printed => ('+', text),
+    });
+    Some(lines.collect())
+}
+
+/// The rows a call to `todo` shows: its list, each item marked.
+pub fn todo_rows(name: &str, args: &str) -> Option<Vec<String>> {
+    tool::todos(name, args)
+}
+
+/// What a result gave back, as text.
+pub fn result_text(result: &rig_core::message::ToolResult) -> String {
+    tool::text(result)
+}
+
+/// What a result's marker says of its `text`: its only line, or how many
+/// it has.
+pub fn result_summary(text: &str) -> String {
+    tool::summary(text)
+}
+
+/// Whether calls to `name` show what they change in a file, rather than
+/// what they give back.
+pub fn shows_changes(name: &str) -> bool {
+    tool::shows_changes(name)
+}
+
+/// `text` in rows at most `width` columns wide, each line wrapped after
+/// spaces, tabs as four spaces.
+pub fn wrapped(text: &str, width: usize) -> Vec<String> {
+    text.lines()
+        .flat_map(|line| {
+            let line = line.replace('\t', "    ").replace('\r', "");
+            wrap::rows(&line, width)
+                .into_iter()
+                .map(|row| line[wrap::trimmed(&line, &row)].to_owned())
+                .collect::<Vec<_>>()
+        })
+        .collect()
 }
 
 /// A call's arguments as its tool takes them: without the machine it runs
@@ -324,7 +433,10 @@ fn summarize(map: &serde_json::Map<String, serde_json::Value>) -> String {
             .into_iter()
             .find_map(field)
             .or(only_string)
-            .map_or_else(|| serde_json::Value::Object(map.clone()).to_string(), str::to_owned),
+            .map_or_else(
+                || serde_json::Value::Object(map.clone()).to_string(),
+                str::to_owned,
+            ),
     }
 }
 

@@ -25,7 +25,7 @@ use crate::clipboard::{Clipboard, Copied};
 use crate::config::{Setting, Thinking};
 use crate::mention;
 use crate::permissions::Permission;
-use crate::protocol::{ApprovalId, Ask, ModelInfo, RunId, RunOptions, Snapshot};
+use crate::protocol::{AgentId, ApprovalId, Ask, ModelInfo, RunId, RunOptions, Snapshot};
 use crate::render::{self, Reply, Style, Theme, palette, screen, snailprint};
 use crate::sessions::SessionId;
 use crate::skills::Invocation;
@@ -542,7 +542,11 @@ impl Session {
             Ok(opened) => opened,
             Err(error) => return render::error(&format!("{error:#}")),
         };
-        let Snapshot { messages, running, plan } = opened.snapshot;
+        let Snapshot {
+            messages,
+            running,
+            plan,
+        } = opened.snapshot;
         self.note_plan(plan);
         let new = messages.get(self.displayed..).unwrap_or_default();
         if !new.is_empty() {
@@ -585,20 +589,28 @@ impl Session {
         self.show_status(None);
     }
 
-    /// Fetches the host's conversations, shared files and skills for
-    /// completion, unless what was fetched is still fresh. Tells of skills
-    /// that newly failed to load.
+    /// Fetches the host's conversations, shared files, skills and this
+    /// conversation's subagents for completion, unless what was fetched is
+    /// still fresh. Tells of skills that newly failed to load.
     async fn refresh_index(&mut self) {
         if self.indexed.is_some_and(|at| at.elapsed() < STALE_AFTER) {
             return;
         }
-        let (threads, shared, skills, prompts) = tokio::join!(
+        let (threads, shared, skills, prompts, agents) = tokio::join!(
             self.backend.threads(),
             self.backend.shared(),
             self.backend.skills(),
-            self.backend.prompts()
+            self.backend.prompts(),
+            self.backend.subagents(&self.thread)
         );
         let mut index = mentions::lock(&self.index);
+        // A host older than subagent listing has none to complete; saying so
+        // at every prompt would only be noise.
+        index.agents = agents
+            .inspect_err(|error| {
+                tracing::debug!(error = format!("{error:#}"), "no subagent completions")
+            })
+            .unwrap_or_default();
         match prompts {
             Ok(prompts) => index.prompts = prompts,
             Err(error) => render::notice(&format!("no MCP prompt completions: {error:#}")),
@@ -639,7 +651,7 @@ impl Session {
             Command::Threads => self.browse().await?,
             Command::Resume(query) => self.resume(query.as_deref()).await?,
             Command::Fork => self.fork().await?,
-            Command::History => self.show_thread(true).await,
+            Command::View(query) => self.view(query.as_deref()).await?,
             Command::Copy(scope) => self.copy(scope).await?,
             Command::Compact(focus) => self.compact(focus.unwrap_or_default()).await?,
             Command::Undo => self.undo().await?,
@@ -647,7 +659,9 @@ impl Session {
                 let on = !self.plan;
                 self.set_plan(on).await;
                 let told = match on {
-                    true => "Plan mode: only tools that change nothing run, until you approve a plan.",
+                    true => {
+                        "Plan mode: only tools that change nothing run, until you approve a plan."
+                    }
                     false => "Left plan mode.",
                 };
                 println!("{}\n", told.bold());
@@ -680,7 +694,8 @@ impl Session {
     /// Lists the host's conversations to open one, and leaves this one if
     /// it was deleted there.
     async fn browse(&mut self) -> Result<()> {
-        let browsed = browser::threads::browse(&self.backend, Some(&self.thread)).await?;
+        let browsed =
+            browser::threads::browse(&self.backend, Some(&self.thread), &self.style).await?;
         match browsed.open {
             Some(thread) => self.open(thread).await,
             None if browsed.deleted.contains(&self.thread) => {
@@ -748,6 +763,54 @@ impl Session {
     async fn show_thread(&mut self, announce_empty: bool) {
         self.displayed = 0;
         self.sync(announce_empty).await;
+    }
+
+    /// Shows this conversation full-screen, or its subagent `query` names
+    /// by id or label, until the viewer closes.
+    async fn view(&mut self, query: Option<&str>) -> Result<()> {
+        let agent = match query {
+            Some(query) => Some(self.subagent(query).await?),
+            None => None,
+        };
+        let title = mentions::lock(&self.index)
+            .threads
+            .iter()
+            .find(|summary| summary.id == self.thread)
+            .map_or_else(
+                || "This conversation".to_owned(),
+                |summary| summary.title.clone(),
+            );
+        browser::viewer::view(&self.backend, &self.thread, &title, agent, &self.style).await?;
+        self.indexed = None;
+        Ok(())
+    }
+
+    /// The subagent of this conversation `query` names: by id, else by the
+    /// best match of its label.
+    async fn subagent(&self, query: &str) -> Result<AgentId> {
+        let agents = self.backend.subagents(&self.thread).await?;
+        if agents.is_empty() {
+            anyhow::bail!(
+                "this conversation has no subagents; the host keeps them until it restarts"
+            );
+        }
+        let found = agents
+            .iter()
+            .find(|info| info.agent.as_str() == query)
+            .or_else(|| mentions::agent_matches(&SkimMatcherV2::default(), &agents, query).next());
+        match found {
+            Some(info) => Ok(info.agent.clone()),
+            None => {
+                let known: Vec<String> = agents
+                    .iter()
+                    .map(|info| format!("{} ({})", info.agent, info.label))
+                    .collect();
+                anyhow::bail!(
+                    "no subagent matches {query:?}; there are: {}",
+                    known.join(", ")
+                )
+            }
+        }
     }
 
     /// Copies what was said in `scope` as the Markdown it was written in, as
@@ -838,7 +901,10 @@ impl Session {
             None => println!("{}", "No goal set; /goal <condition> sets one.".bold()),
         }
         println!();
-        self.status.lock().unwrap_or_else(PoisonError::into_inner).goal = condition.clone();
+        self.status
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .goal = condition.clone();
         self.goal = condition;
     }
 
@@ -974,7 +1040,11 @@ impl Session {
                 match &server.tools {
                     Ok(count) => {
                         let deferred = if server.deferred { ", deferred" } else { "" };
-                        println!("  {} {} ({count} tools{deferred})", "●".green(), server.name)
+                        println!(
+                            "  {} {} ({count} tools{deferred})",
+                            "●".green(),
+                            server.name
+                        )
                     }
                     Err(error) => println!("  {} {}: {error}", "●".red(), server.name),
                 }
@@ -1091,7 +1161,10 @@ impl Session {
     /// The host says the thread is in plan mode, or not.
     fn note_plan(&mut self, on: bool) {
         self.plan = on;
-        self.status.lock().unwrap_or_else(PoisonError::into_inner).plan = on;
+        self.status
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .plan = on;
     }
 
     fn show_status(&self, context: Option<u64>) {

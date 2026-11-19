@@ -9,19 +9,21 @@ use std::time::Duration;
 
 use anyhow::Result;
 use chrono::{Datelike, Local};
-use crossterm::event::{Event as Input, EventStream, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+use crossterm::event::{
+    Event as Input, EventStream, KeyCode, KeyEvent, KeyEventKind, KeyModifiers,
+};
 use futures::StreamExt;
 use tokio::time::{Instant, MissedTickBehavior, interval, interval_at};
 use yansi::{Paint, Painted};
 
-use super::{Note, REFRESH, fit};
+use super::viewer::{self, Closed};
+use super::{Note, REFRESH, SPINNER, fit};
 use crate::backend::Backend;
 use crate::protocol::{ThreadInfo, ThreadStatus};
-use crate::render::palette;
+use crate::render::{Style, palette};
 use crate::sessions::SessionId;
 use crate::ui::Screen;
 
-const SPINNER: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 const FRAME: Duration = Duration::from_millis(80);
 const WHEN_WIDTH: usize = 11;
 
@@ -33,11 +35,16 @@ pub struct Browsed {
 }
 
 /// Lists the host's conversations until one is picked or the list closed.
-/// `current` is the one the REPL is in.
-pub async fn browse(backend: &Backend, current: Option<&SessionId>) -> Result<Browsed> {
+/// `current` is the one the REPL is in; `style` draws those viewed.
+pub async fn browse(
+    backend: &Backend,
+    current: Option<&SessionId>,
+    style: &Style,
+) -> Result<Browsed> {
     super::ensure_terminal("the conversation list")?;
     let mut browser = Browser {
         backend,
+        style,
         current: current.cloned(),
         threads: backend.threads().await?,
         archived: false,
@@ -55,6 +62,7 @@ pub async fn browse(backend: &Backend, current: Option<&SessionId>) -> Result<Br
 
 struct Browser<'a> {
     backend: &'a Backend,
+    style: &'a Style,
     current: Option<SessionId>,
     threads: Vec<ThreadInfo>,
     /// Whether the archived threads are shown, rather than the rest.
@@ -75,6 +83,14 @@ enum Mode {
     ConfirmDelete(SessionId),
 }
 
+/// What a key asks of the browser.
+enum Act {
+    Stay,
+    View(SessionId),
+    /// Close it, opening the thread, if one is named.
+    Close(Option<SessionId>),
+}
+
 impl Browser<'_> {
     async fn run(&mut self) -> Result<Browsed> {
         let mut input = EventStream::new();
@@ -84,21 +100,43 @@ impl Browser<'_> {
         refreshes.set_missed_tick_behavior(MissedTickBehavior::Skip);
         loop {
             self.draw()?;
-            tokio::select! {
-                _ = frames.tick() => self.frame = self.frame.wrapping_add(1),
-                _ = refreshes.tick() => self.refresh().await,
+            let key = tokio::select! {
+                _ = frames.tick() => {
+                    self.frame = self.frame.wrapping_add(1);
+                    continue;
+                }
+                _ = refreshes.tick() => {
+                    self.refresh().await;
+                    continue;
+                }
                 input = input.next() => match input {
-                    Some(Ok(Input::Key(key))) if key.kind != KeyEventKind::Release => {
-                        if let Some(open) = self.key(key).await {
-                            return Ok(self.finish(open));
-                        }
-                    }
-                    Some(Ok(_)) => {}
+                    Some(Ok(Input::Key(key))) if key.kind != KeyEventKind::Release => key,
+                    Some(Ok(_)) => continue,
                     Some(Err(error)) => return Err(error.into()),
                     None => return Ok(self.finish(None)),
                 },
+            };
+            match self.key(key).await {
+                Act::Stay => {}
+                Act::View(thread) => {
+                    if let Closed::Open = self.view(&thread, &mut input).await {
+                        return Ok(self.finish(Some(thread)));
+                    }
+                }
+                Act::Close(open) => return Ok(self.finish(open)),
             }
         }
+    }
+
+    /// Shows `thread` in the viewer, back here once it closes.
+    async fn view(&mut self, thread: &SessionId, input: &mut EventStream) -> Closed {
+        let title = self.title(thread);
+        let closed = viewer::show(self.backend, thread, &title, self.style, input).await;
+        self.refresh().await;
+        closed.unwrap_or_else(|error| {
+            self.fail(error);
+            Closed::Back
+        })
     }
 
     fn finish(&mut self, open: Option<SessionId>) -> Browsed {
@@ -108,10 +146,10 @@ impl Browser<'_> {
         }
     }
 
-    /// Handles a key; `Some` closes the browser, opening the thread it holds.
-    async fn key(&mut self, key: KeyEvent) -> Option<Option<SessionId>> {
+    /// Handles a key: what the browser does next.
+    async fn key(&mut self, key: KeyEvent) -> Act {
         if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
-            return Some(None);
+            return Act::Close(None);
         }
         self.note = None;
         match std::mem::replace(&mut self.mode, Mode::Browse) {
@@ -121,14 +159,17 @@ impl Browser<'_> {
                 }
             }
             Mode::Filter => match key.code {
-                KeyCode::Enter => return self.selected.clone().map(Some),
+                KeyCode::Enter => return self.chosen(Act::View),
                 KeyCode::Esc => String::clear(&mut self.filter),
                 KeyCode::Up => self.filtering(|browser| browser.step(-1)),
                 KeyCode::Down => self.filtering(|browser| browser.step(1)),
                 KeyCode::Backspace => self.filtering(|browser| _ = browser.filter.pop()),
                 KeyCode::Char(c) => self.filtering(|browser| {
                     browser.filter.push(c);
-                    browser.selected = browser.shown().first().map(|i| browser.threads[*i].summary.id.clone());
+                    browser.selected = browser
+                        .shown()
+                        .first()
+                        .map(|i| browser.threads[*i].summary.id.clone());
                 }),
                 _ => self.mode = Mode::Filter,
             },
@@ -139,7 +180,8 @@ impl Browser<'_> {
                 KeyCode::PageDown => self.step(super::page() as isize),
                 KeyCode::Home | KeyCode::Char('g') => self.step(isize::MIN / 2),
                 KeyCode::End | KeyCode::Char('G') => self.step(isize::MAX / 2),
-                KeyCode::Enter => return self.selected().map(|thread| Some(thread.summary.id.clone())),
+                KeyCode::Enter | KeyCode::Char('v') => return self.chosen(Act::View),
+                KeyCode::Char('o') => return self.chosen(|thread| Act::Close(Some(thread))),
                 KeyCode::Char('a') => self.archive().await,
                 KeyCode::Char('d') | KeyCode::Delete => {
                     if let Some(thread) = self.selected() {
@@ -154,11 +196,17 @@ impl Browser<'_> {
                 KeyCode::Char('/') => self.mode = Mode::Filter,
                 KeyCode::Char('r') => self.refresh().await,
                 KeyCode::Esc if !self.filter.is_empty() => String::clear(&mut self.filter),
-                KeyCode::Char('q') | KeyCode::Esc => return Some(None),
+                KeyCode::Char('q') | KeyCode::Esc => return Act::Close(None),
                 _ => {}
             },
         }
-        None
+        Act::Stay
+    }
+
+    /// What to do with the selected thread, if there is one.
+    fn chosen(&self, act: impl FnOnce(SessionId) -> Act) -> Act {
+        self.selected()
+            .map_or(Act::Stay, |thread| act(thread.summary.id.clone()))
     }
 
     fn filtering(&mut self, change: impl FnOnce(&mut Self)) {
@@ -188,7 +236,9 @@ impl Browser<'_> {
 
     fn selected(&self) -> Option<&ThreadInfo> {
         let shown = self.shown();
-        shown.get(self.position(&shown)).map(|index| &self.threads[*index])
+        shown
+            .get(self.position(&shown))
+            .map(|index| &self.threads[*index])
     }
 
     fn step(&mut self, by: isize) {
@@ -206,7 +256,9 @@ impl Browser<'_> {
     fn step_off(&mut self) {
         let shown = self.shown();
         let at = self.position(&shown);
-        let next = shown.get(at + 1).or_else(|| at.checked_sub(1).and_then(|before| shown.get(before)));
+        let next = shown
+            .get(at + 1)
+            .or_else(|| at.checked_sub(1).and_then(|before| shown.get(before)));
         self.selected = next.map(|index| self.threads[*index].summary.id.clone());
     }
 
@@ -287,10 +339,18 @@ impl Browser<'_> {
         self.scroll = super::scrolled(self.scroll, at, rows);
 
         let filtering = matches!(self.mode, Mode::Filter);
-        let mut lines = vec![self.header(width), super::filter_line(filtering, &self.filter)];
-        lines.extend(shown.iter().enumerate().skip(self.scroll).take(rows).map(|(row, index)| {
-            self.row(&self.threads[*index], row == at, width)
-        }));
+        let mut lines = vec![
+            self.header(width),
+            super::filter_line(filtering, &self.filter),
+        ];
+        lines.extend(
+            shown
+                .iter()
+                .enumerate()
+                .skip(self.scroll)
+                .take(rows)
+                .map(|(row, index)| self.row(&self.threads[*index], row == at, width)),
+        );
         if shown.is_empty() {
             lines.push(format!("  {}", palette().muted.paint(&self.empty())));
         }
@@ -298,14 +358,28 @@ impl Browser<'_> {
     }
 
     fn header(&self, width: usize) -> String {
-        let view = if self.archived { "Archived conversations" } else { "Conversations" };
+        let view = if self.archived {
+            "Archived conversations"
+        } else {
+            "Conversations"
+        };
         let active = self.threads.iter().filter(|thread| !thread.archived);
-        let count = |status: &[ThreadStatus]| active.clone().filter(|thread| status.contains(&thread.status)).count();
+        let count = |status: &[ThreadStatus]| {
+            active
+                .clone()
+                .filter(|thread| status.contains(&thread.status))
+                .count()
+        };
         let running = count(&[ThreadStatus::Running, ThreadStatus::Asking]);
         let new = count(&[ThreadStatus::Unseen]);
         let mut tallies = Vec::new();
         if running > 0 {
-            tallies.push(palette().accent.paint(&format!("{} {running} running", self.spinner())).to_string());
+            tallies.push(
+                palette()
+                    .accent
+                    .paint(&format!("{} {running} running", self.spinner()))
+                    .to_string(),
+            );
         }
         if new > 0 {
             tallies.push(format!("● {new} new").blue().to_string());
@@ -325,7 +399,10 @@ impl Browser<'_> {
         let palette = palette();
         let current = self.current.as_ref() == Some(&thread.summary.id);
         let (glyph, label): (Painted<&str>, Painted<&str>) = match thread.status {
-            ThreadStatus::Running => (palette.accent.paint(self.spinner()), palette.accent.paint("running")),
+            ThreadStatus::Running => (
+                palette.accent.paint(self.spinner()),
+                palette.accent.paint("running"),
+            ),
             ThreadStatus::Asking => ("?".yellow().bold(), "needs approval".yellow()),
             ThreadStatus::Unseen => ("●".blue(), "new".blue()),
             ThreadStatus::Idle if current => (" ".new(), palette.muted.paint("current")),
@@ -350,21 +427,36 @@ impl Browser<'_> {
         ];
         spans
             .into_iter()
-            .map(|span| if selected { span.invert().to_string() } else { span.to_string() })
+            .map(|span| {
+                if selected {
+                    span.invert().to_string()
+                } else {
+                    span.to_string()
+                }
+            })
             .collect()
     }
 
     fn footer(&self, width: usize) -> String {
         let keys = match &self.mode {
             Mode::ConfirmDelete(id) => {
-                let prompt = format!(" Delete “{}”? y deletes it, any other key keeps it", self.title(id));
+                let prompt = format!(
+                    " Delete “{}”? y deletes it, any other key keeps it",
+                    self.title(id)
+                );
                 return super::question(&prompt, width);
             }
-            Mode::Filter => " type to filter · ↑↓ move · ⏎ open · esc clear".into(),
+            Mode::Filter => " type to filter · ↑↓ move · ⏎ view · esc clear".into(),
             Mode::Browse => {
                 let archive = if self.archived { "restore" } else { "archive" };
-                let view = if self.archived { "conversations" } else { "archived" };
-                format!(" ↑↓ move · ⏎ open · a {archive} · d delete · f fork · tab {view} · / filter · q quit")
+                let view = if self.archived {
+                    "conversations"
+                } else {
+                    "archived"
+                };
+                format!(
+                    " ↑↓ move · ⏎ view · o open · a {archive} · d delete · f fork · tab {view} · / filter · q quit"
+                )
             }
         };
         super::footer(self.note.as_ref(), &keys, width)

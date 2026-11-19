@@ -21,8 +21,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::host::{HEARTBEAT, Host, ThreadError};
 use crate::protocol::{
-    ApprovalId, Ask, CallId, CallResult, Decision, Event, FollowerId, MACHINE_HEADER, Revision,
-    RunRequest,
+    AgentId, ApprovalId, Ask, CallId, CallResult, Decision, Event, FollowerId, MACHINE_HEADER,
+    Revision, RunId, RunRequest,
 };
 use crate::sessions::SessionId;
 use crate::steer::Steer;
@@ -42,6 +42,7 @@ pub async fn serve(host: Arc<Host>, config: &config::Server) -> Result<()> {
         .route("/v1/prompts", get(prompts))
         .route("/v1/threads/{id}", get(open).delete(delete))
         .route("/v1/threads/{id}/run", post(start).delete(stop))
+        .route("/v1/threads/{id}/runs/{run}", get(follow))
         .route("/v1/threads/{id}/steer", post(steer))
         .route("/v1/threads/{id}/compact", post(compact))
         .route("/v1/threads/{id}/undo", post(undo))
@@ -55,6 +56,8 @@ pub async fn serve(host: Arc<Host>, config: &config::Server) -> Result<()> {
         .route("/v1/threads/{id}/calls/{call}/events", post(call_event))
         .route("/v1/threads/{id}/calls/{call}/asks", post(call_ask))
         .route("/v1/threads/{id}/tools", get(tools))
+        .route("/v1/threads/{id}/agents", get(subagents))
+        .route("/v1/threads/{id}/agents/{agent}", get(subagent))
         .route(
             "/v1/memories",
             get(memories).post(remember).put(revise).delete(forget),
@@ -99,6 +102,10 @@ struct Failure(StatusCode, String);
 
 impl IntoResponse for Failure {
     fn into_response(self) -> Response {
+        match self.0.is_server_error() {
+            true => tracing::error!(status = %self.0, error = %self.1, "request failed"),
+            false => tracing::debug!(status = %self.0, error = %self.1, "request refused"),
+        }
         (self.0, self.1).into_response()
     }
 }
@@ -179,6 +186,25 @@ async fn open(
     Ok(ndjson_response(lines))
 }
 
+#[derive(Deserialize)]
+struct After {
+    after: usize,
+}
+
+/// Run `run`'s events after its first `after`, for a client whose stream of
+/// them broke; 404 once the run is gone.
+async fn follow(
+    State(host): State<Arc<Host>>,
+    Path((id, run)): Path<(SessionId, u64)>,
+    Query(After { after }): Query<After>,
+    headers: HeaderMap,
+) -> Reply<Response> {
+    let events = host
+        .follow(&id, RunId(run), after, machine(&headers))
+        .ok_or_else(|| Failure(StatusCode::NOT_FOUND, "the run is no longer on the host".into()))?;
+    Ok(ndjson_response(ndjson(events)))
+}
+
 async fn start(
     State(host): State<Arc<Host>>,
     Path(id): Path<SessionId>,
@@ -230,7 +256,10 @@ async fn compact(
 
 /// Puts back the files of the latest answer that changed any: what was
 /// undone, or null when nothing was left; 409 while the thread answers.
-async fn undo(State(host): State<Arc<Host>>, Path(id): Path<SessionId>) -> Reply<impl IntoResponse> {
+async fn undo(
+    State(host): State<Arc<Host>>,
+    Path(id): Path<SessionId>,
+) -> Reply<impl IntoResponse> {
     let undone = host.undo(&id).map_err(|error| match error {
         ThreadError::Busy => Failure(StatusCode::CONFLICT, error.to_string()),
         ThreadError::Other(_) => Failure(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()),
@@ -253,7 +282,11 @@ async fn archive(
 }
 
 /// Puts the thread in plan mode, or takes it out, as the body says.
-async fn plan(State(host): State<Arc<Host>>, Path(id): Path<SessionId>, Json(on): Json<bool>) -> StatusCode {
+async fn plan(
+    State(host): State<Arc<Host>>,
+    Path(id): Path<SessionId>,
+    Json(on): Json<bool>,
+) -> StatusCode {
     host.set_plan(&id, on);
     StatusCode::NO_CONTENT
 }
@@ -289,6 +322,20 @@ async fn answer(
 
 async fn tools(State(host): State<Arc<Host>>, Path(id): Path<SessionId>) -> impl IntoResponse {
     Json(host.tools(&id))
+}
+
+async fn subagents(State(host): State<Arc<Host>>, Path(id): Path<SessionId>) -> impl IntoResponse {
+    Json(host.subagents(&id))
+}
+
+async fn subagent(
+    State(host): State<Arc<Host>>,
+    Path((id, agent)): Path<(SessionId, String)>,
+) -> Reply<impl IntoResponse> {
+    let snapshot = host
+        .subagent(&id, &AgentId(agent))
+        .ok_or_else(|| Failure(StatusCode::NOT_FOUND, "no such subagent".into()))?;
+    Ok(Json(snapshot))
 }
 
 /// Takes up a call for the client's view of the run named in the body;

@@ -28,7 +28,9 @@ pub struct Judgement {
 pub async fn judge(model: &Model, condition: &str, reply: &str) -> Result<Judgement> {
     let judge = AgentBuilder::new(model.completion()).preamble(PROMPT).build();
     let request = format!("<goal>\n{condition}\n</goal>\n\n<latest_reply>\n{reply}\n</latest_reply>");
-    let answer = judge.prompt(request).await?.output();
+    let answer = crate::retry::model("judging a goal", || async { judge.prompt(request.clone()).await })
+        .await?
+        .output();
     read(&answer)
 }
 

@@ -15,7 +15,7 @@ use super::commands;
 
 use crate::mcp;
 use crate::mention::{self, Item, Reference, SHARED, SKILL, THREAD};
-use crate::protocol::ModelChoice;
+use crate::protocol::{AgentInfo, ModelChoice};
 use crate::sessions::Summary;
 use crate::skills::{Found, Skill};
 
@@ -29,6 +29,8 @@ const MAX_SUGGESTED: usize = 50;
 #[derive(Debug, Default)]
 pub struct HostIndex {
     pub threads: Vec<Summary>,
+    /// The subagents of the conversation the terminal shows.
+    pub agents: Vec<AgentInfo>,
     pub shared: Vec<String>,
     pub skills: Found,
     pub prompts: Vec<mcp::Prompt>,
@@ -203,6 +205,34 @@ pub fn thread_suggestion(summary: &Summary, span: Span) -> Suggestion {
         description: Some(summary.title.clone()),
         span,
         append_whitespace: true,
+        ..Suggestion::default()
+    }
+}
+
+/// The `agents` whose id or label match `query`, best first.
+pub fn agent_matches<'a>(
+    matcher: &SkimMatcherV2,
+    agents: impl IntoIterator<Item = &'a AgentInfo>,
+    query: &str,
+) -> impl Iterator<Item = &'a AgentInfo> {
+    let mut matches: Vec<_> = agents
+        .into_iter()
+        .filter_map(|info| {
+            let named = format!("{} {}", info.agent, info.label);
+            Some((matcher.fuzzy_match(&named, query)?, info))
+        })
+        .collect();
+    matches.sort_by_key(|(score, _)| Reverse(*score));
+    matches.into_iter().map(|(_, info)| info)
+}
+
+/// A subagent in a menu, shown with its label; its value is its id.
+pub fn agent_suggestion(info: &AgentInfo, span: Span) -> Suggestion {
+    let working = if info.working { " (working)" } else { "" };
+    Suggestion {
+        value: info.agent.as_str().to_owned(),
+        description: Some(format!("{}{working}", info.label)),
+        span,
         ..Suggestion::default()
     }
 }

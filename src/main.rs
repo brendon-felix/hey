@@ -21,8 +21,8 @@ mod log;
 mod mcp;
 mod memory;
 mod mention;
-mod notes;
 mod models;
+mod notes;
 mod notify;
 mod permissions;
 mod preamble;
@@ -31,6 +31,7 @@ mod protocol;
 mod render;
 mod repl;
 mod results;
+mod retry;
 mod route;
 mod server;
 mod sessions;
@@ -182,6 +183,13 @@ async fn run(args: Args) -> Result<ExitCode> {
         serve = args.serve,
         "hey started"
     );
+    // Recorded here, while the log is open: it closes as this returns.
+    dispatch(args, config)
+        .await
+        .inspect_err(|error| tracing::error!(error = format!("{error:#}"), "hey failed"))
+}
+
+async fn dispatch(args: Args, config: Config) -> Result<ExitCode> {
     if let Some(login) = args.login {
         match login {
             Login::Copilot => copilot::login().await?,
@@ -221,7 +229,8 @@ async fn run(args: Args) -> Result<ExitCode> {
     if args.print || args.json {
         let prompt = match message {
             Some(prompt) => prompt,
-            None => std::io::read_to_string(std::io::stdin()).context("cannot read the message from stdin")?,
+            None => std::io::read_to_string(std::io::stdin())
+                .context("cannot read the message from stdin")?,
         };
         if prompt.trim().is_empty() {
             anyhow::bail!("--print needs a message, as arguments or on stdin");
@@ -253,8 +262,9 @@ async fn run(args: Args) -> Result<ExitCode> {
         Some(prompt) if !(args.interactive || config.interactive) => Launch::Once(prompt),
         first => Launch::Repl(first),
     };
+    let style = render::Style::from(&config.display);
     let thread = match (args.threads, args.resume) {
-        (true, _) => match browser::threads::browse(&backend, None).await?.open {
+        (true, _) => match browser::threads::browse(&backend, None, &style).await?.open {
             Some(thread) => thread,
             None => return Ok(ExitCode::SUCCESS),
         },
@@ -265,7 +275,6 @@ async fn run(args: Args) -> Result<ExitCode> {
         },
     };
 
-    let style = render::Style::from(&config.display);
     match launch {
         Launch::Once(prompt) => {
             if args.plan {

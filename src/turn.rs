@@ -14,7 +14,8 @@ use crate::backend::{Backend, Events};
 use crate::mention;
 use crate::notify;
 use crate::protocol::{
-    AgentId, ApprovalId, Ask, Attachment, Ending, Event, FollowerId, RunId, RunOptions, RunRequest, Task,
+    AgentId, ApprovalId, Ask, Attachment, Ending, Event, FollowerId, RunId, RunOptions, RunRequest,
+    Task,
 };
 use crate::render::{self, Stream, Style, screen};
 use crate::sessions::SessionId;
@@ -73,7 +74,10 @@ pub fn attachments(prompt: &str) -> Vec<Attachment> {
         .into_iter()
         .filter_map(|item| {
             item.load()
-                .inspect_err(|error| render::notice(&format!("{item} not attached: {error:#}")))
+                .inspect_err(|error| {
+                    tracing::warn!(error = format!("{error:#}"), "{item} not attached");
+                    render::notice(&format!("{item} not attached: {error:#}"))
+                })
                 .ok()
         })
         .collect()
@@ -81,7 +85,12 @@ pub fn attachments(prompt: &str) -> Vec<Attachment> {
 
 /// Starts answering `request` in `thread` and follows the run to its end,
 /// which Ctrl+C brings early.
-pub async fn run(backend: &Backend, thread: &SessionId, request: RunRequest, style: &Style) -> Turn {
+pub async fn run(
+    backend: &Backend,
+    thread: &SessionId,
+    request: RunRequest,
+    style: &Style,
+) -> Turn {
     match start(backend, thread, request, style).await {
         Ok(follow) => follow_to_end(backend, thread, follow).await,
         Err(error) => {
@@ -99,7 +108,12 @@ pub async fn run(backend: &Backend, thread: &SessionId, request: RunRequest, sty
 }
 
 /// Starts answering `request` in `thread`, to follow the run.
-pub async fn start(backend: &Backend, thread: &SessionId, request: RunRequest, style: &Style) -> anyhow::Result<Follow> {
+pub async fn start(
+    backend: &Backend,
+    thread: &SessionId,
+    request: RunRequest,
+    style: &Style,
+) -> anyhow::Result<Follow> {
     let start = backend.start(thread, request);
     tokio::pin!(start);
     // Abandoning a remote start could leave its run going unseen, so Ctrl+C
@@ -145,6 +159,11 @@ pub async fn follow_to_end(backend: &Backend, thread: &SessionId, mut follow: Fo
 /// Tells the host the thread was shown up to its latest answer.
 pub async fn viewed(backend: &Backend, thread: &SessionId) {
     if let Err(error) = backend.viewed(thread).await {
+        tracing::warn!(
+            thread = thread.as_str(),
+            error = format!("{error:#}"),
+            "still marked as new"
+        );
         render::notice(&format!("still marked as new: {error:#}"));
     }
 }
@@ -167,7 +186,9 @@ struct Seen {
 
 impl Seen {
     fn label<'a>(&'a self, agent: &'a AgentId) -> &'a str {
-        self.agents.get(agent).map_or(agent.as_str(), String::as_str)
+        self.agents
+            .get(agent)
+            .map_or(agent.as_str(), String::as_str)
     }
 }
 
@@ -179,7 +200,10 @@ pub enum Step {
     /// Something was drawn, or nothing needed to be.
     Drawn,
     /// The run waits for this terminal, or another, to decide `ask`.
-    Ask { id: ApprovalId, ask: Ask },
+    Ask {
+        id: ApprovalId,
+        ask: Ask,
+    },
     /// The model was handed a message the user sent meanwhile, now shown.
     Steered(String),
     Ended(Outcome),
@@ -249,7 +273,13 @@ impl Follow {
 
     /// Asks `ask` until this client or another decides, so every client
     /// stops asking at once; what arrives meanwhile is drawn after.
-    pub async fn approve(&mut self, backend: &Backend, thread: &SessionId, id: ApprovalId, ask: &Ask) {
+    pub async fn approve(
+        &mut self,
+        backend: &Backend,
+        thread: &SessionId,
+        id: ApprovalId,
+        ask: &Ask,
+    ) {
         self.stream.settle();
         let held = approve(backend, thread, &mut self.events, id, ask, &self.style).await;
         self.held.extend(held);
@@ -299,7 +329,10 @@ impl Follow {
             }
             None => {
                 self.stream.settle();
-                render::error(&"the run's events stopped before it ended; `/history` follows it again");
+                render::error(&format!(
+                    "the run's events stopped before it ended; `/resume {}` follows it again",
+                    thread.as_str()
+                ));
                 return Step::Ended(Outcome::Failed);
             }
         };
@@ -329,7 +362,11 @@ impl Follow {
                 self.seen.plan = Some(on);
                 render::notice(if on { "plan mode" } else { "left plan mode" });
             }
-            Event::Compacted { summary, before, after } => stream.compacted(&summary, Some((before, after))),
+            Event::Compacted {
+                summary,
+                before,
+                after,
+            } => stream.compacted(&summary, Some((before, after))),
             Event::Approval { id, ask } => {
                 stream.settle();
                 notify::notify(&waiting(&ask));
@@ -341,7 +378,10 @@ impl Follow {
                 return Step::Steered(prompt);
             }
             Event::ClientCall { id, call } => {
-                let lent = self.seen.follower.and_then(|follower| backend.lend(thread, follower, id, call));
+                let lent = self
+                    .seen
+                    .follower
+                    .and_then(|follower| backend.lend(thread, follower, id, call));
                 if let Some(call) = lent {
                     self.lent_calls.spawn(call);
                 }
@@ -403,7 +443,9 @@ impl Follow {
 
 /// Whether a run that `began` went on longer than `after`.
 fn long(began: Option<Instant>, after: Option<Duration>) -> bool {
-    began.zip(after).is_some_and(|(began, after)| began.elapsed() > after)
+    began
+        .zip(after)
+        .is_some_and(|(began, after)| began.elapsed() > after)
 }
 
 /// What a notification says of `ask`.
@@ -495,4 +537,3 @@ fn report(event: Event) -> Option<Outcome> {
     }
     None
 }
-

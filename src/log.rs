@@ -51,7 +51,35 @@ pub fn init(config: &config::Log) -> Result<WorkerGuard> {
         .with_span_events(FmtSpan::CLOSE)
         .try_init()
         .map_err(|error| anyhow::anyhow!(error))?;
+    record_panics();
     Ok(guard)
+}
+
+/// Records a panic before the default hook reports it, which the terminal
+/// may lose behind the conversation.
+fn record_panics() {
+    let report = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        let backtrace = std::backtrace::Backtrace::force_capture();
+        tracing::error!(%info, %backtrace, "panicked");
+        report(info);
+    }));
+}
+
+/// `error` and its sources, each told once: many errors repeat their
+/// source's message in their own.
+pub fn chain(error: &(dyn std::error::Error + 'static)) -> String {
+    let mut told = error.to_string();
+    let mut source = error.source();
+    while let Some(cause) = source {
+        let message = cause.to_string();
+        if !told.contains(&message) {
+            told.push_str(": ");
+            told.push_str(&message);
+        }
+        source = cause.source();
+    }
+    told
 }
 
 /// Whether agents record what is said, not only what happens.

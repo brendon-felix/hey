@@ -17,8 +17,8 @@ use tokio::sync::{Notify, oneshot, watch};
 use super::record::Record;
 use crate::compaction;
 use crate::protocol::{
-    AgentId, ApprovalId, Ask, Call, CallId, CallResult, Decision, Event, FollowerId, RunId,
-    Running,
+    AgentId, ApprovalId, Ask, Call, CallId, CallResult, Decision, Event, FollowerId, Logged,
+    RunId, Running,
 };
 use crate::steer::{self, Steering, Waiting};
 
@@ -288,10 +288,14 @@ impl Run {
         self.stop.notified().await;
     }
 
-    /// The events so far, then each as it happens, until the run ends. A
-    /// client on `machine` that runs tool calls follows the run for as long
-    /// as it holds the stream.
-    pub fn events(self: &Arc<Self>, machine: Option<String>) -> impl Stream<Item = Event> + Send + 'static {
+    /// The events after the first `after`, then each as it happens, until
+    /// the run ends. A client on `machine` that runs tool calls follows the
+    /// run for as long as it holds the stream.
+    pub fn events(
+        self: &Arc<Self>,
+        machine: Option<String>,
+        after: usize,
+    ) -> impl Stream<Item = Logged> + Send + use<> {
         let following = machine.map(|machine| {
             let id = FollowerId(self.next_id.fetch_add(1, Ordering::Relaxed));
             lock(&self.calls).followers.insert(id, machine);
@@ -303,28 +307,31 @@ impl Run {
         let (run, started) = (self.id, self.started);
         let follower = following.as_ref().map(|following| following.id);
         let began = stream::once(async move {
-            Event::Began {
-                run,
-                elapsed: started.elapsed(),
-                follower,
+            Logged {
+                at: Some(after),
+                event: Event::Began {
+                    run,
+                    elapsed: started.elapsed(),
+                    follower,
+                },
             }
         });
         let log = self.log.subscribe();
         // The stream holds `following`, so the client stops following the
         // run when it lets the stream go or the run ends.
-        let logged = stream::unfold(Some((log, 0, following)), |state| async move {
+        let logged = stream::unfold(Some((log, after, following)), |state| async move {
             let (mut log, mut read, following) = state?;
             loop {
                 let (batch, len) = {
                     let events = log.borrow_and_update();
                     (
-                        undecided(events.get(read..).unwrap_or_default()),
+                        undecided(events.get(read..).unwrap_or_default(), read),
                         events.len(),
                     )
                 };
                 read = len;
                 if !batch.is_empty() {
-                    let ended = matches!(batch.last(), Some(Event::End { .. }));
+                    let ended = matches!(batch.last(), Some(Logged { event: Event::End { .. }, .. }));
                     return Some((batch, (!ended).then_some((log, read, following))));
                 }
                 log.changed().await.ok()?;
@@ -393,9 +400,10 @@ fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
-/// `events` without the approvals they also show decided and the calls
-/// they show claimed, so a client that joins late is not asked about them.
-fn undecided(events: &[Event]) -> Vec<Event> {
+/// `events`, the log's from its `from`th on, without the approvals they
+/// also show decided and the calls they show claimed, so a client that
+/// joins late is not asked about them.
+fn undecided(events: &[Event], from: usize) -> Vec<Logged> {
     let decided = |id: &ApprovalId| {
         events
             .iter()
@@ -408,12 +416,16 @@ fn undecided(events: &[Event]) -> Vec<Event> {
     };
     events
         .iter()
-        .filter(|event| match event {
+        .zip(from + 1..)
+        .filter(|(event, _)| match event {
             Event::Approval { id, .. } => !decided(id),
             Event::ClientCall { id, .. } => !claimed(id),
             _ => true,
         })
-        .cloned()
+        .map(|(event, at)| Logged {
+            at: Some(at),
+            event: event.clone(),
+        })
         .collect()
 }
 
@@ -531,7 +543,7 @@ mod tests {
     #[tokio::test]
     async fn late_clients_replay_the_run_without_decided_approvals() {
         let run = std::sync::Arc::new(Run::new("hi".into(), "test/model".into(), 0, || {}));
-        let mut early = Box::pin(run.events(None));
+        let mut early = Box::pin(events(&run, None));
         run.emit(Event::Text { text: "a".into() });
         let asking = tokio::spawn({
             let run = run.clone();
@@ -550,7 +562,7 @@ mod tests {
         }
         assert_eq!(names(&asked), ["began", "a", "ask shell"]);
         assert!(matches!(asked[0], Event::Began { run: id, .. } if id == run.id()));
-        let joined: Vec<Event> = run.events(None).take(3).collect().await;
+        let joined: Vec<Event> = events(&run, None).take(3).collect().await;
         assert_eq!(
             names(&joined),
             ["began", "a", "ask shell"],
@@ -570,15 +582,53 @@ mod tests {
 
         let rest: Vec<Event> = early.collect().await;
         assert_eq!(names(&rest), ["decided", "end"]);
-        let late: Vec<Event> = run.events(None).collect().await;
+        let late: Vec<Event> = events(&run, None).collect().await;
         assert_eq!(names(&late), ["began", "a", "decided", "end"]);
+    }
+
+    #[tokio::test]
+    async fn a_client_follows_again_from_the_last_event_it_got() {
+        let run = Arc::new(Run::new("hi".into(), "test/model".into(), 0, || {}));
+        let ask = |id: u64| Event::Approval {
+            id: ApprovalId(id),
+            ask: Ask::Tool {
+                name: format!("tool {id}"),
+                agent: None,
+                machine: None,
+            },
+        };
+        for event in [Event::Text { text: "a".into() }, ask(0), Event::Decided { id: ApprovalId(0) }, ask(1)] {
+            run.emit(event);
+        }
+        let positions = |logged: Vec<Logged>| -> Vec<(String, Option<usize>)> {
+            logged
+                .into_iter()
+                .map(|logged| (names(std::slice::from_ref(&logged.event)).remove(0), logged.at))
+                .collect()
+        };
+        let first = positions(run.events(None, 0).take(4).collect().await);
+        let expected = [("began", 0), ("a", 1), ("decided", 3), ("ask tool 1", 4)];
+        assert_eq!(
+            first,
+            expected.map(|(name, at)| (name.to_owned(), Some(at))),
+            "positions count the events left out"
+        );
+
+        run.emit(Event::Text { text: "b".into() });
+        run.emit(Event::End {
+            ending: Ending::Answered,
+            saved: 2,
+        });
+        let again = positions(run.events(None, 3).collect().await);
+        let expected = [("began", 3), ("ask tool 1", 4), ("b", 5), ("end", 6)];
+        assert_eq!(again, expected.map(|(name, at)| (name.to_owned(), Some(at))));
     }
 
     #[tokio::test]
     async fn every_client_times_the_run_from_when_it_began() {
         let run = std::sync::Arc::new(Run::new("hi".into(), "test/model".into(), 0, || {}));
         std::thread::sleep(std::time::Duration::from_millis(20));
-        let joined = Box::pin(run.events(None)).next().await;
+        let joined = Box::pin(events(&run, None)).next().await;
         assert!(
             matches!(joined, Some(Event::Began { elapsed, .. }) if elapsed.as_millis() >= 20),
             "{joined:?}"
@@ -616,9 +666,14 @@ mod tests {
         }
     }
 
+    /// The events of `run` from its start, without their positions.
+    fn events(run: &Arc<Run>, machine: Option<String>) -> impl Stream<Item = Event> + use<> {
+        run.events(machine, 0).map(|logged| logged.event)
+    }
+
     /// Follows `run` from `machine`, returning the stream and its follower.
     async fn follow(run: &Arc<Run>, machine: &str) -> (impl Stream<Item = Event> + Unpin, FollowerId) {
-        let mut events = Box::pin(run.events(Some(machine.into())));
+        let mut events = Box::pin(events(run, Some(machine.into())));
         match events.next().await {
             Some(Event::Began { follower: Some(follower), .. }) => (events, follower),
             other => panic!("{other:?}"),
@@ -660,7 +715,7 @@ mod tests {
         assert!(!run.claim(id, desk), "a terminal on another machine cannot take it");
         assert!(run.claim(id, follower));
         assert!(!run.claim(id, follower), "taken only once");
-        let joined: Vec<Event> = run.events(None).take(2).collect().await;
+        let joined: Vec<Event> = events(&run, None).take(2).collect().await;
         assert_eq!(names(&joined), ["began", "claimed"], "a late terminal is not offered it");
         assert!(run.finish(id, Ok(Vec::new())));
         assert_eq!(called.await.unwrap(), Ok(Vec::new()));
