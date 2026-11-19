@@ -17,7 +17,7 @@ use futures::stream::BoxStream;
 use futures::{FutureExt, Stream, StreamExt, stream};
 use rig_agent::agent::{Agent, StreamingResult};
 use rig_core::completion::GenerationOptions;
-use rig_core::message::Message;
+use rig_core::message::{Message, UserContent};
 use rig_memory::CompactReason;
 use rig_tools::{Live, Seen};
 use tokio::sync::watch;
@@ -27,6 +27,8 @@ use crate::agent::{self, Model};
 use crate::compaction::{self, Applied, Compactor};
 use crate::config::{self, Config, Providers, Thinking};
 use crate::gate;
+use crate::goal;
+use crate::hooks::{HookEvent, Hooks, MAX_STOP_BLOCKS, Scope, ToolHooks};
 use crate::memory::{self, Memory, Recalled};
 use crate::models;
 use crate::permissions::{Origin, Permissions};
@@ -44,6 +46,7 @@ use crate::skills::{self, Found};
 use crate::steer::{self, Delivery, Steer};
 use crate::subagents::{self, Crew, Spawn};
 use crate::toolbox::{Toolbox, machine_name};
+use crate::transcript;
 
 pub use run::Run;
 
@@ -77,6 +80,8 @@ pub struct Host {
     /// The last time memory failed, until a client is told.
     memory_failure: Mutex<Option<String>>,
     compaction: config::Compaction,
+    goal: config::Goal,
+    hooks: Arc<Hooks>,
     permissions: Permissions,
     /// Runs subagents here, when the config offers them.
     crew: Option<Arc<Crew>>,
@@ -190,6 +195,8 @@ impl Host {
             memory: Memory::open(&config.memory, &config.providers)?,
             memory_failure: Mutex::default(),
             compaction: config.compaction.clone(),
+            goal: config.goal.clone(),
+            hooks: Arc::new(Hooks::new(&config.hooks)?),
             permissions,
             crew,
             subagent_model: config.subagents.model.clone(),
@@ -384,7 +391,7 @@ impl Host {
             Task::Answer => {
                 let history = basis.messages.len();
                 let live = compaction::Live::new(
-                    compactor,
+                    compactor.hooked(self.scope(&id)),
                     run.clone(),
                     history,
                     basis.from,
@@ -404,6 +411,7 @@ impl Host {
             }
             Task::Compact => {
                 run.close_compactions();
+                let compactor = compactor.hooked(self.scope(&id));
                 self.clone()
                     .drive_compaction(id, run.clone(), compactor, request.prompt)
                     .boxed()
@@ -582,12 +590,14 @@ impl Host {
             run: run.clone(),
         };
         let (tools, routes) = kit.tools(&thread.seen, Some(live), None);
+        let hooks = ToolHooks::new(self.scope(id), run.clone());
         let builder = agent::builder(
             model,
             tools,
             routes,
             thread.permissions.clone(),
             run.clone(),
+            Some(hooks),
         )
         .name("hey")
         .preamble(system_prompt)
@@ -636,6 +646,15 @@ impl Host {
                 .clone()
                 .unwrap_or_else(|| request.options.model.clone()),
             thinking: request.options.thinking,
+            hooks: Some(self.scope(id)),
+        }
+    }
+
+    /// The config's hooks, run for thread `id`.
+    fn scope(&self, id: &SessionId) -> Scope {
+        Scope {
+            hooks: self.hooks.clone(),
+            conversation: id.as_str().to_owned(),
         }
     }
 
@@ -844,11 +863,34 @@ impl Host {
             prompt,
             attachments,
             options,
+            goal,
             ..
         } = request;
+        let scope = self.scope(id);
+        let mut added = Vec::new();
+        if run.history() == 0 && scope.has(HookEvent::SessionStart) {
+            let verdict = scope.fire(HookEvent::SessionStart, None, serde_json::json!({})).await;
+            verdict.tell(run);
+            added.extend(verdict.context());
+        }
+        if scope.has(HookEvent::UserPromptSubmit) {
+            let fields = serde_json::json!({ "prompt": prompt });
+            let verdict = scope.fire(HookEvent::UserPromptSubmit, None, fields).await;
+            verdict.tell(run);
+            if let Some(reason) = verdict.block {
+                return Ending::Failed {
+                    error: format!("a hook blocked the message: {reason}"),
+                };
+            }
+            added.extend(verdict.context());
+        }
         let mut message = self
             .message(&prompt, &attachments, skills, model, run)
             .await;
+        if let Message::User { content } = &mut message {
+            content.extend(added.into_iter().map(UserContent::text));
+        }
+        let (mut stops, mut rounds) = (0, 0);
         loop {
             let ending = self
                 .respond(id, run, agent, message, options.thinking)
@@ -857,15 +899,107 @@ impl Host {
                 Ending::Answered => run.last_steers(),
                 Ending::Interrupted | Ending::Failed { .. } => Vec::new(),
             };
-            if waiting.is_empty() {
+            if !waiting.is_empty() {
+                for steering in &waiting {
+                    run.emit(Event::Steered {
+                        prompt: steering.prompt.clone(),
+                    });
+                }
+                message = steer::message(waiting);
+                continue;
+            }
+            if !matches!(ending, Ending::Answered) {
                 return ending;
             }
-            for steering in &waiting {
-                run.emit(Event::Steered {
-                    prompt: steering.prompt.clone(),
+            let reply = self
+                .sessions
+                .messages(id)
+                .ok()
+                .and_then(|messages| transcript::last_reply(&messages))
+                .unwrap_or_default();
+            let resumed = match self.stop_hooks(&scope, run, &reply, &mut stops).await {
+                Some(reason) => Some(reason),
+                None => {
+                    self.pursue(run, model, goal.as_deref(), &reply, &mut rounds)
+                        .await
+                }
+            };
+            let Some(resumed) = resumed else {
+                return ending;
+            };
+            // Taken again, as the run takes more messages while it goes on.
+            run.reopen_steers();
+            message = Message::user(resumed);
+        }
+    }
+
+    /// Why a `Stop` hook sends the agent back to work after `reply`, at most
+    /// [`MAX_STOP_BLOCKS`] times in a row.
+    async fn stop_hooks(&self, scope: &Scope, run: &Run, reply: &str, stops: &mut usize) -> Option<String> {
+        if !scope.has(HookEvent::Stop) {
+            return None;
+        }
+        let fields = serde_json::json!({ "last_reply": reply, "stop_hook_active": *stops > 0 });
+        let verdict = scope.fire(HookEvent::Stop, None, fields).await;
+        verdict.tell(run);
+        let reason = verdict.block?;
+        if *stops >= MAX_STOP_BLOCKS {
+            run.emit(Event::Notice {
+                text: format!("a Stop hook blocked {MAX_STOP_BLOCKS} times in a row; stopping anyway"),
+            });
+            return None;
+        }
+        *stops += 1;
+        run.emit(Event::Notice {
+            text: format!("a Stop hook sent the agent back to work: {reason}"),
+        });
+        Some(reason)
+    }
+
+    /// What the agent is told to go on with when `reply` does not meet
+    /// `goal`, as the judge decides, for at most `[goal] max_rounds`.
+    async fn pursue(&self, run: &Run, model: &Model, goal: Option<&str>, reply: &str, rounds: &mut usize) -> Option<String> {
+        let goal = goal?;
+        let reference = self.goal.model.as_ref().or(self.compaction.model.as_ref());
+        let judge = match reference.map(|reference| Model::connect(reference, &self.providers)).transpose() {
+            Ok(judge) => judge,
+            Err(error) => {
+                run.emit(Event::Notice {
+                    text: format!("goal not judged: {error:#}"),
                 });
+                return None;
             }
-            message = steer::message(waiting);
+        };
+        run.emit(Event::Notice {
+            text: "judging the goal…".into(),
+        });
+        let judged = until_stopped(run, goal::judge(judge.as_ref().unwrap_or(model), goal, reply)).await?;
+        match judged {
+            Ok(judged) if judged.met => {
+                run.emit(Event::Notice {
+                    text: format!("goal met: {}", judged.reason).trim_end_matches([' ', ':']).to_owned(),
+                });
+                None
+            }
+            Ok(_) if *rounds >= self.goal.max_rounds => {
+                run.emit(Event::Notice {
+                    text: format!("goal not met after {} rounds; stopping", self.goal.max_rounds),
+                });
+                None
+            }
+            Ok(judged) => {
+                *rounds += 1;
+                run.emit(Event::Notice {
+                    text: format!("goal not met ({}/{}): {}", rounds, self.goal.max_rounds, judged.reason),
+                });
+                Some(goal::prompt(goal, &judged.reason))
+            }
+            Err(error) => {
+                run.emit(Event::Notice {
+                    text: format!("goal not judged: {error:#}"),
+                });
+                None
+            }
         }
     }
 

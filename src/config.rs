@@ -33,6 +33,9 @@ pub struct Config {
     pub shared: Shared,
     pub memory: Memory,
     pub compaction: Compaction,
+    pub goal: Goal,
+    /// Commands run at points of a conversation, by event.
+    pub hooks: crate::hooks::Config,
     pub tools: Tools,
     pub subagents: Subagents,
     /// Where a remote host's agents may work on each machine, by its name.
@@ -64,6 +67,8 @@ impl Default for Config {
             shared: Shared::default(),
             memory: Memory::default(),
             compaction: Compaction::default(),
+            goal: Goal::default(),
+            hooks: BTreeMap::new(),
             tools: Tools::default(),
             subagents: Subagents::default(),
             machines: BTreeMap::new(),
@@ -449,6 +454,26 @@ impl Default for Compaction {
     }
 }
 
+/// How `/goal` judges whether its condition is met.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct Goal {
+    /// The model that judges; else `compaction.model`, else the
+    /// conversation's.
+    pub model: Option<String>,
+    /// Most times one message is answered again for a goal not yet met.
+    pub max_rounds: usize,
+}
+
+impl Default for Goal {
+    fn default() -> Self {
+        Self {
+            model: None,
+            max_rounds: 10,
+        }
+    }
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Tools {
@@ -825,6 +850,9 @@ mod tests {
             built_in.compaction.threshold
         );
         assert_eq!(documented.compaction.model, built_in.compaction.model);
+        assert_eq!(documented.goal.model, built_in.goal.model);
+        assert_eq!(documented.goal.max_rounds, built_in.goal.max_rounds);
+        assert!(documented.hooks.is_empty());
         assert_eq!(documented.tools.allow_all, built_in.tools.allow_all);
         assert_eq!(documented.tools.default, built_in.tools.default);
         assert_eq!(documented.tools.permissions, built_in.tools.permissions);

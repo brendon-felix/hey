@@ -11,6 +11,8 @@ mod compaction;
 mod config;
 mod copilot;
 mod gate;
+mod goal;
+mod hooks;
 mod host;
 mod log;
 mod mcp;

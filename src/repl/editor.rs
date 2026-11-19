@@ -51,6 +51,8 @@ pub struct Status {
     pub thinking: Option<Thinking>,
     pub context: Option<u64>,
     pub window: Option<u32>,
+    /// The condition `/goal` set.
+    pub goal: Option<String>,
 }
 
 impl Status {
@@ -68,7 +70,8 @@ impl Status {
             ),
             None => render::tokens(used),
         });
-        self.after_remote(std::iter::once(model).chain(context))
+        let goal = self.goal.as_ref().map(|_| "goal".to_owned());
+        self.after_remote(std::iter::once(model).chain(context).chain(goal))
     }
 
     fn full(&self) -> String {
@@ -86,7 +89,8 @@ impl Status {
         self.after_remote(
             std::iter::once(self.model.clone())
                 .chain(thinking)
-                .chain(context),
+                .chain(context)
+                .chain(self.goal.as_ref().map(|goal| format!("goal: {goal}"))),
         )
     }
 
@@ -568,7 +572,7 @@ impl Choices {
                     .map(|summary| host::thread_suggestion(summary, span))
                     .collect();
             }
-            Some(Arg::Focus) | None => return Vec::new(),
+            Some(Arg::Focus | Arg::Condition) | None => return Vec::new(),
         };
         values
             .iter()

@@ -14,6 +14,8 @@ pub enum Command {
     /// Compact the conversation, with what its summary should keep above
     /// all.
     Compact(Option<String>),
+    /// Work toward a condition, judged after each answer; none clears it.
+    Goal(Option<String>),
     Model(Option<String>),
     Think(Option<String>),
     Theme(Option<String>),
@@ -40,6 +42,7 @@ pub enum Arg {
     Thread,
     /// Free text, which completes to nothing.
     Focus,
+    Condition,
 }
 
 impl Arg {
@@ -50,6 +53,7 @@ impl Arg {
             Arg::Theme => "theme",
             Arg::Thread => "thread",
             Arg::Focus => "focus",
+            Arg::Condition => "condition",
         }
     }
 }
@@ -134,6 +138,13 @@ pub const COMMANDS: &[Spec] = &[
         arg: Some(Arg::Focus),
         about: "Replace older messages with a summary, keeping what focus names",
         build: Command::Compact,
+    },
+    Spec {
+        name: "goal",
+        aliases: &[],
+        arg: Some(Arg::Condition),
+        about: "Keep working until condition is met; without one, clear it",
+        build: Command::Goal,
     },
     Spec {
         name: "model",
@@ -259,6 +270,11 @@ mod tests {
         assert_eq!(parse("/nope"), Input::Invalid("unknown command /nope".into()));
         assert_eq!(parse(" /deploy to staging"), Input::Message("/deploy to staging".into()));
         assert_eq!(parse("/new"), Input::Command(Command::New), "commands win");
+        assert_eq!(
+            parse("/goal  all tests pass "),
+            Input::Command(Command::Goal(Some("all tests pass".into())))
+        );
+        assert_eq!(parse("/goal"), Input::Command(Command::Goal(None)));
         assert_eq!(
             parse("/compact the parser work"),
             Input::Command(Command::Compact(Some("the parser work".into())))

@@ -26,6 +26,9 @@ of `hey` is on ease of use, speed, and a pleasant terminal experience.
   recalled when a conversation starts
 - Compaction: a long conversation's older messages are replaced by a summary, on its own past a
   token threshold, or when you `/compact` or the agent asks
+- Hooks: your commands run at points of a conversation, to block a tool call or add to what
+  the model reads
+- Goals: `/goal` keeps the agent working until a cheap model judges a condition met
 - Remote hosting: run the agent and keep conversations on a server, and pick them up from any
   machine, even while an answer is in progress
 - Syntax highlighting via [syntect](https://github.com/trishume/syntect), with bat's themes
@@ -83,6 +86,7 @@ Type `/` or press Tab to see commands and skills; the status line describes the 
 | `/copy` | Copy the latest reply as Markdown |
 | `/copy-all` | Copy this conversation as Markdown |
 | `/compact [focus]` | Replace older messages with a summary, keeping above all what `focus` names |
+| `/goal [condition]` | Keep working until `condition` is met; without one, clear it |
 | `/model [vendor/model]`, `/m` | Switch model; without one, pick from the models the host can use |
 | `/think [level]` | Set thinking: `off`, `minimal`…`max`, or `default` |
 | `/theme [theme]`, `/t` | Switch theme; without one, pick with a live preview |
@@ -230,6 +234,53 @@ conversation keeps its title.
 threshold = 150000                 # compact later
 model = "openai/gpt-5.4-mini"      # a cheaper model to write summaries
 # auto = false                     # only /compact and the agent's tool compact
+```
+
+### Goals
+
+`/goal all tests pass` sets a condition each answer works toward, from the next message sent on.
+After an answer, a model reads its latest reply and judges whether the condition is met; if not,
+the agent is sent back to work with the judge's reason, up to `max_rounds` times for one message.
+The judge is `[goal] model`, else `[compaction] model`, else the conversation's. The status at the
+right of the prompt shows `goal` while one is set, and `/goal` alone clears it.
+
+```toml
+[goal]
+model = "openai/gpt-5.4-mini"
+max_rounds = 10
+```
+
+### Hooks
+
+Hooks are commands the config runs at points of a conversation, on the machine the agent runs on
+(with a remote, the host). Each runs with `sh -c`, given what happened as JSON on stdin: the
+`event`, `conversation_id` and `cwd`, and what the event concerns, such as `tool_name`,
+`tool_input` and `tool_response`, `prompt` or `last_reply`.
+
+| Event | Runs | Blocking it |
+| --- | --- | --- |
+| `SessionStart` | Before a conversation's first answer | — |
+| `UserPromptSubmit` | Before a message is answered | Fails the answer with the reason |
+| `PreToolUse` | Before a tool call, before it is asked about | Denies the call, telling the model why |
+| `PostToolUse` | After a tool call | Adds the reason to the result |
+| `Stop` | Once an answer ends | Sends the agent back to work with the reason, at most 8 times in a row |
+| `PreCompact` | Before a summary is written | Leaves the conversation as it is |
+| `SubagentStop` | Once a subagent replies | Sends the subagent back to work with the reason |
+
+A hook blocks by exiting with 2, its stderr the reason, or by exiting with 0 and printing
+`{"decision": "block", "reason": "..."}`. Printing `{"additional_context": "..."}` adds text for the
+model: to a `SessionStart` or `UserPromptSubmit` message, or to a `PostToolUse` result. Any other
+exit is a failure, shown as a notice, which blocks nothing. `matcher`, a regex matching the whole
+tool name, limits `PreToolUse` and `PostToolUse` hooks to some tools; `timeout_secs` (60) bounds
+each run. Subagents' tool calls run the same hooks.
+
+```toml
+[[hooks.PreToolUse]]
+matcher = "shell"
+command = "jq -e '.tool_input.command | test(\"rm -rf\") | not' >/dev/null || { echo 'no rm -rf' >&2; exit 2; }"
+
+[[hooks.Stop]]
+command = "cargo test -q >/dev/null 2>&1 || echo '{\"decision\": \"block\", \"reason\": \"the tests fail\"}'"
 ```
 
 ## Configuration

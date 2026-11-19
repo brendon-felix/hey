@@ -292,6 +292,9 @@ pub struct RunRequest {
     pub client: Option<ClientInfo>,
     #[serde(default)]
     pub task: Task,
+    /// The condition `/goal` set, which the answer is judged against.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub goal: Option<String>,
 }
 
 /// What a run does with its prompt.

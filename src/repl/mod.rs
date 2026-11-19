@@ -79,6 +79,8 @@ struct Session {
     asking: Option<(ApprovalId, Ask)>,
     /// Messages that were not sent, for the editor to take back.
     returned: Vec<String>,
+    /// The condition `/goal` set, which each answer works toward.
+    goal: Option<String>,
 }
 
 struct Current {
@@ -172,6 +174,7 @@ impl Repl {
             outbox,
             asking: None,
             returned: Vec::new(),
+            goal: None,
         };
         session.show_status(None);
         Self { session, editor }
@@ -360,7 +363,8 @@ impl Session {
 
     /// Starts answering `prompt`, to follow while the next is typed.
     async fn send(&mut self, prompt: String) {
-        let request = turn::request(prompt, self.options.clone());
+        let mut request = turn::request(prompt, self.options.clone());
+        request.goal = self.goal.clone();
         match turn::start(&self.backend, &self.thread, request, &self.style).await {
             Ok(follow) => self.follow(follow),
             Err(error) => {
@@ -615,6 +619,7 @@ impl Session {
             Command::History => self.show_thread(true).await,
             Command::Copy(scope) => self.copy(scope).await?,
             Command::Compact(focus) => self.compact(focus.unwrap_or_default()).await?,
+            Command::Goal(condition) => self.set_goal(condition),
             Command::Model(reference) => self.switch_model(reference).await?,
             Command::Think(level) => self.set_thinking(level)?,
             Command::Theme(theme) => self.switch_theme(theme, editor)?,
@@ -747,6 +752,19 @@ impl Session {
             false => render::notice("not now: the answer is ending, or compacting already"),
         }
         Ok(())
+    }
+
+    /// Sets the condition each answer works toward, or clears it. Takes
+    /// effect from the next message sent.
+    fn set_goal(&mut self, condition: Option<String>) {
+        match &condition {
+            Some(condition) => println!("{} {}", "Goal:".bold(), palette().name.paint(condition)),
+            None if self.goal.is_some() => println!("{}", "Goal cleared.".bold()),
+            None => println!("{}", "No goal set; /goal <condition> sets one.".bold()),
+        }
+        println!();
+        self.status.lock().unwrap_or_else(PoisonError::into_inner).goal = condition.clone();
+        self.goal = condition;
     }
 
     async fn switch_model(&mut self, reference: Option<String>) -> Result<()> {
@@ -945,6 +963,7 @@ impl Session {
             thinking: self.options.thinking,
             context,
             window: self.window,
+            goal: self.goal.clone(),
         };
     }
 }

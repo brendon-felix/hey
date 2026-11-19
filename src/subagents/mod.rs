@@ -20,6 +20,7 @@ use rig_tools::Seen;
 use crate::agent::{self, Model};
 use crate::config::{Config, Providers, Thinking};
 use crate::gate;
+use crate::hooks::{Scope, ToolHooks};
 use crate::permissions::{Permissions, Reporter};
 use crate::protocol::AgentId;
 use crate::results::ResultLimit;
@@ -64,6 +65,8 @@ pub struct Turn<'a> {
     pub message: &'a str,
     pub model: &'a str,
     pub thinking: Option<Thinking>,
+    /// The conversation's hooks, which the subagent's tool calls run too.
+    pub hooks: Option<&'a Scope>,
 }
 
 impl Crew {
@@ -116,9 +119,10 @@ impl Crew {
             label: turn.label.to_owned(),
         };
         let (tools, routes) = kit.tools(&team.seen(turn.agent), None, Some(tag));
+        let hooks = turn.hooks.map(|scope| ToolHooks::new(scope.clone(), kit.run.clone()));
         let cwd = agent::working_directory();
         let client = kit.lent.as_ref().map(|lent| lent.machine.as_str());
-        let builder = agent::builder(model, tools, routes, team.permissions.clone(), Arc::new(reporter))
+        let builder = agent::builder(model, tools, routes, team.permissions.clone(), Arc::new(reporter), hooks)
             .name("hey subagent")
             .preamble(PROMPT)
             .append_preamble(&environment(&cwd, &kit.host, client));

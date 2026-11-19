@@ -46,6 +46,7 @@ pub fn request(prompt: String, options: RunOptions) -> RunRequest {
         options,
         client: None,
         task: Task::Answer,
+        goal: None,
     }
 }
 
@@ -58,6 +59,7 @@ pub fn compaction(focus: String, options: RunOptions) -> RunRequest {
         options,
         client: None,
         task: Task::Compact,
+        goal: None,
     }
 }
 
