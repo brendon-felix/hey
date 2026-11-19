@@ -3,6 +3,7 @@
 /* -------------------------------------------------------------------------- */
 
 use std::collections::{HashMap, VecDeque};
+use std::time::{Duration, Instant};
 
 use crossterm::cursor;
 use futures::StreamExt;
@@ -11,6 +12,7 @@ use tokio::time::{Interval, MissedTickBehavior};
 
 use crate::backend::{Backend, Events};
 use crate::mention;
+use crate::notify;
 use crate::protocol::{
     AgentId, ApprovalId, Ask, Attachment, Ending, Event, FollowerId, RunId, RunOptions, RunRequest, Task,
 };
@@ -197,6 +199,9 @@ pub struct Follow {
     /// Asked to stop: the rest is waited for, not drawn.
     stopping: bool,
     style: Style,
+    /// When the run began, as the host's clock had it, once it said.
+    began: Option<Instant>,
+    notify_after: Option<Duration>,
 }
 
 impl Follow {
@@ -212,6 +217,8 @@ impl Follow {
             lent_calls: JoinSet::new(),
             stopping: false,
             style: style.clone(),
+            began: None,
+            notify_after: style.notify_after,
         }
     }
 
@@ -305,6 +312,7 @@ impl Follow {
             } => {
                 self.seen.run = Some(run);
                 self.seen.follower = follower;
+                self.began = Instant::now().checked_sub(elapsed);
                 stream.began(elapsed);
             }
             Event::Text { text } => stream.text(text),
@@ -324,6 +332,7 @@ impl Follow {
             Event::Compacted { summary, before, after } => stream.compacted(&summary, Some((before, after))),
             Event::Approval { id, ask } => {
                 stream.settle();
+                notify::notify(&waiting(&ask));
                 return Step::Ask { id, ask };
             }
             Event::Steered { prompt } => {
@@ -364,6 +373,12 @@ impl Follow {
                     self.seen.saved = Some(*saved);
                 }
                 if let Some(outcome) = report(event) {
+                    if outcome != Outcome::Interrupted && long(self.began, self.notify_after) {
+                        notify::notify(match outcome {
+                            Outcome::Failed => "the answer failed",
+                            _ => "answered",
+                        });
+                    }
                     return Step::Ended(outcome);
                 }
             }
@@ -383,6 +398,21 @@ impl Follow {
             Some(Err(_)) | None => return Step::Ended(Outcome::Interrupted),
         }
         Step::Drawn
+    }
+}
+
+/// Whether a run that `began` went on longer than `after`.
+fn long(began: Option<Instant>, after: Option<Duration>) -> bool {
+    began.zip(after).is_some_and(|(began, after)| began.elapsed() > after)
+}
+
+/// What a notification says of `ask`.
+fn waiting(ask: &Ask) -> String {
+    match ask {
+        Ask::Tool { name, .. } => format!("`{name}` waits for approval"),
+        Ask::Directory { path, .. } => format!("waits to use {path}"),
+        Ask::Question { .. } => "has a question for you".into(),
+        Ask::Plan { .. } => "has a plan for you to approve".into(),
     }
 }
 

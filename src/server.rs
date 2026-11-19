@@ -39,6 +39,7 @@ pub async fn serve(host: Arc<Host>, config: &config::Server) -> Result<()> {
         .route("/v1/shared", get(shared))
         .route("/v1/skills", get(skills))
         .route("/v1/agents", get(agents))
+        .route("/v1/prompts", get(prompts))
         .route("/v1/threads/{id}", get(open).delete(delete))
         .route("/v1/threads/{id}/run", post(start).delete(stop))
         .route("/v1/threads/{id}/steer", post(steer))
@@ -151,6 +152,10 @@ async fn skills(State(host): State<Arc<Host>>) -> impl IntoResponse {
 
 async fn agents(State(host): State<Arc<Host>>) -> impl IntoResponse {
     Json(host.agents())
+}
+
+async fn prompts(State(host): State<Arc<Host>>) -> impl IntoResponse {
+    Json(host.prompts())
 }
 
 /// The machine a client that runs tool calls for the host names.

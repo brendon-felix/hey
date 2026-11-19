@@ -561,7 +561,18 @@ impl Choices {
                         ..host::skill_suggestion(skill, indices, span)
                     }
                 });
-            return commands.chain(skills).collect();
+            let prompts = index
+                .prompts
+                .iter()
+                .filter(|prompt| prompt.command().starts_with(typed) || format!("{}:{}", prompt.server, prompt.name).starts_with(typed))
+                .map(|prompt| Suggestion {
+                    value: format!("/{}", prompt.command()),
+                    description: prompt.description.clone(),
+                    span,
+                    append_whitespace: true,
+                    ..Suggestion::default()
+                });
+            return commands.chain(skills).chain(prompts).collect();
         };
         let start = before.len() - arg.len();
         let span = Span::new(start, before.len());
@@ -697,7 +708,13 @@ impl InputHelp {
         if let Some(spec) = commands::find(word) {
             return (muted, format!("{}  {}", spec.usage(), spec.about));
         }
-        match host::lock(&self.0).command(word) {
+        let index = host::lock(&self.0);
+        if let Some(prompt) = index.prompt(word) {
+            let arguments: String = prompt.arguments.iter().map(|name| format!(" [{name}=…]")).collect();
+            let about = prompt.description.as_deref().unwrap_or("an MCP prompt");
+            return (muted, format!("/{}{arguments}  {about}", prompt.command()));
+        }
+        match index.command(word) {
             Some(skill) => (
                 muted,
                 format!("/{} [message]  {}", skill.name, skill.description),

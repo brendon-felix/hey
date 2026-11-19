@@ -126,22 +126,23 @@ impl Workbench {
 
     async fn permit(&self, lending: &Lending, call: &Call, reporter: &impl Reporter) -> Result<(), String> {
         let machine = self.machine();
-        match lending.permissions.get(&call.tool) {
+        let called = crate::mcp::deferred::called(&call.tool, &call.args);
+        let tool = called.as_deref().unwrap_or(&call.tool);
+        match lending.permissions.get(tool) {
             Permission::Allow => Ok(()),
             Permission::Deny => Err(format!(
-                "The user's configuration on `{machine}` does not allow `{}`.",
-                call.tool
+                "The user's configuration on `{machine}` does not allow `{tool}`."
             )),
             Permission::Confirm => {
                 let ask = Ask::Tool {
-                    name: call.tool.clone(),
+                    name: tool.to_owned(),
                     agent: call.agent.clone(),
                     machine: Some(machine.to_owned()),
                 };
                 match reporter.ask(ask).await {
                     Decision::Once => Ok(()),
                     Decision::Always => {
-                        lending.permissions.allow(&call.tool);
+                        lending.permissions.allow(tool);
                         Ok(())
                     }
                     Decision::Decline | Decision::Answer(_) => Err("The user declined this tool call.".into()),

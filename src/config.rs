@@ -266,6 +266,8 @@ pub struct Display {
     pub thinking_output: Output,
     pub tool_output: Output,
     pub subagent_output: Output,
+    /// Seconds an answer takes before its end is notified; 0 never does.
+    pub notify_after_secs: u64,
 }
 
 impl Default for Display {
@@ -279,6 +281,7 @@ impl Default for Display {
             thinking_output: Output::Preview,
             tool_output: Output::Preview,
             subagent_output: Output::Preview,
+            notify_after_secs: 30,
         }
     }
 }
@@ -521,6 +524,8 @@ pub struct Tools {
     /// model reads.
     #[serde(alias = "mcp_result_bytes")]
     pub result_bytes: usize,
+    /// Defer every MCP server's tools once they number more than this.
+    pub defer_mcp_above: Option<usize>,
 }
 
 impl Default for Tools {
@@ -530,6 +535,7 @@ impl Default for Tools {
             default: Permission::Confirm,
             permissions: permissions::default_rules(),
             result_bytes: 16 * 1024,
+            defer_mcp_above: None,
         }
     }
 }
@@ -579,6 +585,9 @@ pub struct McpServer {
     /// all of them when unset. Every tool offered costs prompt tokens on
     /// every model call, whether or not it is used.
     pub tools: Option<BTreeSet<String>>,
+    /// Whether its tools are left out of what the model is told, to be
+    /// found with `tool_search` and called with `mcp_call`.
+    pub deferred: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -610,6 +619,8 @@ struct RawMcpServer {
     #[serde(default)]
     headers: BTreeMap<String, String>,
     tools: Option<BTreeSet<String>>,
+    #[serde(default)]
+    deferred: bool,
 }
 
 #[derive(Deserialize, Clone, Copy, PartialEq, Eq)]
@@ -655,6 +666,7 @@ impl TryFrom<RawMcpServer> for McpServer {
             _ => Ok(Self {
                 transport,
                 tools: raw.tools,
+                deferred: raw.deferred,
             }),
         }
     }
@@ -834,6 +846,7 @@ mod tests {
             url = "https://example.com/mcp"
             headers = { Authorization = "Bearer ${TOKEN}" }
             tools = ["search"]
+            deferred = true
             "#,
         )
         .unwrap();
@@ -849,6 +862,7 @@ mod tests {
         assert!(github.tools.is_none());
         assert!(matches!(docs.transport, McpTransport::Http { .. }));
         assert_eq!(docs.tools, Some(BTreeSet::from(["search".to_owned()])));
+        assert!(docs.deferred && !github.deferred);
         assert!(config.display.syntax_highlighting);
     }
 
@@ -898,6 +912,8 @@ mod tests {
         assert_eq!(documented.tools.default, built_in.tools.default);
         assert_eq!(documented.tools.permissions, built_in.tools.permissions);
         assert_eq!(documented.tools.result_bytes, built_in.tools.result_bytes);
+        assert_eq!(documented.tools.defer_mcp_above, built_in.tools.defer_mcp_above);
+        assert_eq!(documented.display.notify_after_secs, built_in.display.notify_after_secs);
         assert_eq!(documented.subagents.enabled, built_in.subagents.enabled);
         assert_eq!(documented.subagents.model, built_in.subagents.model);
         assert_eq!(documented.server.listen, built_in.server.listen);

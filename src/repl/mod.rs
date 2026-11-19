@@ -324,7 +324,8 @@ impl Session {
 
     fn parse(&self, line: &str) -> Input {
         commands::parse(line, |word| {
-            mentions::lock(&self.index).command(word).is_some()
+            let index = mentions::lock(&self.index);
+            index.command(word).is_some() || index.prompt(word).is_some()
         })
     }
 
@@ -586,12 +587,17 @@ impl Session {
         if self.indexed.is_some_and(|at| at.elapsed() < STALE_AFTER) {
             return;
         }
-        let (threads, shared, skills) = tokio::join!(
+        let (threads, shared, skills, prompts) = tokio::join!(
             self.backend.threads(),
             self.backend.shared(),
-            self.backend.skills()
+            self.backend.skills(),
+            self.backend.prompts()
         );
         let mut index = mentions::lock(&self.index);
+        match prompts {
+            Ok(prompts) => index.prompts = prompts,
+            Err(error) => render::notice(&format!("no MCP prompt completions: {error:#}")),
+        }
         match threads {
             Ok(threads) => {
                 index.threads = threads.into_iter().map(|thread| thread.summary).collect()
@@ -954,7 +960,10 @@ impl Session {
             println!("\n{}", "MCP servers".bold());
             for server in &tools.servers {
                 match &server.tools {
-                    Ok(count) => println!("  {} {} ({count} tools)", "●".green(), server.name),
+                    Ok(count) => {
+                        let deferred = if server.deferred { ", deferred" } else { "" };
+                        println!("  {} {} ({count} tools{deferred})", "●".green(), server.name)
+                    }
                     Err(error) => println!("  {} {}: {error}", "●".red(), server.name),
                 }
             }

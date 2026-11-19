@@ -30,6 +30,7 @@ pub fn default_rules() -> BTreeMap<String, Permission> {
     // Compacting changes only what the model reads, and keeps what it replaced.
     // The todo list, questions to the user and the plan put to the user
     // change nothing outside the conversation, and the last two ask anyway.
+    // Looking up deferred tools only reads their descriptions.
     let tools = [
         "read",
         "list",
@@ -40,13 +41,14 @@ pub fn default_rules() -> BTreeMap<String, Permission> {
         crate::tools::TODO,
         crate::tools::ASK_USER,
         crate::tools::EXIT_PLAN,
+        crate::mcp::deferred::SEARCH,
     ];
     tools.map(|tool| (tool.to_owned(), Permission::Allow)).into()
 }
 
 /// The tools plan mode lets run: those that change nothing. Subagents
 /// share their conversation's permissions, so theirs are held to it too.
-const PLANNING: [&str; 11] = [
+const PLANNING: [&str; 14] = [
     "read",
     "list",
     "search",
@@ -58,6 +60,9 @@ const PLANNING: [&str; 11] = [
     crate::tools::TODO,
     crate::tools::ASK_USER,
     crate::tools::EXIT_PLAN,
+    crate::mcp::deferred::SEARCH,
+    crate::mcp::deferred::RESOURCES,
+    crate::mcp::deferred::READ_RESOURCE,
 ];
 
 /// Whether plan mode lets `tool` run.
@@ -270,6 +275,9 @@ impl<R: Reporter> Approval<R> {
             Ok(Target::Client(_)) => return DispatchAction::proceed(),
             Err(error) => return DispatchAction::skip(error),
         }
+        // A deferred tool called through `mcp_call` asks as that tool does.
+        let called = crate::mcp::deferred::called(name, args);
+        let name = called.as_deref().unwrap_or(name);
         match self.permissions.get(name) {
             Permission::Allow => DispatchAction::proceed(),
             Permission::Deny => {

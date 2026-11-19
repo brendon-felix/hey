@@ -22,6 +22,7 @@ mod memory;
 mod mention;
 mod notes;
 mod models;
+mod notify;
 mod permissions;
 mod preamble;
 mod protocol;

@@ -74,6 +74,12 @@ thinking_output = "preview"
 tool_output = "preview"
 # The tool calls of subagents, under the line each starts with.
 subagent_output = "preview"
+# Once an answer took longer than this many seconds, or whenever a tool call
+# waits for approval, ring the terminal's bell and ask it for a desktop
+# notification (OSC 9, or OSC 777 in VTE terminals, foot and urxvt). The
+# terminal following the conversation sends it, so it reaches your machine
+# with a remote host and over SSH. 0 notifies only of approvals.
+notify_after_secs = 30
 
 [editor]
 # "emacs", "vi" or "helix".
@@ -217,12 +223,19 @@ default = "confirm"
 # which still works.
 result_bytes = 16384
 
+# Defer every MCP server's tools, as `deferred = true` does one's, once the
+# servers offer more than this many tools in all. Unset defers only the
+# servers that say so.
+# defer_mcp_above = 40
+
 # Rules by tool. Built-in tools: read, list, search, write, edit, move, delete,
 # shell, skill, fetch, web_search, spawn_agents, compact, todo, ask_user,
-# exit_plan. In plan mode (`/plan`, `hey --plan`) only those that change
-# nothing run, whatever their rule says. MCP tools are
-# "mcp:<server>:<tool>", or "mcp:<server>" for all of a server's tools. Your
-# rules extend these defaults rather than replace them.
+# exit_plan, tool_search, mcp_call, mcp_resources, mcp_read_resource. In plan
+# mode (`/plan`, `hey --plan`) only those that change nothing run, whatever
+# their rule says. MCP tools are "mcp:<server>:<tool>", or "mcp:<server>" for
+# all of a server's tools; a deferred tool called through `mcp_call` is
+# permitted under its own rules, not `mcp_call`'s. Your rules extend these
+# defaults rather than replace them.
 [tools.permissions]
 read = "allow"
 list = "allow"
@@ -233,6 +246,7 @@ compact = "allow"
 todo = "allow"
 ask_user = "allow"
 exit_plan = "allow"
+tool_search = "allow"
 
 [subagents]
 # Let the agent start subagents (the `spawn_agents` tool): agents that each
@@ -272,6 +286,15 @@ enabled = true
 # or not it is used; `tools` offers only those named, by the server's names
 # for them. A name the server does not offer is reported as an error.
 #
+# `deferred = true` describes none of a server's tools: the model is told the
+# server's name, what it says it is for and its tools' names, looks up the
+# ones it needs with `tool_search`, and calls them with `mcp_call`.
+#
+# A server's prompts are slash commands, `/mcp:<server>:<prompt>` or
+# `/<server>:<prompt>`, followed by `key=value` arguments, or text taken as
+# the first argument. Servers that offer resources give the model
+# `mcp_resources` to list them and `mcp_read_resource` to read one.
+#
 # [mcp_servers.github]
 # command = "github-mcp-server"
 # args = ["stdio"]
@@ -281,6 +304,7 @@ enabled = true
 # url = "https://example.com/mcp"
 # headers = { Authorization = "Bearer ${DOCS_TOKEN}" }
 # tools = ["search", "fetch"]
+# deferred = true
 
 # Remote hosts, keyed by name: machines running `hey --serve`. With a remote,
 # the agent runs there, with that machine's model keys, tools, MCP servers,

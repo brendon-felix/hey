@@ -137,6 +137,10 @@ impl Crew {
             .name("hey subagent")
             .preamble(prompt)
             .append_preamble(&environment(&cwd, &kit.host, client));
+        let builder = match kit.toolbox.preamble() {
+            Some(deferred) => builder.append_preamble(&deferred),
+            None => builder,
+        };
         let builder = match turn.kind.is_none_or(|kind| kind.allows(skills::TOOL)) {
             true => skills::find(&cwd).equip(builder),
             false => builder,

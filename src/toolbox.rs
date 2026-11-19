@@ -9,7 +9,7 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use rig_core::completion::ToolDefinition;
 use rig_core::message::ToolName;
 use rig_core::serve::adapters::ToolAdapter;
@@ -20,7 +20,8 @@ use rig_tools::{Delete, Edit, List, Live, Move, Read, Search, Seen, Shell, Write
 
 use crate::agent;
 use crate::config::Config;
-use crate::mcp;
+use crate::mcp::{self, deferred, deferred::Deferred};
+use rig_rmcp::McpConnection;
 use crate::permissions::Origin;
 use crate::protocol::ServerReport;
 use crate::render;
@@ -55,6 +56,11 @@ pub fn machine_name() -> String {
 pub struct Toolbox {
     web: Web,
     mcp: Vec<mcp::Tool>,
+    deferred: Arc<Deferred>,
+    /// The servers that list resources, by name.
+    resources: Arc<[(String, McpConnection)]>,
+    prompts: Vec<mcp::Prompt>,
+    connections: Vec<(String, McpConnection)>,
     servers: Vec<ServerReport>,
 }
 
@@ -90,11 +96,15 @@ impl Place {
 impl Toolbox {
     /// The tools `config` gives this machine, its MCP servers connected.
     pub async fn new(config: &Config) -> Result<Self> {
-        let (mcp, servers) = connect_mcp(config).await;
+        let connected = connect_mcp(config).await;
         Ok(Self {
             web: Web::new(config.tools.result_bytes)?,
-            mcp,
-            servers,
+            mcp: connected.tools,
+            deferred: Arc::new(Deferred::new(connected.deferred)),
+            resources: connected.resources.into(),
+            prompts: connected.prompts,
+            connections: connected.connections,
+            servers: connected.reports,
         })
     }
 
@@ -102,13 +112,40 @@ impl Toolbox {
         &self.servers
     }
 
+    /// What the model is told of the deferred MCP servers.
+    pub fn preamble(&self) -> Option<String> {
+        self.deferred.preamble()
+    }
+
+    /// The prompts the MCP servers offer.
+    pub fn prompts(&self) -> &[mcp::Prompt] {
+        &self.prompts
+    }
+
+    /// The text of `prompt`, for the `arguments` typed after it.
+    pub async fn prompt(&self, prompt: &mcp::Prompt, arguments: &str) -> Result<String> {
+        let (server, name) = (&prompt.server, &prompt.name);
+        let (_, connection) = self
+            .connections
+            .iter()
+            .find(|(of, _)| of == server)
+            .with_context(|| format!("no MCP server `{server}`"))?;
+        mcp::get_prompt(connection, name, prompt.arguments(arguments)).await
+    }
+
     /// Every tool's name and where it comes from, which its permission is
     /// configured by.
     pub fn origins(&self) -> impl Iterator<Item = (&str, &Origin)> {
         let builtin = BUILTIN.into_iter().chain(self.web.tools());
         let builtin = builtin.map(|name| (name, &Origin::Builtin));
-        let mcp = self.mcp.iter().map(|tool| (tool.name.as_str(), &tool.origin));
-        builtin.chain(mcp)
+        let stand_ins = [deferred::SEARCH, deferred::CALL]
+            .into_iter()
+            .filter(|_| !self.deferred.is_empty())
+            .chain([deferred::RESOURCES, deferred::READ_RESOURCE].into_iter().filter(|_| !self.resources.is_empty()))
+            .map(|name| (name, &Origin::Builtin));
+        let mcp = self.mcp.iter().chain(self.deferred.tools());
+        let mcp = mcp.map(|tool| (tool.name.as_str(), &tool.origin));
+        builtin.chain(stand_ins).chain(mcp)
     }
 
     /// The tools of one agent working in `place`. `edit` and `write` refuse
@@ -177,7 +214,8 @@ impl Toolbox {
         ];
         let search = self.web.search().map(dynamic);
         let mcp = self.mcp.iter().map(|tool| tool.tool.clone());
-        builtin.into_iter().chain(search).chain(mcp).collect()
+        let stand_ins = deferred::tools(&self.deferred).into_iter().chain(deferred::resource_tools(&self.resources));
+        builtin.into_iter().chain(search).chain(mcp).chain(stand_ins).collect()
     }
 
     /// What each tool is, as an agent elsewhere is told of it.
@@ -203,15 +241,47 @@ pub fn dynamic<T: Tool + 'static>(tool: T) -> DynamicTool {
     .with_annotations(annotations)
 }
 
-/// The tools of every server that connected, and how each connection went.
-async fn connect_mcp(config: &Config) -> (Vec<mcp::Tool>, Vec<ServerReport>) {
-    let mut tools = Vec::new();
-    let mut reports = Vec::new();
-    for server in mcp::connect_all(&config.mcp_servers).await {
-        let outcome = server.tools.map(|server_tools| {
-            let count = server_tools.len();
-            tools.extend(server_tools);
-            count
+/// What the MCP servers that connected offer, and how each connection went.
+#[derive(Default)]
+struct McpConnected {
+    tools: Vec<mcp::Tool>,
+    deferred: Vec<deferred::Server>,
+    resources: Vec<(String, McpConnection)>,
+    prompts: Vec<mcp::Prompt>,
+    connections: Vec<(String, McpConnection)>,
+    reports: Vec<ServerReport>,
+}
+
+/// Connects every server; a server's tools are deferred when its config
+/// says so, or all are once they number more than `defer_mcp_above`.
+async fn connect_mcp(config: &Config) -> McpConnected {
+    let mut connected = McpConnected::default();
+    let servers = mcp::connect_all(&config.mcp_servers).await;
+    let total: usize = servers
+        .iter()
+        .filter_map(|server| server.connected.as_ref().ok())
+        .map(|server| server.tools.len())
+        .sum();
+    let defer_all = config.tools.defer_mcp_above.is_some_and(|above| total > above);
+    for server in servers {
+        let outcome = server.connected.map(|offered| {
+            let count = offered.tools.len();
+            let deferred = defer_all || offered.deferred;
+            if deferred {
+                connected.deferred.push(deferred::Server {
+                    name: server.name.clone(),
+                    summary: offered.summary,
+                    tools: offered.tools,
+                });
+            } else {
+                connected.tools.extend(offered.tools);
+            }
+            if offered.resources {
+                connected.resources.push((server.name.clone(), offered.connection.clone()));
+            }
+            connected.prompts.extend(offered.prompts);
+            connected.connections.push((server.name.clone(), offered.connection));
+            (count, deferred)
         });
         if let Err(error) = &outcome {
             render::notice(&format!(
@@ -219,10 +289,11 @@ async fn connect_mcp(config: &Config) -> (Vec<mcp::Tool>, Vec<ServerReport>) {
                 server.name
             ));
         }
-        reports.push(ServerReport {
+        connected.reports.push(ServerReport {
             name: server.name,
-            tools: outcome.map_err(|error| format!("{error:#}")),
+            deferred: outcome.as_ref().is_ok_and(|(_, deferred)| *deferred),
+            tools: outcome.map(|(count, _)| count).map_err(|error| format!("{error:#}")),
         });
     }
-    (tools, reports)
+    connected
 }

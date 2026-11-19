@@ -100,6 +100,7 @@ Type `/` or press Tab to see commands and skills; the status line describes the 
 | `/skills` | List skills and why any did not load |
 | `/agents` | List the kinds of subagent the agent may start and why any did not load |
 | `/<skill> [message]` | Invoke a skill, with the rest of the line as your message |
+| `/mcp:<server>:<prompt> [args]` | Send an MCP server's prompt; see [MCP servers](#mcp-servers) |
 | `/memories`, `/mem` | List memories to write, edit or forget |
 | `/init` | Have the model explore the repository and write or update its `AGENTS.md` |
 | `/clear`, `/c` | Clear the screen |
@@ -122,6 +123,13 @@ terminal's line wrapping, reasoning or tool calls. `/copy` takes the latest repl
 wrote in answer to one message; `/copy-all` heads each message `## User` or `## Assistant`, leaving out
 what mentions attached. Over SSH, or where there is no system clipboard, they ask the terminal
 to set its machine's clipboard (OSC 52), which most modern terminals do.
+
+### Notifications
+
+When an answer took longer than `[display] notify_after_secs` (30), or a tool call waits for
+approval, hey rings the terminal's bell and asks it for a desktop notification (OSC 9, or OSC 777
+in VTE terminals, foot and urxvt; wrapped for tmux). The terminal following the conversation
+sends it, so with a remote host or over SSH it reaches the machine you sit at.
 
 ### Mentions
 
@@ -221,7 +229,7 @@ the terminal keeps its conversation. hey forgets a terminal once it is closed.
 ### Plan mode
 
 `/plan`, or `hey --plan`, puts the conversation in plan mode: only tools that change nothing run
-(`read`, `list`, `search`, `fetch`, `web_search`, `skill`, `compact`, `todo`, `ask_user`, and
+(`read`, `list`, `search`, `fetch`, `web_search`, `skill`, `compact`, `todo`, `ask_user`, `tool_search`, `mcp_resources`, `mcp_read_resource` and
 `spawn_agents`, whose subagents are held to it too). Any other call is refused, and the model is
 told to present a plan instead. It does so with its `exit_plan` tool: the plan shows in every
 terminal following the conversation, which asks whether to carry it out. **Yes** leaves plan mode
@@ -383,8 +391,8 @@ Each tool call is shown as it happens. Whether it runs depends on its permission
 - `confirm` asks first, and offers to allow that tool for the rest of the conversation.
 - `deny` tells the model it is not allowed.
 
-`read`, `list`, `search`, `skill`, `spawn_agents`, `compact`, `todo`, `ask_user` and
-`exit_plan` are allowed by default; everything else asks. Rules are
+`read`, `list`, `search`, `skill`, `spawn_agents`, `compact`, `todo`, `ask_user`,
+`exit_plan` and `tool_search` are allowed by default; everything else asks. Rules are
 keyed by tool name, or `mcp:<server>:<tool>` and `mcp:<server>` for MCP tools, which the model sees
 as `mcp__<server>__<tool>`.
 
@@ -504,7 +512,23 @@ tools = ["firecrawl_search", "firecrawl_scrape"]
 ```
 
 Every tool a server offers is described to the model on every call; Firecrawl's 36 come to about
-21,000 tokens. `tools` offers only those named. A result longer than `[tools] result_bytes`
+21,000 tokens. `tools` offers only those named, and `deferred = true` none: the model is told the
+server's name, what it is for and its tools' names, looks up those it needs with `tool_search`,
+which gives their parameters, and calls them with `mcp_call`. A call through `mcp_call` asks as
+the tool it calls does, under `mcp:<server>:<tool>`. `[tools] defer_mcp_above = 40` defers every
+server once they offer more than 40 tools in all.
+
+```toml
+[mcp_servers.firecrawl]
+url = "https://mcp.firecrawl.dev/v2/mcp"
+headers = { Authorization = "Bearer ${FIRECRAWL_API_KEY}" }
+deferred = true
+```
+
+A server's prompts are commands: `/mcp:<server>:<prompt>`, or `/<server>:<prompt>`, followed by
+`key=value` arguments or text taken as the first, sends the prompt's text with what you typed.
+Servers that offer resources give the model `mcp_resources` to list them and `mcp_read_resource`
+to read one. A result longer than `[tools] result_bytes`
 (16 KiB) is cut, and kept whole in a file the model can `read` or `search`; so is a `fetch` or
 `web_search` result.
 

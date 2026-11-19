@@ -11,7 +11,9 @@ use rig_core::message::ToolName;
 use rig_core::tool::DynamicTool;
 use rig_rmcp::{McpConnection, McpTool};
 use rmcp::ServiceExt;
-use rmcp::model::ClientConfig;
+use rmcp::model::{ClientConfig, ContentBlock, GetPromptRequestParams, ResourceContents};
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use rmcp::service::ClientInitializeError;
 use rmcp::transport::streamable_http_client::{
     AuthRequiredError, StreamableHttpClientTransportConfig,
@@ -20,6 +22,8 @@ use rmcp::transport::{StreamableHttpClientTransport, TokioChildProcess};
 
 use crate::config::{McpServer, McpTransport, expand, expand_headers};
 use crate::permissions::Origin;
+
+pub mod deferred;
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
 
@@ -36,24 +40,37 @@ pub struct Tool {
 
 pub struct Server {
     pub name: String,
-    pub tools: Result<Vec<Tool>>,
+    pub connected: Result<Connected>,
+}
+
+/// What a server offers once connected.
+pub struct Connected {
+    pub tools: Vec<Tool>,
+    /// What the server says it is for, in a line.
+    pub summary: Option<String>,
+    pub prompts: Vec<Prompt>,
+    /// Whether it lists resources the model may read.
+    pub resources: bool,
+    /// Whether its tools are left out of what the model is told.
+    pub deferred: bool,
+    pub connection: McpConnection,
 }
 
 /// Connects every server at once; one that fails is reported, not fatal.
 pub async fn connect_all(servers: &BTreeMap<String, McpServer>) -> Vec<Server> {
     let connecting = servers.iter().map(|(name, server)| async move {
-        let tools = tokio::time::timeout(CONNECT_TIMEOUT, connect(name, server))
+        let connected = tokio::time::timeout(CONNECT_TIMEOUT, connect(name, server))
             .await
             .unwrap_or_else(|_| Err(anyhow::anyhow!("timed out after {CONNECT_TIMEOUT:?}")));
         Server {
             name: name.clone(),
-            tools,
+            connected,
         }
     });
     futures::future::join_all(connecting).await
 }
 
-async fn connect(server: &str, config: &McpServer) -> Result<Vec<Tool>> {
+async fn connect(server: &str, config: &McpServer) -> Result<Connected> {
     let client = ClientConfig::default();
     let connection: McpConnection = match &config.transport {
         McpTransport::Stdio { command, args, env } => {
@@ -86,7 +103,135 @@ async fn connect(server: &str, config: &McpServer) -> Result<Vec<Tool>> {
         Some(wanted) => only(tools, wanted)?,
         None => tools,
     };
-    tools.into_iter().map(|tool| namespaced(server, tool)).collect()
+    let tools = tools
+        .into_iter()
+        .map(|tool| namespaced(server, tool))
+        .collect::<Result<_>>()?;
+    let info = connection.peer().peer_info();
+    let capabilities = info.as_ref().map(|info| &info.capabilities);
+    let prompts = match capabilities.and_then(|capabilities| capabilities.prompts.as_ref()) {
+        Some(_) => connection
+            .peer()
+            .list_all_prompts()
+            .await
+            .map(|prompts| {
+                prompts
+                    .into_iter()
+                    .map(|prompt| Prompt {
+                        server: server.to_owned(),
+                        ..Prompt::from(prompt)
+                    })
+                    .collect()
+            })
+            .unwrap_or_default(),
+        None => Vec::new(),
+    };
+    let summary = info.as_ref().and_then(|info| {
+        let described = info.server_info.as_ref().and_then(|server| server.description.clone());
+        described.or_else(|| info.instructions.clone())
+    });
+    Ok(Connected {
+        tools,
+        summary: summary.as_deref().and_then(first_line),
+        prompts,
+        resources: capabilities.is_some_and(|capabilities| capabilities.resources.is_some()),
+        deferred: config.deferred,
+        connection,
+    })
+}
+
+/// A prompt a server offers, which the user invokes as `/mcp:<server>:<name>`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Prompt {
+    pub server: String,
+    pub name: String,
+    pub description: Option<String>,
+    /// Its arguments' names, required ones first.
+    pub arguments: Vec<String>,
+}
+
+impl From<rmcp::model::Prompt> for Prompt {
+    fn from(prompt: rmcp::model::Prompt) -> Self {
+        let mut arguments = prompt.arguments.unwrap_or_default();
+        arguments.sort_by_key(|argument| !argument.required.unwrap_or(false));
+        Self {
+            server: String::new(),
+            name: prompt.name,
+            description: prompt.description,
+            arguments: arguments.into_iter().map(|argument| argument.name).collect(),
+        }
+    }
+}
+
+/// The prompt of `prompts` that `word`, typed after `/`, invokes:
+/// `mcp:<server>:<prompt>`, or `<server>:<prompt>`.
+pub fn invoked<'a>(prompts: &'a [Prompt], word: &str) -> Option<&'a Prompt> {
+    let word = word.strip_prefix("mcp:").unwrap_or(word);
+    let (server, name) = word.split_once(':')?;
+    prompts.iter().find(|prompt| prompt.server == server && prompt.name == name)
+}
+
+impl Prompt {
+    /// How the user invokes it.
+    pub fn command(&self) -> String {
+        format!("mcp:{}:{}", self.server, self.name)
+    }
+
+    /// `text`, typed after the command, as the prompt's arguments: `key=value`
+    /// pairs, or all of it as the first argument.
+    pub fn arguments(&self, text: &str) -> serde_json::Map<String, Value> {
+        let text = text.trim();
+        let pairs: Option<Vec<(&str, &str)>> = text
+            .split_whitespace()
+            .map(|pair| pair.split_once('='))
+            .collect();
+        match (pairs, self.arguments.first()) {
+            (Some(pairs), _) if !pairs.is_empty() => pairs
+                .into_iter()
+                .map(|(key, value)| (key.to_owned(), Value::String(value.to_owned())))
+                .collect(),
+            (_, Some(first)) if !text.is_empty() => {
+                std::iter::once((first.clone(), Value::String(text.to_owned()))).collect()
+            }
+            _ => serde_json::Map::new(),
+        }
+    }
+}
+
+/// The messages a server's prompt `name` gives for `arguments`, as one text.
+pub async fn get_prompt(
+    connection: &McpConnection,
+    name: &str,
+    arguments: serde_json::Map<String, Value>,
+) -> Result<String> {
+    let request = GetPromptRequestParams::new(name).with_arguments(arguments);
+    let result = connection.peer().get_prompt(request).await?;
+    let texts: Vec<String> = result
+        .messages
+        .iter()
+        .filter_map(|message| match &message.content {
+            ContentBlock::Text(text) => Some(text.text.clone()),
+            ContentBlock::Resource(resource) => match &resource.resource {
+                ResourceContents::TextResourceContents { text, .. } => Some(text.clone()),
+                _ => None,
+            },
+            _ => None,
+        })
+        .collect();
+    if texts.is_empty() {
+        bail!("the prompt gave no text");
+    }
+    Ok(texts.join("\n\n"))
+}
+
+/// The first line of `text`, at most 160 characters.
+fn first_line(text: &str) -> Option<String> {
+    let line = text.lines().map(str::trim).find(|line| !line.is_empty())?;
+    let mut line: String = line.chars().take(160).collect();
+    if line.len() < text.trim().len() && !line.ends_with('.') {
+        line.push('…');
+    }
+    Some(line)
 }
 
 /// The `wanted` tools of those a server offers, every one of which it must
@@ -149,8 +294,51 @@ fn namespaced(server: &str, tool: McpTool) -> Result<Tool> {
     })
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn prompt(arguments: &[&str]) -> Prompt {
+        Prompt {
+            server: "git".into(),
+            name: "review".into(),
+            description: None,
+            arguments: arguments.iter().map(|name| (*name).to_owned()).collect(),
+        }
+    }
+
+    #[test]
+    fn prompt_arguments_are_pairs_or_the_whole_text() {
+        let review = prompt(&["branch", "focus"]);
+        assert_eq!(review.command(), "mcp:git:review");
+        let pairs = review.arguments("branch=main focus=tests");
+        assert_eq!(pairs["branch"], "main");
+        assert_eq!(pairs["focus"], "tests");
+        let whole = review.arguments(" the parser work ");
+        assert_eq!(whole["branch"], "the parser work");
+        assert!(review.arguments("").is_empty());
+        assert!(prompt(&[]).arguments("anything").is_empty());
+    }
+
+    #[test]
+    fn prompts_are_invoked_with_or_without_mcp() {
+        let prompts = [prompt(&[])];
+        assert!(invoked(&prompts, "mcp:git:review").is_some());
+        assert!(invoked(&prompts, "git:review").is_some());
+        assert!(invoked(&prompts, "git:other").is_none());
+        assert!(invoked(&prompts, "review").is_none());
+    }
+
+    #[test]
+    fn summaries_keep_the_first_line() {
+        assert_eq!(first_line("\nSearch docs.\nMore."), Some("Search docs.".into()));
+        assert_eq!(first_line("Search docs\nMore"), Some("Search docs…".into()));
+        assert_eq!(first_line("  "), None);
+    }
+}
+
 /// `mcp__<server>__<tool>`, in the characters and length providers accept.
-fn model_name(server: &str, tool: &str) -> String {
+pub fn model_name(server: &str, tool: &str) -> String {
     format!("{PREFIX}{server}__{tool}")
         .chars()
         .map(|c| if c.is_ascii_alphanumeric() || c == '-' { c } else { '_' })

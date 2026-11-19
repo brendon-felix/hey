@@ -144,6 +144,14 @@ impl Backend {
         }
     }
 
+    /// The prompts the host's MCP servers offer.
+    pub async fn prompts(&self) -> Result<Vec<crate::mcp::Prompt>> {
+        match self {
+            Backend::Local(host) => Ok(host.prompts()),
+            Backend::Remote(client, _) => client.prompts().await,
+        }
+    }
+
     pub async fn open(&self, id: &SessionId) -> Result<Opened> {
         match self {
             Backend::Local(host) => {
