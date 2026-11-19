@@ -14,19 +14,19 @@ use crossterm::terminal::{Clear, ClearType};
 use fuzzy_matcher::skim::SkimMatcherV2;
 use nu_ansi_term::{Color, Style};
 use reedline::{
-    ColumnarMenu, Completer, CompletionResult, CursorConfig, DefaultHinter, EditCommand,
-    EditMode, Emacs, FileBackedHistory, Helix, Highlighter, Hinter, History, HistoryItem, KeyCode,
-    KeyModifiers, Keybindings, MenuBuilder, Prompt, PromptEditMode, PromptHistorySearch,
-    PromptHistorySearchStatus, PromptHelixMode, PromptViMode, Reedline, ReedlineEvent,
+    ColumnarMenu, Completer, CompletionResult, CursorConfig, DefaultHinter, EditCommand, EditMode,
+    Emacs, FileBackedHistory, Helix, Highlighter, Hinter, History, HistoryItem, KeyCode,
+    KeyModifiers, Keybindings, MenuBuilder, Prompt, PromptEditMode, PromptHelixMode,
+    PromptHistorySearch, PromptHistorySearchStatus, PromptViMode, Reedline, ReedlineEvent,
     ReedlineMenu, RepaintSignal, Signal, Span, StatusLine, StyledText, Suggestion, Vi,
-    default_emacs_keybindings,
-    default_helix_insert_keybindings, default_helix_normal_keybindings,
+    default_emacs_keybindings, default_helix_insert_keybindings, default_helix_normal_keybindings,
     default_vi_insert_keybindings, default_vi_normal_keybindings, default_vi_visual_keybindings,
 };
 use textwrap::core::display_width;
 
 use super::commands::{self, Arg, COMMANDS};
 use super::mentions::{self as host, HostIndex, Index, Mentions};
+use super::models;
 use super::outbox::Outbox;
 use super::watch::{self, Watch};
 use crate::config::{self, EditMode as Mode, RightPrompt, Thinking};
@@ -61,30 +61,51 @@ impl Status {
             None => name.to_owned(),
         };
         let context = self.context.map(|used| match self.window {
-            Some(window) => format!("{}/{}", render::tokens(used), render::tokens(u64::from(window))),
+            Some(window) => format!(
+                "{}/{}",
+                render::tokens(used),
+                render::tokens(u64::from(window))
+            ),
             None => render::tokens(used),
         });
         self.after_remote(std::iter::once(model).chain(context))
     }
 
     fn full(&self) -> String {
-        let thinking = self.thinking.map(|level| format!("thinking {}", level.as_str()));
+        let thinking = self
+            .thinking
+            .map(|level| format!("thinking {}", level.as_str()));
         let context = self.context.map(|used| match self.window {
-            Some(window) => format!("{} / {} tokens", render::tokens(used), render::tokens(u64::from(window))),
+            Some(window) => format!(
+                "{} / {} tokens",
+                render::tokens(used),
+                render::tokens(u64::from(window))
+            ),
             None => format!("{} tokens", render::tokens(used)),
         });
-        self.after_remote(std::iter::once(self.model.clone()).chain(thinking).chain(context))
+        self.after_remote(
+            std::iter::once(self.model.clone())
+                .chain(thinking)
+                .chain(context),
+        )
     }
 
     fn after_remote(&self, parts: impl Iterator<Item = String>) -> String {
-        self.remote.iter().cloned().chain(parts).collect::<Vec<_>>().join(" · ")
+        self.remote
+            .iter()
+            .cloned()
+            .chain(parts)
+            .collect::<Vec<_>>()
+            .join(" · ")
     }
 }
 
 /// The model without its vendor or Ollama's default tag, which `/model` still
 /// shows in full.
 fn short_name(reference: &str) -> &str {
-    let name = reference.rsplit_once('/').map_or(reference, |(_, name)| name);
+    let name = reference
+        .rsplit_once('/')
+        .map_or(reference, |(_, name)| name);
     name.strip_suffix(":latest").unwrap_or(name)
 }
 
@@ -255,7 +276,10 @@ impl Editor {
         let typed = self.line_editor.current_buffer_contents().to_owned();
         self.line_editor.run_edit_commands(&[EditCommand::Clear]);
         if !typed.trim().is_empty() && !typed.starts_with(' ') {
-            let saved = self.line_editor.history_mut().save(HistoryItem::from_command_line(&typed));
+            let saved = self
+                .line_editor
+                .history_mut()
+                .save(HistoryItem::from_command_line(&typed));
             if let Err(error) = saved {
                 render::notice(&format!("not kept in history: {error}"));
             }
@@ -269,8 +293,12 @@ impl Editor {
     pub fn erase_prompt(&self) {
         let width = render::terminal_width().max(1);
         let typed = self.line_editor.current_buffer_contents();
-        let before = typed.get(..self.line_editor.current_insertion_point()).unwrap_or(typed);
-        let (lines, last) = before.rsplit_once('\n').map_or((None, before), |(lines, last)| (Some(lines), last));
+        let before = typed
+            .get(..self.line_editor.current_insertion_point())
+            .unwrap_or(typed);
+        let (lines, last) = before
+            .rsplit_once('\n')
+            .map_or((None, before), |(lines, last)| (Some(lines), last));
         let above_cursor = self.above() + lines.map_or(0, |lines| rows(lines, width));
         erase(above_cursor + (INDICATOR + display_width(last)) / width);
     }
@@ -304,7 +332,12 @@ fn erase(up: usize) {
     let mut out = std::io::stdout();
     let _ = match u16::try_from(up) {
         Ok(0) => execute!(out, MoveToColumn(0), Clear(ClearType::FromCursorDown)),
-        up => execute!(out, MoveToColumn(0), MoveUp(up.unwrap_or(u16::MAX)), Clear(ClearType::FromCursorDown)),
+        up => execute!(
+            out,
+            MoveToColumn(0),
+            MoveUp(up.unwrap_or(u16::MAX)),
+            Clear(ClearType::FromCursorDown)
+        ),
     };
 }
 
@@ -312,7 +345,9 @@ fn erase(up: usize) {
 /// history hints and the selection.
 fn styled(line_editor: Reedline, palette: Palette) -> Reedline {
     line_editor
-        .with_menu(ReedlineMenu::EngineCompleter(Box::new(completion_menu(palette))))
+        .with_menu(ReedlineMenu::EngineCompleter(Box::new(completion_menu(
+            palette,
+        ))))
         .with_hinter(Box::new(MessageHinter {
             history: DefaultHinter::default().with_style(fg(palette.muted)),
             command: false,
@@ -412,7 +447,11 @@ fn with_menu_bindings(mut keybindings: Keybindings) -> Keybindings {
         (KeyModifiers::CONTROL, KeyCode::Char('s'), NOW),
         (KeyModifiers::ALT, KeyCode::Up, UNQUEUE),
     ] {
-        keybindings.add_binding(modifiers, key, ReedlineEvent::ExecuteHostCommand(command.into()));
+        keybindings.add_binding(
+            modifiers,
+            key,
+            ReedlineEvent::ExecuteHostCommand(command.into()),
+        );
     }
     keybindings
 }
@@ -437,7 +476,9 @@ impl Hinter for MessageHinter {
         self.command = line.starts_with('/');
         match self.command {
             true => String::new(),
-            false => self.history.handle(line, pos, history, use_ansi_coloring, cwd),
+            false => self
+                .history
+                .handle(line, pos, history, use_ansi_coloring, cwd),
         }
     }
 
@@ -472,16 +513,21 @@ fn buffer_editor() -> std::process::Command {
     command
 }
 
-/// What slash commands and their arguments complete to.
+/// What slash commands and their arguments complete to, besides what the
+/// host offers.
 pub struct Choices {
-    pub models: Vec<String>,
     pub thinking: Vec<String>,
     pub themes: Vec<String>,
 }
 
 impl Choices {
     /// Commands and the host's skills after `/`, then a command's argument.
-    fn suggestions(&self, before: &str, index: &HostIndex, matcher: &SkimMatcherV2) -> Vec<Suggestion> {
+    fn suggestions(
+        &self,
+        before: &str,
+        index: &HostIndex,
+        matcher: &SkimMatcherV2,
+    ) -> Vec<Suggestion> {
         let Some(typed) = before.strip_prefix('/') else {
             return Vec::new();
         };
@@ -497,17 +543,24 @@ impl Choices {
                     append_whitespace: spec.arg.is_some(),
                     ..Suggestion::default()
                 });
-            let invocable = index.skills.skills.iter().filter(|skill| index.command(skill.name.as_str()).is_some());
-            let skills = host::skill_suggestions(matcher, invocable, typed).map(|(skill, indices)| Suggestion {
-                value: format!("/{}", skill.name),
-                ..host::skill_suggestion(skill, indices, span)
-            });
+            let invocable = index
+                .skills
+                .skills
+                .iter()
+                .filter(|skill| index.command(skill.name.as_str()).is_some());
+            let skills =
+                host::skill_suggestions(matcher, invocable, typed).map(|(skill, indices)| {
+                    Suggestion {
+                        value: format!("/{}", skill.name),
+                        ..host::skill_suggestion(skill, indices, span)
+                    }
+                });
             return commands.chain(skills).collect();
         };
         let start = before.len() - arg.len();
         let span = Span::new(start, before.len());
         let values = match commands::find(word).and_then(|spec| spec.arg) {
-            Some(Arg::Model) => &self.models,
+            Some(Arg::Model) => return models::suggestions(&index.models, arg.trim(), span),
             Some(Arg::Thinking) => &self.thinking,
             Some(Arg::Theme) => &self.themes,
             Some(Arg::Thread) => {
@@ -542,7 +595,9 @@ impl Completer for InputCompleter {
     fn complete(&mut self, line: &str, pos: usize) -> CompletionResult {
         let before = line.get(..pos).unwrap_or(line);
         let suggestions = match before.starts_with('/') {
-            true => self.choices.suggestions(before, &host::lock(&self.index), &self.matcher),
+            true => self
+                .choices
+                .suggestions(before, &host::lock(&self.index), &self.matcher),
             false => self.mentions.suggestions(before),
         };
         CompletionResult::fresh(suggestions)
@@ -572,8 +627,10 @@ impl Highlighter for InputHighlighter {
                 styled.push((message, line[last..].to_owned()));
             }
             Some(rest) => {
-                let (word, arg) = rest.split_at(rest.find(char::is_whitespace).unwrap_or(rest.len()));
-                let known = commands::find(word).is_some() || host::lock(&self.0).command(word).is_some();
+                let (word, arg) =
+                    rest.split_at(rest.find(char::is_whitespace).unwrap_or(rest.len()));
+                let known =
+                    commands::find(word).is_some() || host::lock(&self.0).command(word).is_some();
                 let word_style = match known {
                     true => fg(palette.name),
                     false => Color::Yellow.normal(),
@@ -601,7 +658,11 @@ impl StatusLine for InputHelp {
             },
         };
         let text: String = text.chars().take(usize::from(columns)).collect();
-        if colors { style.paint(text).to_string() } else { text }
+        if colors {
+            style.paint(text).to_string()
+        } else {
+            text
+        }
     }
 }
 
@@ -631,7 +692,10 @@ impl InputHelp {
             return (muted, format!("{}  {}", spec.usage(), spec.about));
         }
         match host::lock(&self.0).command(word) {
-            Some(skill) => (muted, format!("/{} [message]  {}", skill.name, skill.description)),
+            Some(skill) => (
+                muted,
+                format!("/{} [message]  {}", skill.name, skill.description),
+            ),
             None if word.is_empty() => (muted, "Tab for commands and skills".into()),
             None => (Color::Yellow.normal(), format!("unknown command /{word}")),
         }
@@ -680,7 +744,10 @@ fn status_line(
     let elsewhere = watch.elsewhere();
     let running = (elsewhere.running > 0).then(|| {
         let spinner = paint(palette().accent.into(), watch::spinner());
-        format!("{spinner}{}", muted(&format!(" {} running", elsewhere.running)))
+        format!(
+            "{spinner}{}",
+            muted(&format!(" {} running", elsewhere.running))
+        )
     });
     let unseen = (elsewhere.unseen > 0).then(|| {
         let dot = paint(Color::Blue, "●");
@@ -751,10 +818,7 @@ impl Prompt for HeyPrompt {
         Cow::Borrowed("  ")
     }
 
-    fn render_prompt_history_search_indicator(
-        &self,
-        search: PromptHistorySearch,
-    ) -> Cow<'_, str> {
+    fn render_prompt_history_search_indicator(&self, search: PromptHistorySearch) -> Cow<'_, str> {
         match search.status {
             PromptHistorySearchStatus::Passing => Cow::Borrowed("? "),
             PromptHistorySearchStatus::Failing => Cow::Borrowed("?! "),

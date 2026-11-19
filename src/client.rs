@@ -18,7 +18,7 @@ use crate::backend::{Events, Opened};
 use crate::config::{self, Remote};
 use crate::protocol::{
     Activities, ApprovalId, Ask, CallId, CallResult, ClientInfo, Decision, Defaults, Event,
-    FollowerId, Lent, MACHINE_HEADER, Machine, ModelInfo, Revision, RunRequest, Snapshot,
+    FollowerId, Lent, MACHINE_HEADER, Machine, ModelInfo, Models, Revision, RunRequest, Snapshot,
     ThreadInfo, Tools,
 };
 use crate::sessions::SessionId;
@@ -42,7 +42,12 @@ impl Client {
     /// else one the user enters, which hey keeps once the host accepts it.
     /// The host's agents can call the tools this machine `lent` while one of
     /// its runs is followed from here.
-    pub async fn connect(name: &str, remote: &Remote, machine: Machine, lent: Lent) -> Result<Self> {
+    pub async fn connect(
+        name: &str,
+        remote: &Remote,
+        machine: Machine,
+        lent: Lent,
+    ) -> Result<Self> {
         let mut url = config::expand(&remote.url)?;
         if !url.ends_with('/') {
             url.push('/');
@@ -104,8 +109,11 @@ impl Client {
             "no token for remote `{name}`: run hey in a terminal to enter it, \
              or set `token` or `token_file` in `[remotes.{name}]`"
         );
-        ui::secret(&format!("Token for `{name}` (from the host's token file)"), &why)?
-            .with_context(|| format!("no token entered for remote `{name}`"))
+        ui::secret(
+            &format!("Token for `{name}` (from the host's token file)"),
+            &why,
+        )?
+        .with_context(|| format!("no token entered for remote `{name}`"))
     }
 
     /// Whether the host accepts the token.
@@ -130,7 +138,7 @@ impl Client {
             .await
     }
 
-    pub async fn models(&self) -> Result<Vec<String>> {
+    pub async fn models(&self) -> Result<Models> {
         self.json(self.get("v1/models")?).await
     }
 

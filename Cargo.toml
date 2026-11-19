@@ -40,6 +40,7 @@ reqwest = { version = "0.13", default-features = false, features = ["brotli", "c
 rig-agent = "0.46"
 rig-core = { version = "0.46", features = ["reqwest"] }
 rig-memory = { version = "0.46", features = ["fs"] }
+rig-reqwest = "0.46"
 rig-rmcp = "0.46"
 rig-tools = "0.46"
 rmcp = { version = "3.9", features = [

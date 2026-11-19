@@ -10,7 +10,9 @@
 
 # Model, as `vendor/model` from rig's catalog (https://rig.rs). The vendor's
 # usual API key variable is read from the environment, e.g. OPENAI_API_KEY,
-# ANTHROPIC_API_KEY or GEMINI_API_KEY. `/model` switches and saves it here.
+# ANTHROPIC_API_KEY or GEMINI_API_KEY. GitHub Copilot's models (`copilot/...`)
+# take no key: `hey --login copilot` signs in once, on the machine the agent
+# runs on. `/model` switches and saves it here.
 model = "openai/gpt-5.5"
 
 # How much the model reasons before answering: "off", "minimal", "low",

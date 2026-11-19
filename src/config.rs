@@ -231,6 +231,15 @@ impl From<Thinking> for rig_core::completion::Reasoning {
 /// Settings for a vendor, by the name model references start with.
 pub type Providers = BTreeMap<String, Provider>;
 
+/// The base URL `[providers.<vendor>]` names, expanded.
+pub fn base_url(providers: &Providers, vendor: &str) -> Result<Option<String>> {
+    providers
+        .get(vendor)
+        .and_then(|provider| provider.base_url.as_deref())
+        .map(expand)
+        .transpose()
+}
+
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Provider {
@@ -355,7 +364,9 @@ impl Log {
     pub fn dir(&self) -> Result<PathBuf> {
         match &self.dir {
             Some(dir) => expand_path(dir),
-            None => cache_dir().map(|dir| dir.join("logs")).context("set `log.dir`"),
+            None => cache_dir()
+                .map(|dir| dir.join("logs"))
+                .context("set `log.dir`"),
         }
     }
 }
@@ -790,17 +801,29 @@ mod tests {
         assert_eq!(documented.interactive, built_in.interactive);
         assert_eq!(documented.display.theme, built_in.display.theme);
         assert_eq!(documented.display.wrap_width, built_in.display.wrap_width);
-        assert_eq!(documented.display.thinking_output, built_in.display.thinking_output);
+        assert_eq!(
+            documented.display.thinking_output,
+            built_in.display.thinking_output
+        );
         assert_eq!(documented.display.tool_output, built_in.display.tool_output);
-        assert_eq!(documented.display.subagent_output, built_in.display.subagent_output);
+        assert_eq!(
+            documented.display.subagent_output,
+            built_in.display.subagent_output
+        );
         assert_eq!(documented.editor.mode, built_in.editor.mode);
         assert_eq!(documented.editor.history_size, built_in.editor.history_size);
         assert_eq!(documented.editor.right_prompt, built_in.editor.right_prompt);
         assert_eq!(documented.memory.enabled, built_in.memory.enabled);
         assert_eq!(documented.memory.recall, built_in.memory.recall);
-        assert_eq!(documented.memory.embedding_model, built_in.memory.embedding_model);
+        assert_eq!(
+            documented.memory.embedding_model,
+            built_in.memory.embedding_model
+        );
         assert_eq!(documented.compaction.auto, built_in.compaction.auto);
-        assert_eq!(documented.compaction.threshold, built_in.compaction.threshold);
+        assert_eq!(
+            documented.compaction.threshold,
+            built_in.compaction.threshold
+        );
         assert_eq!(documented.compaction.model, built_in.compaction.model);
         assert_eq!(documented.tools.allow_all, built_in.tools.allow_all);
         assert_eq!(documented.tools.default, built_in.tools.default);
@@ -816,9 +839,13 @@ mod tests {
     #[test]
     fn rejects_mistakes_with_a_reason() {
         let error = |text| toml::from_str::<Config>(text).unwrap_err().to_string();
-        assert!(error("[mcp_servers.x]\nurl = \"u\"\nargs = [\"a\"]").contains("only apply to a local"));
+        assert!(
+            error("[mcp_servers.x]\nurl = \"u\"\nargs = [\"a\"]").contains("only apply to a local")
+        );
         assert!(error("[mcp_servers.x]\nargs = []").contains("set `command`"));
-        assert!(error("[mcp_servers.x]\ntype = \"http\"\ncommand = \"c\"").contains("not a `command`"));
+        assert!(
+            error("[mcp_servers.x]\ntype = \"http\"\ncommand = \"c\"").contains("not a `command`")
+        );
         assert!(error("wrap_width = 80").contains("unknown field"));
         assert!(error("[tools]\ndefault = \"maybe\"").contains("unknown variant"));
         assert!(error("thinking = \"huge\"").contains("unknown variant"));
@@ -832,12 +859,17 @@ mod tests {
         fs::create_dir_all(&dir).unwrap();
         fs::write(&file, "# mine\nmodel = \"openai/gpt-5.5\" # fast\nthinking = \"low\"\n\n[editor]\nmode = \"vi\"\n").unwrap();
 
-        Setting::Model("anthropic/claude-opus-5-5").save(&file).unwrap();
+        Setting::Model("anthropic/claude-opus-5-5")
+            .save(&file)
+            .unwrap();
         Setting::Thinking(None).save(&file).unwrap();
         Setting::Theme("Nord").save(&file).unwrap();
 
         let saved = fs::read_to_string(&file).unwrap();
-        assert!(saved.starts_with("# mine\nmodel = \"anthropic/claude-opus-5-5\" # fast\n"), "{saved}");
+        assert!(
+            saved.starts_with("# mine\nmodel = \"anthropic/claude-opus-5-5\" # fast\n"),
+            "{saved}"
+        );
         assert!(saved.contains("\n[display]\ntheme = \"Nord\"\n"), "{saved}");
         let config: Config = toml::from_str(&saved).unwrap();
         assert_eq!(config.thinking, None);
@@ -862,10 +894,19 @@ mod tests {
             "#,
         )
         .unwrap();
-        assert_eq!(config.server.token, TokenSource::File("~/Vault/hey-token".into()));
-        assert_eq!(config.remotes["home"].token, TokenSource::Value("${HEY_TOKEN}".into()));
+        assert_eq!(
+            config.server.token,
+            TokenSource::File("~/Vault/hey-token".into())
+        );
+        assert_eq!(
+            config.remotes["home"].token,
+            TokenSource::Value("${HEY_TOKEN}".into())
+        );
         assert_eq!(config.remotes["work"].token, TokenSource::Kept);
-        assert_eq!(config.remotes["work"].headers["CF-Access-Client-Id"], "${ACCESS_ID}");
+        assert_eq!(
+            config.remotes["work"].headers["CF-Access-Client-Id"],
+            "${ACCESS_ID}"
+        );
         assert_eq!(Config::default().server.token, TokenSource::Kept);
     }
 }

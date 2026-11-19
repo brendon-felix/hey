@@ -11,7 +11,7 @@ use futures::stream::BoxStream;
 use crate::client::Client;
 use crate::host::{self, Host};
 use crate::protocol::{
-    Activities, ApprovalId, Call, CallId, Decision, Defaults, Event, FollowerId, ModelInfo,
+    Activities, ApprovalId, Call, CallId, Decision, Defaults, Event, FollowerId, ModelInfo, Models,
     Revision, RunRequest, Snapshot, ThreadInfo, Tools,
 };
 use crate::sessions::SessionId;
@@ -62,10 +62,11 @@ impl Backend {
         }
     }
 
-    /// Models with tool support whose vendor has an API key on the host.
-    pub async fn models(&self) -> Result<Vec<String>> {
+    /// Models with tool support the host can use, and why a vendor's could
+    /// not be listed.
+    pub async fn models(&self) -> Result<Models> {
         match self {
-            Backend::Local(host) => Ok(host.models()),
+            Backend::Local(host) => Ok(host.models().await),
             Backend::Remote(client, _) => client.models().await,
         }
     }
@@ -148,7 +149,9 @@ impl Backend {
 
     pub async fn start(&self, id: &SessionId, request: RunRequest) -> Result<Events> {
         match self {
-            Backend::Local(host) => Ok(host.start(id.clone(), request, None).await?.map(Ok).boxed()),
+            Backend::Local(host) => {
+                Ok(host.start(id.clone(), request, None).await?.map(Ok).boxed())
+            }
             Backend::Remote(client, _) => client.start(id, request).await,
         }
     }
@@ -166,7 +169,14 @@ impl Backend {
         match self {
             Backend::Remote(client, workbench) if call.machine == workbench.machine() => {
                 let (client, workbench) = (client.clone(), workbench.clone());
-                Some(workbench::take_up(client, workbench, thread.clone(), follower, id, call))
+                Some(workbench::take_up(
+                    client,
+                    workbench,
+                    thread.clone(),
+                    follower,
+                    id,
+                    call,
+                ))
             }
             _ => None,
         }

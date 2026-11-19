@@ -169,7 +169,10 @@ pub struct AgentId(pub String);
 
 impl AgentId {
     pub fn new() -> Self {
-        Self(format!("{:06x}", getrandom::u32().unwrap_or_default() & 0xff_ffff))
+        Self(format!(
+            "{:06x}",
+            getrandom::u32().unwrap_or_default() & 0xff_ffff
+        ))
     }
 
     pub fn as_str(&self) -> &str {
@@ -378,6 +381,31 @@ pub struct Defaults {
 pub struct ModelInfo {
     pub reference: String,
     pub context_window: Option<u32>,
+}
+
+/// The models the host can use, and why a vendor's could not be listed.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct Models {
+    pub models: Vec<ModelChoice>,
+    pub problems: Vec<String>,
+}
+
+/// A model to pick, with what sets it apart.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ModelChoice {
+    pub reference: String,
+    /// The vendor's name for it, when that says more than its id.
+    pub name: Option<String>,
+    pub context_window: Option<u32>,
+    pub thinking: bool,
+    /// USD per million tokens, when the vendor bills by token.
+    pub price: Option<Price>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub struct Price {
+    pub input: f64,
+    pub output: f64,
 }
 
 /// A thread as saved, and the run in progress on it, if any.

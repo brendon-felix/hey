@@ -14,6 +14,7 @@ use reedline::{Span, Suggestion};
 use super::commands;
 
 use crate::mention::{self, Item, Reference, SHARED, SKILL, THREAD};
+use crate::protocol::ModelChoice;
 use crate::sessions::Summary;
 use crate::skills::{Found, Skill};
 
@@ -22,12 +23,14 @@ use crate::skills::{Found, Skill};
 pub const STALE_AFTER: Duration = Duration::from_secs(5);
 const MAX_SUGGESTED: usize = 50;
 
-/// What the host offers to mention, as last fetched.
+/// What the host offers to mention, and the models it can use, as last
+/// fetched.
 #[derive(Debug, Default)]
 pub struct HostIndex {
     pub threads: Vec<Summary>,
     pub shared: Vec<String>,
     pub skills: Found,
+    pub models: Vec<ModelChoice>,
 }
 
 pub type Index = Arc<Mutex<HostIndex>>;
@@ -39,7 +42,9 @@ pub fn lock(index: &Index) -> MutexGuard<'_, HostIndex> {
 impl HostIndex {
     /// The skill `/name` invokes: none a command takes the place of.
     pub fn command(&self, name: &str) -> Option<&Skill> {
-        self.skills.get(name).filter(|_| commands::find(name).is_none())
+        self.skills
+            .get(name)
+            .filter(|_| commands::find(name).is_none())
     }
 
     /// What `reference` attaches, for the status line; `None` when it names
@@ -58,7 +63,10 @@ impl HostIndex {
                 .iter()
                 .find(|summary| summary.id.as_str() == id)
                 .map(|summary| format!("conversation {summary}")),
-            Reference::Skill(name) => self.skills.get(name).map(|skill| format!("{SKILL}{}", skill.name)),
+            Reference::Skill(name) => self
+                .skills
+                .get(name)
+                .map(|skill| format!("{SKILL}{}", skill.name)),
         }
     }
 }
@@ -96,9 +104,11 @@ impl Mentions {
 
     fn local(&mut self, query: &str, span: Span) -> Vec<Suggestion> {
         let modes = self.modes(query, span);
-        let paths = self
-            .local
-            .get(|| mention::walk(Path::new(".")).take(mention::MAX_INDEXED).collect());
+        let paths = self.local.get(|| {
+            mention::walk(Path::new("."))
+                .take(mention::MAX_INDEXED)
+                .collect()
+        });
         let paths = ranked(&self.matcher, paths, query)
             .into_iter()
             .map(|(path, indices)| path_suggestion(mention::typed(path), path, indices, span, ""));
@@ -112,7 +122,11 @@ impl Mentions {
         [
             (THREAD, !index.threads.is_empty(), "a saved conversation"),
             (SHARED, !index.shared.is_empty(), "the host's shared files"),
-            (SKILL, !index.skills.skills.is_empty(), "a skill's instructions"),
+            (
+                SKILL,
+                !index.skills.skills.is_empty(),
+                "a skill's instructions",
+            ),
         ]
         .into_iter()
         .filter(|(mode, offered, _)| *offered && mode.starts_with(query))
@@ -272,7 +286,11 @@ struct Cache<T>(Option<(Instant, T)>);
 
 impl<T> Cache<T> {
     fn get(&mut self, load: impl FnOnce() -> T) -> &T {
-        if self.0.as_ref().is_some_and(|(at, _)| at.elapsed() > STALE_AFTER) {
+        if self
+            .0
+            .as_ref()
+            .is_some_and(|(at, _)| at.elapsed() > STALE_AFTER)
+        {
             self.0 = None;
         }
         &self.0.get_or_insert_with(|| (Instant::now(), load())).1

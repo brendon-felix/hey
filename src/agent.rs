@@ -17,6 +17,7 @@ use rig_core::tool::DynamicTool;
 use rig_tools::Spill;
 
 use crate::config::{self, Providers};
+use crate::copilot;
 use crate::gate::Gate;
 use crate::permissions::{Approval, Permissions, Reporter};
 use crate::protocol::ModelInfo;
@@ -43,13 +44,17 @@ pub struct Model {
 }
 
 impl Model {
-    /// Connects with the vendor's API key from the environment, at the base
-    /// URL its `[providers.<vendor>]` section names.
+    /// Connects with the vendor's API key from the environment, or Copilot's
+    /// sign-in, at the base URL its `[providers.<vendor>]` section names.
     pub fn connect(reference: &str, providers: &Providers) -> Result<Self> {
         let vendor = reference.split('/').next().unwrap_or_default();
-        let options = match providers.get(vendor).and_then(|p| p.base_url.as_deref()) {
-            Some(url) => ConnectOptions::new().base_url(config::expand(url)?),
+        let options = match config::base_url(providers, vendor)? {
+            Some(url) => ConnectOptions::new().base_url(url),
             None => ConnectOptions::new(),
+        };
+        let options = match vendor {
+            copilot::VENDOR => copilot::signed(options)?,
+            _ => options,
         };
         let inner = Catalog::builtin()
             .connect_with(reference, options)
@@ -86,41 +91,40 @@ impl Model {
         if let Some(spec) = self.inner.spec() {
             return Ok(spec.clone());
         }
-        let (vendor, id) = self.reference.split_once('/').unwrap_or((&self.reference, ""));
-        let provider = ProviderId::catalog(vendor).with_context(|| format!("unknown vendor `{vendor}`"))?;
+        let (vendor, id) = self
+            .reference
+            .split_once('/')
+            .unwrap_or((&self.reference, ""));
+        let provider =
+            ProviderId::catalog(vendor).with_context(|| format!("unknown vendor `{vendor}`"))?;
         Ok(ModelSpec::new(provider, id))
     }
 }
 
 /// The embedding model `reference` names, as `ollama/model`: rig's catalog
 /// connects only chat models, so each vendor's embeddings take code of their
-/// own, and only Ollama's have it. The daemon is the one `[providers.ollama]`
-/// names, else `OLLAMA_API_BASE_URL`'s, else the local one.
+/// own, and only Ollama's have it.
 pub fn embedding_model(reference: &str, providers: &Providers) -> Result<DynModel<Embedding>> {
     let Some(("ollama", model)) = reference.split_once('/') else {
-        bail!("cannot use embedding model `{reference}`: only Ollama's are supported, as `ollama/<model>`");
+        bail!(
+            "cannot use embedding model `{reference}`: only Ollama's are supported, as `ollama/<model>`"
+        );
     };
-    let mut daemon = OllamaConfig::from_env().context("cannot configure Ollama")?;
-    if let Some(url) = providers.get("ollama").and_then(|p| p.base_url.as_deref()) {
-        // The configured URL is the OpenAI-compatible API, which chat uses;
-        // embeddings use the daemon's own API, at its root.
-        let url = config::expand(url)?;
-        daemon = daemon.with_base_url(url.trim_end_matches('/').trim_end_matches("/v1"));
-    }
-    Ok(daemon.client().embedding(model, None).into())
+    Ok(ollama_daemon(providers)?
+        .client()
+        .embedding(model, None)
+        .into())
 }
-pub fn available_models() -> Vec<String> {
-    let has_key = |vendor: &rig_core::providers::registry::ProviderId| {
-        vendor
-            .api_key_envs()
-            .iter()
-            .any(|var| std::env::var_os(var).is_some_and(|value| !value.is_empty()))
-    };
-    Catalog::builtin()
-        .iter()
-        .filter(|spec| spec.tools && !spec.deprecated && has_key(&spec.provider))
-        .map(|spec| format!("{}/{}", spec.provider.vendor(), spec.id))
-        .collect()
+
+/// The Ollama daemon `[providers.ollama]` names, else `OLLAMA_API_BASE_URL`'s,
+/// else the local one, through its own API rather than the OpenAI-compatible
+/// one chat uses.
+pub fn ollama_daemon(providers: &Providers) -> Result<OllamaConfig> {
+    let daemon = OllamaConfig::from_env().context("cannot configure Ollama")?;
+    Ok(match config::base_url(providers, "ollama")? {
+        Some(url) => daemon.with_base_url(url.trim_end_matches('/').trim_end_matches("/v1")),
+        None => daemon,
+    })
 }
 
 /// An agent on `model` with `tools`, each running where `routes` says. Its

@@ -5,6 +5,7 @@
 mod commands;
 mod editor;
 mod mentions;
+mod models;
 mod outbox;
 mod theme_picker;
 mod watch;
@@ -128,16 +129,12 @@ pub struct Setup {
 impl Repl {
     pub async fn new(setup: Setup) -> Self {
         let status = Arc::new(Mutex::new(Status::default()));
-        let models = setup.backend.models().await.unwrap_or_else(|error| {
-            render::notice(&format!("no model completions: {error:#}"));
-            Vec::new()
-        });
         let choices = Choices {
-            models,
             thinking: thinking_choices(),
             themes: render::themes(),
         };
         let index = Index::default();
+        models::fetch(setup.backend.clone(), index.clone());
         let outbox = Outbox::default();
         let wake = Arc::new(AtomicBool::new(false));
         let watch = Watch::new(setup.thread.clone(), wake.clone());
@@ -183,7 +180,10 @@ impl Repl {
     /// Reads and answers until the user exits, answering `first` before
     /// the first read.
     pub async fn run(self, first: Option<String>) -> Result<()> {
-        let Self { mut session, mut editor } = self;
+        let Self {
+            mut session,
+            mut editor,
+        } = self;
         if session.greetings {
             snailprint("\nHey!\n", 10000);
         }
@@ -300,7 +300,10 @@ impl Session {
                 if let (Some((id, ask)), Some(current)) = (self.asking.take(), &mut self.current) {
                     // The question takes the prompt's place, and leaves it.
                     editor.erase_prompt();
-                    current.follow.approve(&self.backend, &self.thread, id, &ask).await;
+                    current
+                        .follow
+                        .approve(&self.backend, &self.thread, id, &ask)
+                        .await;
                 }
             }
             Read::Exit => return Flow::Exit,
@@ -309,7 +312,9 @@ impl Session {
     }
 
     fn parse(&self, line: &str) -> Input {
-        commands::parse(line, |word| mentions::lock(&self.index).command(word).is_some())
+        commands::parse(line, |word| {
+            mentions::lock(&self.index).command(word).is_some()
+        })
     }
 
     /// Runs a command, or sends a message the `way` it was sent. Only Enter
@@ -422,7 +427,10 @@ impl Session {
         self.record(&turn);
         let unsteered = self.outbox.unsteered();
         self.give_back(unsteered);
-        let send = matches!((then, outcome), (Then::Answer, Outcome::Answered) | (Then::SendNow, _));
+        let send = matches!(
+            (then, outcome),
+            (Then::Answer, Outcome::Answered) | (Then::SendNow, _)
+        );
         match send.then(|| self.outbox.next()).flatten() {
             Some(next) => {
                 render::user_message(&next);
@@ -493,7 +501,11 @@ impl Session {
     /// started in another terminal or on another machine.
     async fn catch_up(&mut self) {
         self.watch.rest();
-        let Some(run) = self.watch.activity(&self.thread).and_then(|activity| activity.run) else {
+        let Some(run) = self
+            .watch
+            .activity(&self.thread)
+            .and_then(|activity| activity.run)
+        else {
             return;
         };
         if self.shown == Some(run) {
@@ -542,7 +554,10 @@ impl Session {
     fn set_thread(&mut self, thread: SessionId) {
         self.let_go();
         self.watch.set_current(thread.clone());
-        self.shown = self.watch.activity(&thread).and_then(|activity| activity.run);
+        self.shown = self
+            .watch
+            .activity(&thread)
+            .and_then(|activity| activity.run);
         self.displayed = 0;
         self.thread = thread;
         self.show_status(None);
@@ -562,7 +577,9 @@ impl Session {
         );
         let mut index = mentions::lock(&self.index);
         match threads {
-            Ok(threads) => index.threads = threads.into_iter().map(|thread| thread.summary).collect(),
+            Ok(threads) => {
+                index.threads = threads.into_iter().map(|thread| thread.summary).collect()
+            }
             Err(error) => render::notice(&format!("no conversation completions: {error:#}")),
         }
         match shared {
@@ -571,7 +588,11 @@ impl Session {
         }
         match skills {
             Ok(skills) => {
-                for problem in skills.problems.iter().filter(|problem| !index.skills.problems.contains(problem)) {
+                for problem in skills
+                    .problems
+                    .iter()
+                    .filter(|problem| !index.skills.problems.contains(problem))
+                {
                     render::notice(&format!("skill not loaded: {problem}"));
                 }
                 index.skills = skills;
@@ -614,7 +635,10 @@ impl Session {
             Some(thread) => self.open(thread).await,
             None if browsed.deleted.contains(&self.thread) => {
                 self.set_thread(SessionId::new());
-                println!("{}\n", "Deleted this conversation; started a new one.".bold());
+                println!(
+                    "{}\n",
+                    "Deleted this conversation; started a new one.".bold()
+                );
             }
             None => {}
         }
@@ -633,9 +657,12 @@ impl Session {
                 .iter()
                 .find(|thread| !thread.archived && thread.summary.id != self.thread)
                 .map(|thread| &thread.summary),
-            Some(query) => summaries.clone().find(|summary| summary.id.as_str() == query).or_else(|| {
-                mentions::thread_matches(&SkimMatcherV2::default(), summaries, query).next()
-            }),
+            Some(query) => summaries
+                .clone()
+                .find(|summary| summary.id.as_str() == query)
+                .or_else(|| {
+                    mentions::thread_matches(&SkimMatcherV2::default(), summaries, query).next()
+                }),
         };
         match (found, query) {
             (Some(summary), _) => self.open(summary.id.clone()).await,
@@ -692,8 +719,13 @@ impl Session {
         match self.clipboard.copy(&text)? {
             Copied::System => println!("{}\n", format!("Copied {what}.").bold()),
             Copied::Terminal(unavailable) => {
-                println!("{}", format!("Sent {what} to the terminal's clipboard.").bold());
-                let why = unavailable.map_or("over SSH".to_owned(), |error| format!("no system clipboard: {error}"));
+                println!(
+                    "{}",
+                    format!("Sent {what} to the terminal's clipboard.").bold()
+                );
+                let why = unavailable.map_or("over SSH".to_owned(), |error| {
+                    format!("no system clipboard: {error}")
+                });
                 render::notice(&format!("{why}; by OSC 52, which some terminals ignore"));
                 println!();
             }
@@ -720,19 +752,10 @@ impl Session {
     async fn switch_model(&mut self, reference: Option<String>) -> Result<()> {
         let reference = match reference {
             Some(reference) => reference,
-            None => {
-                let models = self.backend.models().await?;
-                if models.is_empty() {
-                    println!("{}\n", "No vendor has an API key set.".bold());
-                    return Ok(());
-                }
-                let current = &self.options.model;
-                let index = models.iter().position(|model| model == current).unwrap_or(0);
-                match ui::pick("Select a model", &models, index)? {
-                    Some(index) => models.into_iter().nth(index).unwrap_or_default(),
-                    None => return Ok(()),
-                }
-            }
+            None => match self.pick_model().await? {
+                Some(reference) => reference,
+                None => return Ok(()),
+            },
         };
         let model = self.backend.model(&reference).await?;
         self.options.model = model.reference;
@@ -743,13 +766,47 @@ impl Session {
         Ok(())
     }
 
+    /// Lists the host's models afresh, with their details and why any
+    /// vendor's could not be listed, to pick one; `None` when none is picked.
+    async fn pick_model(&mut self) -> Result<Option<String>> {
+        let listing = self.backend.models().await?;
+        for problem in &listing.problems {
+            render::notice(&format!("not listed: {problem}"));
+        }
+        let models = listing.models;
+        mentions::lock(&self.index).models = models.clone();
+        if models.is_empty() {
+            println!(
+                "{}\n",
+                "No models: set a vendor's API key, run `hey --login copilot` or start Ollama."
+                    .bold()
+            );
+            return Ok(None);
+        }
+        let current = &self.options.model;
+        let index = models
+            .iter()
+            .position(|model| &model.reference == current)
+            .unwrap_or(0);
+        let picked = ui::pick("Select a model", &models::rows(&models, current), index)?;
+        Ok(picked
+            .and_then(|index| models.into_iter().nth(index))
+            .map(|model| model.reference))
+    }
+
     fn set_thinking(&mut self, level: Option<String>) -> Result<()> {
         let level = match level {
             Some(level) => level,
             None => {
                 let choices = thinking_choices();
-                let current = self.options.thinking.map_or(DEFAULT_THINKING, Thinking::as_str);
-                let index = choices.iter().position(|choice| choice == current).unwrap_or(0);
+                let current = self
+                    .options
+                    .thinking
+                    .map_or(DEFAULT_THINKING, Thinking::as_str);
+                let index = choices
+                    .iter()
+                    .position(|choice| choice == current)
+                    .unwrap_or(0);
                 match ui::pick("Thinking", &choices, index)? {
                     Some(index) => choices.into_iter().nth(index).unwrap_or_default(),
                     None => return Ok(()),
@@ -761,7 +818,10 @@ impl Session {
             level => Some(level.parse::<Thinking>().map_err(anyhow::Error::msg)?),
         };
         self.options.thinking = thinking;
-        self.status.lock().unwrap_or_else(PoisonError::into_inner).thinking = thinking;
+        self.status
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .thinking = thinking;
         let described = thinking.map_or("the model's default", Thinking::as_str);
         println!("{} {}", "Thinking:".bold(), palette().name.paint(described));
         self.save(Setting::Thinking(thinking));
@@ -838,7 +898,11 @@ impl Session {
                 "No skills. A skill is a folder holding a SKILL.md, in one of:".bold()
             );
             for (source, dir) in &found.roots {
-                println!("  {} {}", dir.display(), palette.muted.paint(source.as_str()));
+                println!(
+                    "  {} {}",
+                    dir.display(),
+                    palette.muted.paint(source.as_str())
+                );
             }
             println!();
             return Ok(());

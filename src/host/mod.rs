@@ -28,12 +28,13 @@ use crate::compaction::{self, Applied, Compactor};
 use crate::config::{self, Config, Providers, Thinking};
 use crate::gate;
 use crate::memory::{self, Memory, Recalled};
+use crate::models;
 use crate::permissions::{Origin, Permissions};
 use crate::preamble::{Hosting, Setting};
 use crate::protocol::{
     Activities, Activity, ApprovalId, Ask, CallId, CallResult, Decision, Defaults, Ending, Event,
-    FollowerId, Machine, ModelInfo, Revision, RunId, RunRequest, Snapshot, Task, ThreadInfo,
-    ThreadStatus, Tools,
+    FollowerId, Machine, ModelInfo, Models, Revision, RunId, RunRequest, Snapshot, Task,
+    ThreadInfo, ThreadStatus, Tools,
 };
 use crate::render;
 use crate::results::ResultLimit;
@@ -159,7 +160,10 @@ impl Host {
     pub async fn new(config: &Config, hosting: Hosting) -> Result<Self> {
         let sessions = Sessions::open(config.sessions.dir()?)?;
         let toolbox = Toolbox::new(config).await?;
-        let crew = config.subagents.enabled.then(|| Arc::new(Crew::new(config)));
+        let crew = config
+            .subagents
+            .enabled
+            .then(|| Arc::new(Crew::new(config)));
         let spawn = crew.as_ref().map(|_| subagents::TOOL);
         let host_only = [skills::TOOL, compaction::TOOL].into_iter().chain(spawn);
         let host_only = host_only.map(|name| (name, &Origin::Builtin));
@@ -203,8 +207,8 @@ impl Host {
         Model::connect(reference, &self.providers).map(|model| model.info())
     }
 
-    pub fn models(&self) -> Vec<String> {
-        agent::available_models()
+    pub async fn models(&self) -> Models {
+        models::list(&self.providers).await
     }
 
     /// Every conversation, newest first: those saved, and those whose first
@@ -228,7 +232,9 @@ impl Host {
             .into_iter()
             .map(|summary| {
                 let mark = marks.get(&summary.id).copied().unwrap_or_default();
-                let run = threads.get(&summary.id).and_then(|thread| thread.run.as_deref());
+                let run = threads
+                    .get(&summary.id)
+                    .and_then(|thread| thread.run.as_deref());
                 ThreadInfo {
                     summary,
                     status: status(run, mark),
@@ -317,14 +323,21 @@ impl Host {
     ) -> Result<Events, ThreadError> {
         // A client on this machine lends tools the host has already.
         if let Some(client) = &mut request.client
-            && client.lent.as_ref().is_some_and(|lent| lent.machine == self.name)
+            && client
+                .lent
+                .as_ref()
+                .is_some_and(|lent| lent.machine == self.name)
         {
             client.lent = None;
         }
-        let model = Model::connect(&request.options.model, &self.providers)
+        let model =
+            Model::connect(&request.options.model, &self.providers).map_err(ThreadError::Other)?;
+        let compactor = Compactor::new(&self.compaction, &model, &self.providers)
             .map_err(ThreadError::Other)?;
-        let compactor = Compactor::new(&self.compaction, &model, &self.providers).map_err(ThreadError::Other)?;
-        let recalled = self.lock().get(&id).is_some_and(|thread| thread.memories.is_some());
+        let recalled = self
+            .lock()
+            .get(&id)
+            .is_some_and(|thread| thread.memories.is_some());
         let memories = match (recalled, request.task) {
             (false, Task::Answer) => Some(self.recall(&request.prompt).await),
             _ => None,
@@ -370,7 +383,14 @@ impl Host {
         let work = match request.task {
             Task::Answer => {
                 let history = basis.messages.len();
-                let live = compaction::Live::new(compactor, run.clone(), history, basis.from, basis.state, thread.context);
+                let live = compaction::Live::new(
+                    compactor,
+                    run.clone(),
+                    history,
+                    basis.from,
+                    basis.state,
+                    thread.context,
+                );
                 let answering = Answering {
                     model,
                     request,
@@ -378,11 +398,15 @@ impl Host {
                     live: Arc::new(live),
                 };
                 let agent = self.agent(&id, thread, &run, &answering);
-                self.clone().drive(id, run.clone(), agent, answering).boxed()
+                self.clone()
+                    .drive(id, run.clone(), agent, answering)
+                    .boxed()
             }
             Task::Compact => {
                 run.close_compactions();
-                self.clone().drive_compaction(id, run.clone(), compactor, request.prompt).boxed()
+                self.clone()
+                    .drive_compaction(id, run.clone(), compactor, request.prompt)
+                    .boxed()
             }
         };
         thread.run = Some(run.clone());
@@ -508,7 +532,13 @@ impl Host {
         }
     }
 
-    fn agent(&self, id: &SessionId, thread: &Thread, run: &Arc<Run>, answering: &Answering) -> Agent {
+    fn agent(
+        &self,
+        id: &SessionId,
+        thread: &Thread,
+        run: &Arc<Run>,
+        answering: &Answering,
+    ) -> Agent {
         let Answering {
             model,
             request,
@@ -545,11 +575,20 @@ impl Host {
         let kit = Kit {
             toolbox: self.toolbox.clone(),
             host: self.name.clone(),
-            lent: request.client.as_ref().and_then(|client| client.lent.clone()),
+            lent: request
+                .client
+                .as_ref()
+                .and_then(|client| client.lent.clone()),
             run: run.clone(),
         };
         let (tools, routes) = kit.tools(&thread.seen, Some(live), None);
-        let builder = agent::builder(model, tools, routes, thread.permissions.clone(), run.clone())
+        let builder = agent::builder(
+            model,
+            tools,
+            routes,
+            thread.permissions.clone(),
+            run.clone(),
+        )
         .name("hey")
         .preamble(system_prompt)
         .append_preamble(&setting.render());
@@ -580,7 +619,14 @@ impl Host {
     /// The tool that starts subagents with the run's tools, sharing the
     /// thread's tool permissions, on the model the config gives them or the
     /// run's.
-    fn spawn(&self, crew: &Arc<Crew>, id: &SessionId, thread: &Thread, request: &RunRequest, kit: Kit) -> Spawn {
+    fn spawn(
+        &self,
+        crew: &Arc<Crew>,
+        id: &SessionId,
+        thread: &Thread,
+        request: &RunRequest,
+        kit: Kit,
+    ) -> Spawn {
         Spawn {
             crew: crew.clone(),
             team: crew.team(id, thread.permissions.clone()),
@@ -597,7 +643,13 @@ impl Host {
     /// answer once its clients are let go. The agent saves the thread as
     /// each of its streams ends; what a run that did not answer said, and
     /// the summary it compacted to, are saved here.
-    async fn drive(self: Arc<Self>, id: SessionId, run: Arc<Run>, agent: Agent, answering: Answering) {
+    async fn drive(
+        self: Arc<Self>,
+        id: SessionId,
+        run: Arc<Run>,
+        agent: Agent,
+        answering: Answering,
+    ) {
         let Answering {
             model,
             request,
@@ -605,7 +657,9 @@ impl Host {
             live,
         } = answering;
         let conversing = self.converse(&id, &run, &agent, &model, request, &skills);
-        let ending = until_stopped(&run, conversing).await.unwrap_or(Ending::Interrupted);
+        let ending = until_stopped(&run, conversing)
+            .await
+            .unwrap_or(Ending::Interrupted);
         run.close_steers();
         self.keep(&id, &run, &ending);
         let answered = matches!(ending, Ending::Answered);
@@ -623,7 +677,9 @@ impl Host {
         // Asked as the answer ended, with no model call left to make it.
         if let (Ending::Answered, Some(focus)) = (&ending, run.close_compactions()) {
             context = None;
-            if let Some(Err(error)) = until_stopped(&run, self.compact_saved(&id, &run, live.compactor(), focus)).await {
+            if let Some(Err(error)) =
+                until_stopped(&run, self.compact_saved(&id, &run, live.compactor(), focus)).await
+            {
                 run.emit(Event::Notice {
                     text: format!("not compacted: {error:#}"),
                 });
@@ -639,34 +695,54 @@ impl Host {
 
     /// Compacts the thread as saved into `run`, `focus` saying what the
     /// summary should keep above all.
-    async fn drive_compaction(self: Arc<Self>, id: SessionId, run: Arc<Run>, compactor: Compactor, focus: String) {
-        let ending = match until_stopped(&run, self.compact_saved(&id, &run, &compactor, focus)).await {
-            None => Ending::Interrupted,
-            Some(Ok(())) => Ending::Answered,
-            Some(Err(error)) => Ending::Failed {
-                error: format!("not compacted: {error:#}"),
-            },
-        };
+    async fn drive_compaction(
+        self: Arc<Self>,
+        id: SessionId,
+        run: Arc<Run>,
+        compactor: Compactor,
+        focus: String,
+    ) {
+        let ending =
+            match until_stopped(&run, self.compact_saved(&id, &run, &compactor, focus)).await {
+                None => Ending::Interrupted,
+                Some(Ok(())) => Ending::Answered,
+                Some(Err(error)) => Ending::Failed {
+                    error: format!("not compacted: {error:#}"),
+                },
+            };
         self.end(&id, &run, ending, None);
     }
 
     /// Replaces the older messages of the thread as saved with a summary,
     /// telling `run`'s clients.
-    async fn compact_saved(&self, id: &SessionId, run: &Run, compactor: &Compactor, focus: String) -> Result<()> {
+    async fn compact_saved(
+        &self,
+        id: &SessionId,
+        run: &Run,
+        compactor: &Compactor,
+        focus: String,
+    ) -> Result<()> {
         let basis = self.sessions.basis(id)?;
         run.emit(Event::Notice {
             text: "compacting the conversation…".into(),
         });
         let reason = CompactReason::Asked { focus };
-        let Some(summary) = compactor.summarize(&basis.messages, basis.from, &basis.state, &reason).await? else {
+        let Some(summary) = compactor
+            .summarize(&basis.messages, basis.from, &basis.state, &reason)
+            .await?
+        else {
             run.emit(Event::Notice {
                 text: "nothing to compact yet".into(),
             });
             return Ok(());
         };
-        let kept = basis.messages.get(summary.upto).context("nothing is kept after the summary")?;
+        let kept = basis
+            .messages
+            .get(summary.upto)
+            .context("nothing is kept after the summary")?;
         anyhow::ensure!(
-            self.sessions.summarize(id, summary.upto, kept, &summary.state)?,
+            self.sessions
+                .summarize(id, summary.upto, kept, &summary.state)?,
             "the conversation changed while it was summarized"
         );
         tracing::info!(thread = id.as_str(), tokens = summary.before, "compacted");
@@ -678,7 +754,10 @@ impl Host {
     /// false when it could not, as when the run's end saved the thread
     /// other than it was answered.
     fn save_summary(&self, id: &SessionId, run: &Run, applied: &Applied) -> bool {
-        let failure = match self.sessions.summarize(id, applied.at, &applied.kept, &applied.state) {
+        let failure = match self
+            .sessions
+            .summarize(id, applied.at, &applied.kept, &applied.state)
+        {
             Ok(true) => return true,
             Ok(false) => "the conversation was saved otherwise".to_owned(),
             Err(error) => format!("{error:#}"),
@@ -728,10 +807,21 @@ impl Host {
         }
         let count = said.len();
         match self.sessions.append(id, run.record().held(), said) {
-            Ok(true) => tracing::info!(thread = id.as_str(), messages = count, "saved what an unfinished run said"),
-            Ok(false) => tracing::info!(thread = id.as_str(), "an unfinished run's thread changed; saved nothing"),
+            Ok(true) => tracing::info!(
+                thread = id.as_str(),
+                messages = count,
+                "saved what an unfinished run said"
+            ),
+            Ok(false) => tracing::info!(
+                thread = id.as_str(),
+                "an unfinished run's thread changed; saved nothing"
+            ),
             Err(error) => {
-                tracing::warn!(thread = id.as_str(), error = format!("{error:#}"), "cannot save an unfinished run");
+                tracing::warn!(
+                    thread = id.as_str(),
+                    error = format!("{error:#}"),
+                    "cannot save an unfinished run"
+                );
                 run.emit(Event::Notice {
                     text: format!("what was said is not saved: {error:#}"),
                 });
@@ -756,9 +846,13 @@ impl Host {
             options,
             ..
         } = request;
-        let mut message = self.message(&prompt, &attachments, skills, model, run).await;
+        let mut message = self
+            .message(&prompt, &attachments, skills, model, run)
+            .await;
         loop {
-            let ending = self.respond(id, run, agent, message, options.thinking).await;
+            let ending = self
+                .respond(id, run, agent, message, options.thinking)
+                .await;
             let waiting = match ending {
                 Ending::Answered => run.last_steers(),
                 Ending::Interrupted | Ending::Failed { .. } => Vec::new(),
@@ -801,7 +895,10 @@ impl Host {
                         error: error.to_string(),
                     };
                 }
-                Some(Ok(item)) => steps.events(item).into_iter().for_each(|event| run.emit(event)),
+                Some(Ok(item)) => steps
+                    .events(item)
+                    .into_iter()
+                    .for_each(|event| run.emit(event)),
             }
         }
     }
@@ -815,7 +912,9 @@ impl Host {
             .model()
             .map(|reference| Model::connect(reference, &self.providers))
             .transpose()?;
-        memory.learn(configured.as_ref().unwrap_or(model), exchange).await
+        memory
+            .learn(configured.as_ref().unwrap_or(model), exchange)
+            .await
     }
 
     /// The memories a thread opening with `prompt` starts with. A failure is
@@ -825,10 +924,7 @@ impl Host {
             return Vec::new();
         };
         let (memories, failure) = match memory.recall(prompt).await {
-            Ok(Recalled {
-                memories,
-                fallback,
-            }) => (
+            Ok(Recalled { memories, fallback }) => (
                 memories,
                 fallback.map(|error| format!("recalled the newest memories: {error:#}")),
             ),

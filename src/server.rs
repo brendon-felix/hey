@@ -19,7 +19,6 @@ use axum::{Json, Router};
 use futures::{Stream, StreamExt, stream};
 use serde::{Deserialize, Serialize};
 
-use crate::{config, token};
 use crate::host::{HEARTBEAT, Host, ThreadError};
 use crate::protocol::{
     ApprovalId, Ask, CallId, CallResult, Decision, Event, FollowerId, MACHINE_HEADER, Revision,
@@ -27,6 +26,7 @@ use crate::protocol::{
 };
 use crate::sessions::SessionId;
 use crate::steer::Steer;
+use crate::{config, token};
 
 pub async fn serve(host: Arc<Host>, config: &config::Server) -> Result<()> {
     let token: Arc<str> = token::host(&config.token)?.into();
@@ -51,7 +51,10 @@ pub async fn serve(host: Arc<Host>, config: &config::Server) -> Result<()> {
         .route("/v1/threads/{id}/calls/{call}/events", post(call_event))
         .route("/v1/threads/{id}/calls/{call}/asks", post(call_ask))
         .route("/v1/threads/{id}/tools", get(tools))
-        .route("/v1/memories", get(memories).post(remember).put(revise).delete(forget))
+        .route(
+            "/v1/memories",
+            get(memories).post(remember).put(revise).delete(forget),
+        )
         .layer(middleware::from_fn_with_state(token, authorize))
         .with_state(host);
     let listener = tokio::net::TcpListener::bind(config.listen)
@@ -107,7 +110,7 @@ async fn defaults(State(host): State<Arc<Host>>) -> impl IntoResponse {
 }
 
 async fn models(State(host): State<Arc<Host>>) -> impl IntoResponse {
-    Json(host.models())
+    Json(host.models().await)
 }
 
 #[derive(Deserialize)]
@@ -170,10 +173,13 @@ async fn start(
     headers: HeaderMap,
     Json(request): Json<RunRequest>,
 ) -> Reply<Response> {
-    let events = host.start(id, request, machine(&headers)).await.map_err(|error| match error {
-        ThreadError::Busy => Failure(StatusCode::CONFLICT, error.to_string()),
-        ThreadError::Other(_) => Failure(StatusCode::BAD_REQUEST, error.to_string()),
-    })?;
+    let events = host
+        .start(id, request, machine(&headers))
+        .await
+        .map_err(|error| match error {
+            ThreadError::Busy => Failure(StatusCode::CONFLICT, error.to_string()),
+            ThreadError::Other(_) => Failure(StatusCode::BAD_REQUEST, error.to_string()),
+        })?;
     Ok(ndjson_response(ndjson(events)))
 }
 
@@ -224,7 +230,10 @@ async fn archive(
     Ok(StatusCode::NO_CONTENT)
 }
 
-async fn fork(State(host): State<Arc<Host>>, Path(id): Path<SessionId>) -> Reply<impl IntoResponse> {
+async fn fork(
+    State(host): State<Arc<Host>>,
+    Path(id): Path<SessionId>,
+) -> Reply<impl IntoResponse> {
     let copy = host
         .fork(&id)
         .map_err(|error| Failure(StatusCode::BAD_REQUEST, format!("{error:#}")))?;
@@ -320,7 +329,10 @@ async fn remember(State(host): State<Arc<Host>>, Json(memory): Json<String>) -> 
     })
 }
 
-async fn revise(State(host): State<Arc<Host>>, Json(revision): Json<Revision>) -> Reply<StatusCode> {
+async fn revise(
+    State(host): State<Arc<Host>>,
+    Json(revision): Json<Revision>,
+) -> Reply<StatusCode> {
     host.revise(&revision)?;
     Ok(StatusCode::NO_CONTENT)
 }

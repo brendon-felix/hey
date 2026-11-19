@@ -9,12 +9,14 @@ mod client;
 mod clipboard;
 mod compaction;
 mod config;
+mod copilot;
 mod gate;
 mod host;
 mod log;
 mod mcp;
 mod memory;
 mod mention;
+mod models;
 mod permissions;
 mod preamble;
 mod protocol;
@@ -106,9 +108,23 @@ struct Args {
     )]
     serve: bool,
 
+    /// Sign in to a vendor whose models need it, on this machine
+    #[arg(
+        long,
+        value_name = "VENDOR",
+        conflicts_with_all = ["prompt_path", "model", "think", "resume", "threads", "memories", "interactive", "remote", "local", "serve", "message"],
+    )]
+    login: Option<Login>,
+
     /// Message to send; without one, hey starts a REPL
     #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
     message: Vec<String>,
+}
+
+#[derive(clap::ValueEnum, Clone, Copy, Debug)]
+enum Login {
+    /// GitHub Copilot, with a device code
+    Copilot,
 }
 
 #[tokio::main]
@@ -128,7 +144,17 @@ async fn run(args: Args) -> Result<ExitCode> {
     let _logging = log::init(&config.log)
         .inspect_err(|error| render::notice(&format!("not logging: {error:#}")))
         .ok();
-    tracing::info!(version = env!("CARGO_PKG_VERSION"), serve = args.serve, "hey started");
+    tracing::info!(
+        version = env!("CARGO_PKG_VERSION"),
+        serve = args.serve,
+        "hey started"
+    );
+    if let Some(login) = args.login {
+        match login {
+            Login::Copilot => copilot::login().await?,
+        }
+        return Ok(ExitCode::SUCCESS);
+    }
     if args.serve {
         let hosting = Hosting::Served {
             listen: config.server.listen,
@@ -151,7 +177,9 @@ async fn run(args: Args) -> Result<ExitCode> {
         return Ok(ExitCode::SUCCESS);
     }
     let defaults = backend.defaults().await?;
-    let model = backend.model(args.model.as_deref().unwrap_or(&defaults.model)).await?;
+    let model = backend
+        .model(args.model.as_deref().unwrap_or(&defaults.model))
+        .await?;
     let thinking = args.think.or(defaults.thinking);
     let message = (!args.message.is_empty()).then(|| args.message.join(" "));
     let launch = match message {

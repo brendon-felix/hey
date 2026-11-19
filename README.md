@@ -47,6 +47,9 @@ Set the API key for your model's vendor, for example:
 export OPENAI_API_KEY=your_api_key_here
 ```
 
+GitHub Copilot needs no key: sign in once with `hey --login copilot`, then use its models as
+`copilot/<model>`, such as `copilot/claude-sonnet-4.6`.
+
 ## Usage
 
 ```bash
@@ -62,6 +65,7 @@ hey -t high prove it                  # set the thinking level (off, minimal…m
 hey -p ~/prompts/reviewer.txt         # system prompt from a file
 hey --remote fermi                    # run the agent on a remote host
 hey --serve                           # be a remote host
+hey --login copilot                   # sign in to GitHub Copilot
 ```
 
 ### Commands
@@ -79,7 +83,7 @@ Type `/` or press Tab to see commands and skills; the status line describes the 
 | `/copy` | Copy the latest reply as Markdown |
 | `/copy-all` | Copy this conversation as Markdown |
 | `/compact [focus]` | Replace older messages with a summary, keeping above all what `focus` names |
-| `/model [vendor/model]`, `/m` | Switch model |
+| `/model [vendor/model]`, `/m` | Switch model; without one, pick from the models the host can use |
 | `/think [level]` | Set thinking: `off`, `minimal`…`max`, or `default` |
 | `/theme [theme]`, `/t` | Switch theme; without one, pick with a live preview |
 | `/tools` | List tools, their permissions and MCP servers |
@@ -91,6 +95,12 @@ Type `/` or press Tab to see commands and skills; the status line describes the 
 
 `/model`, `/think` and `/theme` save their choice to the config file, so later sessions start
 with it; `--model` and `--think` apply to one run only.
+
+`/model` and its Tab completion list the models the host can use, with their names, context
+windows, whether they think, and prices in USD per million input/output tokens. Models come
+from rig's catalog for each vendor with an API key set, and from the vendor itself where they
+depend on your setup: those an Ollama daemon has pulled, and those your Copilot plan offers once
+signed in. `/model` fetches the list afresh and says why any vendor's could not be listed.
 
 `/resume` takes a conversation's id, which Tab completes from their dates and titles, or any
 part of its date or title, opening the best match.
