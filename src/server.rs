@@ -42,6 +42,7 @@ pub async fn serve(host: Arc<Host>, config: &config::Server) -> Result<()> {
         .route("/v1/threads/{id}/run", post(start).delete(stop))
         .route("/v1/threads/{id}/steer", post(steer))
         .route("/v1/threads/{id}/compact", post(compact))
+        .route("/v1/threads/{id}/undo", post(undo))
         .route("/v1/threads/{id}/viewed", post(viewed))
         .route("/v1/threads/{id}/archived", put(archive))
         .route("/v1/threads/{id}/fork", post(fork))
@@ -214,6 +215,16 @@ async fn compact(
         true => StatusCode::NO_CONTENT,
         false => StatusCode::CONFLICT,
     }
+}
+
+/// Puts back the files of the latest answer that changed any: what was
+/// undone, or null when nothing was left; 409 while the thread answers.
+async fn undo(State(host): State<Arc<Host>>, Path(id): Path<SessionId>) -> Reply<impl IntoResponse> {
+    let undone = host.undo(&id).map_err(|error| match error {
+        ThreadError::Busy => Failure(StatusCode::CONFLICT, error.to_string()),
+        ThreadError::Other(_) => Failure(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()),
+    })?;
+    Ok(Json(undone))
 }
 
 async fn viewed(State(host): State<Arc<Host>>, Path(id): Path<SessionId>) -> Reply<StatusCode> {

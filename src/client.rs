@@ -19,7 +19,7 @@ use crate::config::{self, Remote};
 use crate::protocol::{
     Activities, ApprovalId, Ask, CallId, CallResult, ClientInfo, Decision, Defaults, Event,
     FollowerId, Lent, MACHINE_HEADER, Machine, ModelInfo, Models, Revision, RunRequest, Snapshot,
-    ThreadInfo, Tools,
+    ThreadInfo, Tools, Undone,
 };
 use crate::sessions::SessionId;
 use crate::skills::Found;
@@ -241,6 +241,11 @@ impl Client {
             StatusCode::CONFLICT,
         )
         .await
+    }
+
+    pub async fn undo(&self, id: &SessionId) -> Result<Option<Undone>> {
+        let path = format!("v1/threads/{}/undo", id.as_str());
+        self.json(self.http.post(self.url(&path)?)).await
     }
 
     pub async fn tools(&self, id: &SessionId) -> Result<Tools> {

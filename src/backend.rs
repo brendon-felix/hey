@@ -12,7 +12,7 @@ use crate::client::Client;
 use crate::host::{self, Host};
 use crate::protocol::{
     Activities, ApprovalId, Call, CallId, Decision, Defaults, Event, FollowerId, ModelInfo, Models,
-    Revision, RunRequest, Snapshot, ThreadInfo, Tools,
+    Revision, RunRequest, Snapshot, ThreadInfo, Tools, Undone,
 };
 use crate::sessions::SessionId;
 use crate::skills::Found;
@@ -219,6 +219,15 @@ impl Backend {
         match self {
             Backend::Local(host) => Ok(host.compact_running(id, focus)),
             Backend::Remote(client, _) => client.compact(id, focus).await,
+        }
+    }
+
+    /// Puts back the files of the thread's latest answer that changed any,
+    /// on the host; `None` when none is left to undo.
+    pub async fn undo(&self, id: &SessionId) -> Result<Option<Undone>> {
+        match self {
+            Backend::Local(host) => Ok(host.undo(id)?),
+            Backend::Remote(client, _) => client.undo(id).await,
         }
     }
 

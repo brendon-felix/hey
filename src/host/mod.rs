@@ -24,6 +24,7 @@ use tokio::sync::watch;
 use tokio_util::task::TaskTracker;
 
 use crate::agent::{self, Model};
+use crate::checkpoint::{Checkpoints, Turn};
 use crate::compaction::{self, Applied, Compactor};
 use crate::instructions::Instructions;
 use crate::config::{self, Config, Providers, Thinking};
@@ -35,7 +36,7 @@ use crate::preamble::{Hosting, Setting};
 use crate::protocol::{
     Activities, Activity, ApprovalId, Ask, CallId, CallResult, Decision, Defaults, Ending, Event,
     FollowerId, Machine, ModelInfo, Models, Revision, RunId, RunRequest, Snapshot, Task,
-    ThreadInfo, ThreadStatus, Tools,
+    ThreadInfo, ThreadStatus, Tools, Undone,
 };
 use crate::render;
 use crate::results::ResultLimit;
@@ -79,6 +80,8 @@ pub struct Host {
     memory_failure: Mutex<Option<String>>,
     compaction: config::Compaction,
     instructions: config::Instructions,
+    /// The files each answer changed, as they were, when checkpoints are on.
+    checkpoints: Option<Checkpoints>,
     permissions: Permissions,
     /// Runs subagents here, when the config offers them.
     crew: Option<Arc<Crew>>,
@@ -196,6 +199,10 @@ impl Host {
             memory_failure: Mutex::default(),
             compaction: config.compaction.clone(),
             instructions: config.instructions.clone(),
+            checkpoints: match config.checkpoints.enabled {
+                true => Some(Checkpoints::new(&config::data_dir()?, agent::working_directory())),
+                false => None,
+            },
             permissions,
             crew,
             subagent_model: config.subagents.model.clone(),
@@ -291,6 +298,9 @@ impl Host {
             return Err(ThreadError::Busy);
         }
         threads.remove(id);
+        if let Some(checkpoints) = &self.checkpoints {
+            checkpoints.forget(id);
+        }
         if let Some(crew) = &self.crew {
             crew.forget(id);
         }
@@ -435,6 +445,22 @@ impl Host {
     /// or its answer is ending.
     pub fn compact_running(&self, id: &SessionId, focus: &str) -> bool {
         self.run(id).is_some_and(|run| run.compact(focus))
+    }
+
+    /// Puts the files the latest answer in thread `id` that changed any
+    /// back as they were before it; `None` when none is left to undo. The
+    /// conversation stays as it is.
+    pub fn undo(&self, id: &SessionId) -> Result<Option<Undone>, ThreadError> {
+        let threads = self.lock();
+        if threads.get(id).is_some_and(|thread| thread.run.is_some()) {
+            return Err(ThreadError::Busy);
+        }
+        let checkpoints = self.checkpoints.as_ref().ok_or_else(|| {
+            ThreadError::Other(anyhow::anyhow!("checkpoints are off in the host's config (`checkpoints.enabled`)"))
+        })?;
+        let undone = checkpoints.undo(id).map_err(ThreadError::Other)?;
+        drop(threads);
+        Ok(undone)
     }
 
     /// False when the approval is not waiting.
@@ -593,6 +619,7 @@ impl Host {
                 .as_ref()
                 .and_then(|client| client.lent.clone()),
             run: run.clone(),
+            turn: self.turn(id),
         };
         let (tools, routes) = kit.tools(&thread.seen, Some(live), None);
         let builder = agent::builder(
@@ -630,6 +657,11 @@ impl Host {
             builder = builder.max_tokens(max_tokens);
         }
         builder.build()
+    }
+
+    /// A new answer's checkpoint in thread `id`, when checkpoints are on.
+    fn turn(&self, id: &SessionId) -> Option<Arc<Turn>> {
+        self.checkpoints.as_ref().map(|checkpoints| checkpoints.turn(id))
     }
 
     /// The tool that starts subagents with the run's tools, sharing the
