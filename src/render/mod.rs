@@ -306,6 +306,9 @@ fn summarize(map: &serde_json::Map<String, serde_json::Value>) -> String {
             .collect();
         return labels.join(", ");
     }
+    if let Some(serde_json::Value::Array(todos)) = map.get("todos") {
+        return format!("{} items", todos.len());
+    }
     let mut strings = map.values().filter_map(serde_json::Value::as_str);
     let only_string = match (strings.next(), strings.next()) {
         (Some(only), None) if map.len() == 1 => Some(only),
@@ -313,7 +316,7 @@ fn summarize(map: &serde_json::Map<String, serde_json::Value>) -> String {
     };
     match (field("from"), field("to")) {
         (Some(from), Some(to)) => format!("{from} → {to}"),
-        _ => ["command", "path", "pattern", "url", "query"]
+        _ => ["command", "path", "pattern", "url", "query", "question"]
             .into_iter()
             .find_map(field)
             .or(only_string)

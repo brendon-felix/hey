@@ -20,6 +20,7 @@ use rig_memory::{CompactReason, CompactionPolicy, Summarizer, SummaryState, Trac
 
 use crate::agent::Model;
 use crate::config::{self, Providers};
+use crate::notes::{self, Notes};
 use crate::protocol::Event;
 
 pub use hook::{Applied, Hook, Live};
@@ -61,6 +62,8 @@ pub struct Compactor {
     /// Tokens past which a model call compacts first; `None` when only
     /// asking compacts.
     threshold: Option<u64>,
+    /// The conversation's notes, whose todo list each summary keeps.
+    notes: Option<Arc<Notes>>,
 }
 
 /// A summary of a conversation's messages before its `upto`th.
@@ -115,7 +118,15 @@ impl Compactor {
             spec,
             policy,
             threshold: config.auto.then_some(threshold),
+            notes: None,
         })
+    }
+
+    /// Has each summary end with the todo list `notes` holds then, so it
+    /// outlasts the messages that wrote it.
+    pub fn keeping(mut self, notes: Arc<Notes>) -> Self {
+        self.notes = Some(notes);
+        self
     }
 
     /// Whether a model call of about `tokens` should compact first.
@@ -142,11 +153,26 @@ impl Compactor {
             .map_err(|error| anyhow::anyhow!("{error}"))?;
         let response = self.summarizer.completion().call(request).await?;
         state.summary = Summarizer::summary_text(&response)?;
+        let todos = self.notes.as_ref().map(|notes| notes.todos()).unwrap_or_default();
+        state.summary = with_todos(&state.summary, notes::todo_section(&todos));
         Ok(Some(Summary {
             upto,
             state,
             before: estimate_tokens(messages.get(..upto).unwrap_or_default()),
         }))
+    }
+}
+
+/// `summary` ending with `section`, in place of the todo list an earlier
+/// summary it folds in may have kept.
+fn with_todos(summary: &str, section: Option<String>) -> String {
+    let summary = match summary.find("## Todo list") {
+        Some(at) => summary[..at].trim_end(),
+        None => summary.trim_end(),
+    };
+    match section {
+        Some(section) => format!("{summary}\n\n{section}"),
+        None => summary.to_owned(),
     }
 }
 
@@ -208,6 +234,14 @@ mod tests {
         let message = state.message().unwrap();
         assert_eq!(summary_in(&message), Some("## Goal\nShip it"));
         assert_eq!(summary_in("## Goal\nShip it"), None);
+    }
+
+    #[test]
+    fn a_summary_ends_with_the_todo_list_as_it_is_now() {
+        let old = "## Goal\nShip it\n\n## Todo list\n- [ ] stale";
+        let now = Some("## Todo list\n- [x] done".to_owned());
+        assert_eq!(with_todos(old, now), "## Goal\nShip it\n\n## Todo list\n- [x] done");
+        assert_eq!(with_todos(old, None), "## Goal\nShip it");
     }
 
     #[test]

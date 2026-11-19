@@ -74,7 +74,7 @@ impl Context {
 /// Whether `text` is the part of a user message that holds what its
 /// mentions attached, rather than what the user typed.
 pub fn is_context(text: &str) -> bool {
-    text.starts_with(OPEN_CONTEXT)
+    text.starts_with(OPEN_CONTEXT) || crate::tools::is_reminder(text)
 }
 
 /// A fence longer than any run of backticks in `text`, tagged with the

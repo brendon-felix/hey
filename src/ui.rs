@@ -52,12 +52,14 @@ fn tint(style: Style, color: render::Color) -> Style {
 
 /// Asks `ask`. Esc declines; Ctrl+C stops the run. Dropped unanswered, as
 /// when another client decides first, it takes the question off the screen.
-pub async fn confirm(ask: &Ask) -> Decision {
+pub async fn confirm(ask: &Ask, style: &render::Style) -> Decision {
     if !std::io::stdin().is_terminal() {
         return Decision::Stop;
     }
     let decisions = [Decision::Once, Decision::Always, Decision::Decline];
     let (question, labels) = match ask {
+        Ask::Question { question, choices } => return answer(question, choices).await,
+        Ask::Plan { plan } => return approve_plan(plan, style).await,
         Ask::Tool {
             name,
             agent,
@@ -82,10 +84,57 @@ pub async fn confirm(ask: &Ask) -> Decision {
     };
     let answer = async { Menu::open(question, labels.into())?.answer().await };
     match answer.await {
-        Ok(Answer::Picked(index)) => decisions[index],
+        Ok(Answer::Picked(index)) => decisions[index].clone(),
         Ok(Answer::Dismissed) => Decision::Decline,
         Ok(Answer::Interrupted) | Err(_) => Decision::Stop,
     }
+}
+
+/// Asks the agent's `question`, offering `choices` and a typed answer.
+async fn answer(question: &str, choices: &[String]) -> Decision {
+    const TYPE: &str = "Type an answer…";
+    let options: Vec<String> = choices.iter().cloned().chain([TYPE.to_owned()]).collect();
+    let picked = async {
+        let mut menu = Menu::open(question.to_owned(), options)?;
+        match menu.answer().await? {
+            Answer::Picked(index) if index < choices.len() => Ok(Some(choices[index].clone())),
+            Answer::Picked(_) => menu.typed().await,
+            Answer::Dismissed => Ok(None),
+            Answer::Interrupted => Err(io::Error::from(ErrorKind::Interrupted)),
+        }
+    };
+    match picked.await {
+        Ok(Some(answer)) => {
+            println!("  {} {answer}", palette().accent.paint("›"));
+            Decision::Answer(answer)
+        }
+        Ok(None) => Decision::Decline,
+        Err(_) => Decision::Stop,
+    }
+}
+
+/// Shows the agent's `plan` and asks whether to carry it out: yes, no, or
+/// what to change.
+async fn approve_plan(plan: &str, style: &render::Style) -> Decision {
+    println!();
+    let mut reply = render::Reply::new(style);
+    reply.text(plan);
+    reply.finish();
+    let options = [
+        "Yes, carry it out".to_owned(),
+        "No, keep planning".to_owned(),
+        "Tell it what to change…".to_owned(),
+    ];
+    let picked = async {
+        let mut menu = Menu::open("Approve this plan and leave plan mode?".to_owned(), options.into())?;
+        match menu.answer().await? {
+            Answer::Picked(0) => io::Result::Ok(Decision::Once),
+            Answer::Picked(1) | Answer::Dismissed => Ok(Decision::Decline),
+            Answer::Picked(_) => Ok(menu.typed().await?.map_or(Decision::Decline, Decision::Answer)),
+            Answer::Interrupted => Ok(Decision::Stop),
+        }
+    };
+    picked.await.unwrap_or(Decision::Stop)
 }
 
 enum Answer {
@@ -139,6 +188,38 @@ impl Menu {
                 KeyCode::Down | KeyCode::Tab | KeyCode::Char('j') => {
                     self.selected = if self.selected == last { 0 } else { self.selected + 1 };
                 }
+                _ => {}
+            }
+        }
+    }
+
+    /// Reads a line typed in place of the options; `None` when Esc
+    /// dismisses it or nothing is typed.
+    async fn typed(&mut self) -> io::Result<Option<String>> {
+        let mut input = EventStream::new();
+        let mut typed = String::new();
+        self.options = vec![String::new()];
+        loop {
+            self.options[0] = format!("{typed}▏");
+            self.selected = 0;
+            self.draw()?;
+            let Some(input) = input.next().await else {
+                return Err(ErrorKind::Interrupted.into());
+            };
+            let Input::Key(key) = input? else { continue };
+            if key.kind == KeyEventKind::Release {
+                continue;
+            }
+            match key.code {
+                KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                    return Err(ErrorKind::Interrupted.into());
+                }
+                KeyCode::Enter => return Ok(Some(typed.trim().to_owned()).filter(|typed| !typed.is_empty())),
+                KeyCode::Esc => return Ok(None),
+                KeyCode::Backspace => {
+                    typed.pop();
+                }
+                KeyCode::Char(c) => typed.push(c),
                 _ => {}
             }
         }

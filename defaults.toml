@@ -85,7 +85,7 @@ history = true
 history_size = 1000
 # The status at the right of the prompt: other conversations running or
 # answered unseen, the remote host, the model, its thinking level and how full
-# its context is. "short" (fermi · qwen3.8 medium · 24k/128k), "full"
+# its context is, and `plan` in plan mode. "short" (fermi · qwen3.8 medium · 24k/128k), "full"
 # (fermi · ollama/qwen3.8:latest · thinking medium · 24k / 128k tokens) or
 # "off".
 right_prompt = "short"
@@ -163,7 +163,9 @@ default = "confirm"
 result_bytes = 16384
 
 # Rules by tool. Built-in tools: read, list, search, write, edit, move, delete,
-# shell, skill, fetch, web_search, spawn_agents, compact. MCP tools are
+# shell, skill, fetch, web_search, spawn_agents, compact, todo, ask_user,
+# exit_plan. In plan mode (`/plan`, `hey --plan`) only those that change
+# nothing run, whatever their rule says. MCP tools are
 # "mcp:<server>:<tool>", or "mcp:<server>" for all of a server's tools. Your
 # rules extend these defaults rather than replace them.
 [tools.permissions]
@@ -173,6 +175,9 @@ search = "allow"
 skill = "allow"
 spawn_agents = "allow"
 compact = "allow"
+todo = "allow"
+ask_user = "allow"
+exit_plan = "allow"
 
 [subagents]
 # Let the agent start subagents (the `spawn_agents` tool): agents that each

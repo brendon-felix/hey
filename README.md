@@ -17,6 +17,8 @@ of `hey` is on ease of use, speed, and a pleasant terminal experience.
 - [Agent Skills](https://agentskills.io): instructions for particular tasks that the model loads
   when a task calls for one, or that you invoke with `/name`
 - Per-tool permissions: allow, confirm, or deny
+- Plan mode: the agent only looks around until you approve its plan
+- A todo list the agent keeps of its work, and questions it asks you with choices to pick from
 - Subagents that work on tasks in parallel
 - With a remote, tools that run on the server or on your own machine, in the directories you let
   them into
@@ -63,6 +65,7 @@ hey --memories                        # list memories to write, edit or forget
 hey -m anthropic/claude-opus-5-5 hi   # use another model
 hey -t high prove it                  # set the thinking level (off, minimal…max)
 hey -p ~/prompts/reviewer.txt         # system prompt from a file
+hey --plan refactor the parser        # start in plan mode
 hey --remote fermi                    # run the agent on a remote host
 hey --serve                           # be a remote host
 hey --login copilot                   # sign in to GitHub Copilot
@@ -83,6 +86,7 @@ Type `/` or press Tab to see commands and skills; the status line describes the 
 | `/copy` | Copy the latest reply as Markdown |
 | `/copy-all` | Copy this conversation as Markdown |
 | `/compact [focus]` | Replace older messages with a summary, keeping above all what `focus` names |
+| `/plan` | Enter or leave plan mode |
 | `/model [vendor/model]`, `/m` | Switch model; without one, pick from the models the host can use |
 | `/think [level]` | Set thinking: `off`, `minimal`…`max`, or `default` |
 | `/theme [theme]`, `/t` | Switch theme; without one, pick with a live preview |
@@ -206,6 +210,27 @@ A terminal is told apart by the shell it started (on Windows, the shell hey is t
 new tab, window or tmux pane starts a new conversation, while a shell or script started inside
 the terminal keeps its conversation. hey forgets a terminal once it is closed.
 
+### Plan mode
+
+`/plan`, or `hey --plan`, puts the conversation in plan mode: only tools that change nothing run
+(`read`, `list`, `search`, `fetch`, `web_search`, `skill`, `compact`, `todo`, `ask_user`, and
+`spawn_agents`, whose subagents are held to it too). Any other call is refused, and the model is
+told to present a plan instead. It does so with its `exit_plan` tool: the plan shows in every
+terminal following the conversation, which asks whether to carry it out. **Yes** leaves plan mode
+and the agent goes on with the work; **No** keeps planning, as does telling it what to change.
+`/plan` again leaves plan mode at any time. The right of the prompt shows `plan` while it lasts.
+Plan mode belongs to the conversation, on the host, so every terminal showing it sees the same.
+
+### Todo list and questions
+
+For work of several steps, the agent keeps a todo list with its `todo` tool, shown as it changes:
+`☐` pending, `◐` in progress, `✔` done. The list belongs to the conversation and outlasts
+compaction: every summary ends with it as it is then.
+
+With `ask_user`, the agent asks you a question when it needs your decision, offering choices to
+pick from; you can always type another answer. The question shows in every terminal following
+the conversation, as permission questions do.
+
 ### Compaction
 
 A long conversation is compacted: its older messages are replaced by a summary the model writes of
@@ -279,7 +304,8 @@ Each tool call is shown as it happens. Whether it runs depends on its permission
 - `confirm` asks first, and offers to allow that tool for the rest of the conversation.
 - `deny` tells the model it is not allowed.
 
-`read`, `list`, `search`, `skill`, `spawn_agents` and `compact` are allowed by default; everything else asks. Rules are
+`read`, `list`, `search`, `skill`, `spawn_agents`, `compact`, `todo`, `ask_user` and
+`exit_plan` are allowed by default; everything else asks. Rules are
 keyed by tool name, or `mcp:<server>:<tool>` and `mcp:<server>` for MCP tools, which the model sees
 as `mcp__<server>__<tool>`.
 

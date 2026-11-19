@@ -29,6 +29,7 @@ use crate::config::{self, Config, Providers, Thinking};
 use crate::gate;
 use crate::memory::{self, Memory, Recalled};
 use crate::models;
+use crate::notes::Notes;
 use crate::permissions::{Origin, Permissions};
 use crate::preamble::{Hosting, Setting};
 use crate::protocol::{
@@ -44,6 +45,7 @@ use crate::skills::{self, Found};
 use crate::steer::{self, Delivery, Steer};
 use crate::subagents::{self, Crew, Spawn};
 use crate::toolbox::{Toolbox, machine_name};
+use crate::tools;
 
 pub use run::Run;
 
@@ -93,6 +95,8 @@ pub struct Host {
 struct Thread {
     seen: Seen,
     permissions: Arc<Permissions>,
+    /// Plan mode and the todo list.
+    notes: Arc<Notes>,
     /// Recalled as the thread's first answer here started and kept, so the
     /// preamble stays the same and the provider's prompt cache keeps
     /// working.
@@ -165,7 +169,9 @@ impl Host {
             .enabled
             .then(|| Arc::new(Crew::new(config)));
         let spawn = crew.as_ref().map(|_| subagents::TOOL);
-        let host_only = [skills::TOOL, compaction::TOOL].into_iter().chain(spawn);
+        let host_only = [skills::TOOL, compaction::TOOL, tools::TODO, tools::ASK_USER, tools::EXIT_PLAN]
+            .into_iter()
+            .chain(spawn);
         let host_only = host_only.map(|name| (name, &Origin::Builtin));
         let permissions = Permissions::resolve(toolbox.origins().chain(host_only), &config.tools);
         Ok(Self {
@@ -275,7 +281,41 @@ impl Host {
 
     /// Starts a new thread as a copy of what `id` saved, returning its id.
     pub fn fork(&self, id: &SessionId) -> Result<SessionId> {
-        self.sessions.fork(id)
+        let copy = self.sessions.fork(id)?;
+        _ = std::fs::copy(self.notes_file(id), self.notes_file(&copy));
+        Ok(copy)
+    }
+
+    /// Puts thread `id` in plan mode or takes it out, telling the run
+    /// answering in it, if any.
+    pub fn set_plan(&self, id: &SessionId, on: bool) {
+        let mut threads = self.lock();
+        let thread = self.thread(&mut threads, id);
+        thread.notes.set_planning(on);
+        if let Some(run) = &thread.run {
+            run.emit(Event::Plan { on });
+        }
+    }
+
+    /// Where the notes of thread `id` are saved.
+    fn notes_file(&self, id: &SessionId) -> PathBuf {
+        self.sessions.dir().join("notes").join(format!("{}.json", id.as_str()))
+    }
+
+    /// Thread `id` as kept here, kept from now on if it was not.
+    fn thread<'a>(&self, threads: &'a mut HashMap<SessionId, Thread>, id: &SessionId) -> &'a mut Thread {
+        threads.entry(id.clone()).or_insert_with(|| {
+            let permissions = Arc::new(self.permissions.fork());
+            Thread {
+                seen: Seen::default(),
+                notes: Arc::new(Notes::load(Some(self.notes_file(id)), permissions.clone())),
+                permissions,
+                memories: None,
+                context: None,
+                run: None,
+                last: None,
+            }
+        })
     }
 
     /// Removes the thread, unless it is answering.
@@ -285,6 +325,7 @@ impl Host {
             return Err(ThreadError::Busy);
         }
         threads.remove(id);
+        _ = std::fs::remove_file(self.notes_file(id));
         if let Some(crew) = &self.crew {
             crew.forget(id);
         }
@@ -296,8 +337,10 @@ impl Host {
     /// The thread as saved and its run's events; a client on `machine`
     /// that runs tool calls follows the run while it holds them.
     pub fn open(&self, id: &SessionId, machine: Option<String>) -> Result<Opened> {
-        let threads = self.lock();
-        let run = threads.get(id).and_then(|thread| thread.run.clone());
+        let mut threads = self.lock();
+        let thread = self.thread(&mut threads, id);
+        let run = thread.run.clone();
+        let plan = thread.notes.planning();
         let mut messages = self.sessions.messages(id)?;
         if let Some(run) = &run {
             // The run may have saved already, but its events tell of it until it ends.
@@ -307,6 +350,7 @@ impl Host {
             snapshot: Snapshot {
                 messages,
                 running: run.as_ref().map(|run| run.running()),
+                plan,
             },
             events: run.map(|run| run.events(machine).boxed()),
         })
@@ -343,14 +387,8 @@ impl Host {
             _ => None,
         };
         let mut threads = self.lock();
-        let thread = threads.entry(id.clone()).or_insert_with(|| Thread {
-            seen: Seen::default(),
-            permissions: Arc::new(self.permissions.fork()),
-            memories: None,
-            context: None,
-            run: None,
-            last: None,
-        });
+        let thread = self.thread(&mut threads, &id);
+        let compactor = compactor.keeping(thread.notes.clone());
         if thread.run.is_some() {
             return Err(ThreadError::Busy);
         }
@@ -582,6 +620,7 @@ impl Host {
             run: run.clone(),
         };
         let (tools, routes) = kit.tools(&thread.seen, Some(live), None);
+        let notes = &thread.notes;
         let builder = agent::builder(
             model,
             tools,
@@ -603,7 +642,13 @@ impl Host {
             .add_hook(run.record().clone())
             .add_hook(Delivery(run.clone()))
             .add_hook(compaction::Hook(compaction.clone()))
-            .tool(compaction::Compact { run: run.clone() });
+            .tool(compaction::Compact { run: run.clone() })
+            .tool(tools::Todos { notes: notes.clone() })
+            .tool(tools::AskUser { run: run.clone() })
+            .tool(tools::ExitPlan {
+                run: run.clone(),
+                notes: notes.clone(),
+            });
         if let Some(crew) = &self.crew {
             builder = builder.tool(self.spawn(crew, id, thread, request, kit));
         }
@@ -656,7 +701,8 @@ impl Host {
             skills,
             live,
         } = answering;
-        let conversing = self.converse(&id, &run, &agent, &model, request, &skills);
+        let notes = self.lock().get(&id).map(|thread| thread.notes.clone());
+        let conversing = self.converse(&id, &run, &agent, &model, request, &skills, notes);
         let ending = until_stopped(&run, conversing)
             .await
             .unwrap_or(Ending::Interrupted);
@@ -839,6 +885,7 @@ impl Host {
         model: &Model,
         request: RunRequest,
         skills: &Found,
+        notes: Option<Arc<Notes>>,
     ) -> Ending {
         let RunRequest {
             prompt,
@@ -849,7 +896,13 @@ impl Host {
         let mut message = self
             .message(&prompt, &attachments, skills, model, run)
             .await;
+        let planning = || notes.as_ref().is_some_and(|notes| notes.planning());
         loop {
+            if planning()
+                && let Message::User { content } = &mut message
+            {
+                content.push(rig_core::message::UserContent::text(tools::PLAN_REMINDER));
+            }
             let ending = self
                 .respond(id, run, agent, message, options.thinking)
                 .await;

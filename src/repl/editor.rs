@@ -51,6 +51,8 @@ pub struct Status {
     pub thinking: Option<Thinking>,
     pub context: Option<u64>,
     pub window: Option<u32>,
+    /// Whether the conversation is in plan mode.
+    pub plan: bool,
 }
 
 impl Status {
@@ -91,9 +93,9 @@ impl Status {
     }
 
     fn after_remote(&self, parts: impl Iterator<Item = String>) -> String {
-        self.remote
-            .iter()
-            .cloned()
+        let plan = self.plan.then(|| "plan".to_owned());
+        plan.into_iter()
+            .chain(self.remote.iter().cloned())
             .chain(parts)
             .collect::<Vec<_>>()
             .join(" · ")

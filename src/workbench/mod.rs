@@ -144,7 +144,7 @@ impl Workbench {
                         lending.permissions.allow(&call.tool);
                         Ok(())
                     }
-                    Decision::Decline => Err("The user declined this tool call.".into()),
+                    Decision::Decline | Decision::Answer(_) => Err("The user declined this tool call.".into()),
                     Decision::Stop => {
                         reporter.stop().await;
                         Err("The user stopped the run.".into())
@@ -184,7 +184,7 @@ impl Workbench {
                     reporter.emit(Event::Notice { text }).await;
                 }
             }
-            Decision::Decline => {
+            Decision::Decline | Decision::Answer(_) => {
                 return Err(format!(
                     "The user did not let the agent use {} on `{machine}`.",
                     dir.display()

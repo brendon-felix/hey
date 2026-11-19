@@ -14,6 +14,8 @@ pub enum Command {
     /// Compact the conversation, with what its summary should keep above
     /// all.
     Compact(Option<String>),
+    /// Enter plan mode, or leave it.
+    Plan,
     Model(Option<String>),
     Think(Option<String>),
     Theme(Option<String>),
@@ -134,6 +136,13 @@ pub const COMMANDS: &[Spec] = &[
         arg: Some(Arg::Focus),
         about: "Replace older messages with a summary, keeping what focus names",
         build: Command::Compact,
+    },
+    Spec {
+        name: "plan",
+        aliases: &[],
+        arg: None,
+        about: "Toggle plan mode: only tools that change nothing, until you approve a plan",
+        build: |_| Command::Plan,
     },
     Spec {
         name: "model",
@@ -259,6 +268,7 @@ mod tests {
         assert_eq!(parse("/nope"), Input::Invalid("unknown command /nope".into()));
         assert_eq!(parse(" /deploy to staging"), Input::Message("/deploy to staging".into()));
         assert_eq!(parse("/new"), Input::Command(Command::New), "commands win");
+        assert_eq!(parse("/plan"), Input::Command(Command::Plan));
         assert_eq!(
             parse("/compact the parser work"),
             Input::Command(Command::Compact(Some("the parser work".into())))

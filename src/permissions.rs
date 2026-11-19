@@ -3,6 +3,7 @@
 /* -------------------------------------------------------------------------- */
 
 use std::collections::BTreeMap;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 
 use rig_agent::agent::{AgentHook, DispatchAction, DispatchEvent, HookContext, OutcomeAction, OutcomeEvent};
@@ -27,8 +28,51 @@ pub fn default_rules() -> BTreeMap<String, Permission> {
     // say. Loading a skill only reads instructions the user installed,
     // which `read` could read anyway; what following them does asks as usual.
     // Compacting changes only what the model reads, and keeps what it replaced.
-    let tools = ["read", "list", "search", crate::subagents::TOOL, crate::skills::TOOL, crate::compaction::TOOL];
+    // The todo list, questions to the user and the plan put to the user
+    // change nothing outside the conversation, and the last two ask anyway.
+    let tools = [
+        "read",
+        "list",
+        "search",
+        crate::subagents::TOOL,
+        crate::skills::TOOL,
+        crate::compaction::TOOL,
+        crate::tools::TODO,
+        crate::tools::ASK_USER,
+        crate::tools::EXIT_PLAN,
+    ];
     tools.map(|tool| (tool.to_owned(), Permission::Allow)).into()
+}
+
+/// The tools plan mode lets run: those that change nothing. Subagents
+/// share their conversation's permissions, so theirs are held to it too.
+const PLANNING: [&str; 11] = [
+    "read",
+    "list",
+    "search",
+    "fetch",
+    "web_search",
+    crate::skills::TOOL,
+    crate::compaction::TOOL,
+    crate::subagents::TOOL,
+    crate::tools::TODO,
+    crate::tools::ASK_USER,
+    crate::tools::EXIT_PLAN,
+];
+
+/// Whether plan mode lets `tool` run.
+pub fn plans_with(tool: &str) -> bool {
+    PLANNING.contains(&tool)
+}
+
+/// What the model is told of a call plan mode does not let run.
+pub fn planning_refusal(tool: &str) -> String {
+    format!(
+        "`{tool}` is not allowed: this conversation is in plan mode, where only tools that change \
+         nothing run. Investigate with read-only tools, then present your plan with `{}`; once the \
+         user approves it, plan mode ends and you can carry it out.",
+        crate::tools::EXIT_PLAN
+    )
 }
 
 /// Where a tool the model can call comes from, which decides the key its
@@ -52,7 +96,11 @@ impl Origin {
 /// The permission of every tool the agent offers, by the name the model
 /// calls it. Each thread has its own, as "always allow" applies to one thread.
 #[derive(Debug, Default)]
-pub struct Permissions(Mutex<BTreeMap<String, Permission>>);
+pub struct Permissions {
+    rules: Mutex<BTreeMap<String, Permission>>,
+    /// Plan mode: only tools that change nothing run.
+    planning: AtomicBool,
+}
 
 impl Permissions {
     pub fn resolve<'a>(
@@ -74,7 +122,14 @@ impl Permissions {
             .into_iter()
             .map(|(name, origin)| (name.to_owned(), permission(name, origin)))
             .collect();
-        Self(Mutex::new(resolved))
+        Self::from_rules(resolved)
+    }
+
+    fn from_rules(rules: BTreeMap<String, Permission>) -> Self {
+        Self {
+            rules: Mutex::new(rules),
+            planning: AtomicBool::new(false),
+        }
     }
 
     pub fn get(&self, tool: &str) -> Permission {
@@ -86,7 +141,15 @@ impl Permissions {
     }
 
     pub fn fork(&self) -> Self {
-        Self(Mutex::new(self.snapshot()))
+        Self::from_rules(self.snapshot())
+    }
+
+    pub fn planning(&self) -> bool {
+        self.planning.load(Ordering::Relaxed)
+    }
+
+    pub fn set_planning(&self, on: bool) {
+        self.planning.store(on, Ordering::Relaxed);
     }
 
     pub fn allow(&self, tool: &str) {
@@ -94,7 +157,7 @@ impl Permissions {
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, BTreeMap<String, Permission>> {
-        self.0.lock().unwrap_or_else(PoisonError::into_inner)
+        self.rules.lock().unwrap_or_else(PoisonError::into_inner)
     }
 }
 
@@ -194,6 +257,14 @@ impl<R: Reporter> Approval<R> {
             call: call.cloned(),
         };
         self.reporter.emit(call).await;
+        // Before routing, so a call to the user's machine is held to it too.
+        if self.permissions.planning() && !plans_with(name) {
+            let notice = Event::Notice {
+                text: "denied in plan mode".into(),
+            };
+            self.reporter.emit(notice).await;
+            return DispatchAction::skip(planning_refusal(name));
+        }
         match target {
             Ok(Target::Host) => {}
             Ok(Target::Client(_)) => return DispatchAction::proceed(),
@@ -220,7 +291,9 @@ impl<R: Reporter> Approval<R> {
                         self.permissions.allow(name);
                         DispatchAction::proceed()
                     }
-                    Decision::Decline => DispatchAction::skip("The user declined this tool call."),
+                    Decision::Decline | Decision::Answer(_) => {
+                        DispatchAction::skip("The user declined this tool call.")
+                    }
                     Decision::Stop => DispatchAction::stop("The user stopped the run."),
                 }
             }
@@ -268,6 +341,21 @@ mod tests {
         assert_eq!(permissions.get("shell"), Permission::Deny);
         assert_eq!(permissions.get("mcp__web__search"), Permission::Allow);
         assert_eq!(permissions.get("mcp__web__fetch"), Permission::Confirm);
+    }
+
+    #[test]
+    fn plan_mode_lets_only_tools_that_change_nothing_run() {
+        for tool in ["read", "search", "fetch", "todo", "ask_user", "exit_plan", "spawn_agents"] {
+            assert!(plans_with(tool), "{tool}");
+        }
+        for tool in ["write", "edit", "shell", "delete", "move", "mcp__web__search"] {
+            assert!(!plans_with(tool), "{tool}");
+        }
+        let permissions = resolve("");
+        assert!(!permissions.planning());
+        permissions.set_planning(true);
+        assert!(permissions.planning());
+        assert!(!permissions.fork().planning(), "a fork starts out of plan mode");
     }
 
     #[test]
