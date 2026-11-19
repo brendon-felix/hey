@@ -119,6 +119,10 @@ pub enum Event {
     Context {
         tokens: u64,
     },
+    /// The thread entered or left plan mode.
+    Plan {
+        on: bool,
+    },
     /// The conversation's older messages were replaced by `summary`;
     /// `before` and `after` estimate the tokens of each.
     Compacted {
@@ -160,6 +164,16 @@ pub enum Ask {
     },
     /// Whether the host's agents may use `path` on the client `machine`.
     Directory { machine: String, path: String },
+    /// A question from the agent, with answers to pick from; the user may
+    /// type another. Answered with [`Decision::Answer`].
+    Question {
+        question: String,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        choices: Vec<String>,
+    },
+    /// Whether the user approves the agent's `plan`, which ends plan mode;
+    /// [`Decision::Answer`] gives feedback to keep planning with.
+    Plan { plan: String },
 }
 
 /// A subagent, for its parent to follow up with.
@@ -255,7 +269,7 @@ impl fmt::Display for ApprovalId {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Decision {
     Once,
@@ -263,6 +277,8 @@ pub enum Decision {
     Always,
     Decline,
     Stop,
+    /// What the user typed or picked in answer to a question.
+    Answer(String),
 }
 
 /// What a run uses, chosen by the client; the host fills in the rest from
@@ -414,6 +430,9 @@ pub struct Snapshot {
     /// Messages up to the run in progress, which saves its own once it ends.
     pub messages: Vec<Message>,
     pub running: Option<Running>,
+    /// Whether the thread is in plan mode.
+    #[serde(default)]
+    pub plan: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

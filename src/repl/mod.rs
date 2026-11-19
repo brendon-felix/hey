@@ -79,6 +79,8 @@ struct Session {
     asking: Option<(ApprovalId, Ask)>,
     /// Messages that were not sent, for the editor to take back.
     returned: Vec<String>,
+    /// Whether the thread is in plan mode, as last heard from the host.
+    plan: bool,
 }
 
 struct Current {
@@ -124,6 +126,8 @@ pub struct Setup {
     pub config_file: Option<PathBuf>,
     pub editor: crate::config::Editor,
     pub colors: bool,
+    /// Start the conversation in plan mode.
+    pub plan: bool,
 }
 
 impl Repl {
@@ -149,7 +153,7 @@ impl Repl {
             wake,
         );
         watch.start(setup.backend.clone(), editor.repaint_signal());
-        let session = Session {
+        let mut session = Session {
             backend: setup.backend,
             thread: setup.thread,
             options: RunOptions {
@@ -172,7 +176,11 @@ impl Repl {
             outbox,
             asking: None,
             returned: Vec::new(),
+            plan: false,
         };
+        if setup.plan {
+            session.set_plan(true).await;
+        }
         session.show_status(None);
         Self { session, editor }
     }
@@ -524,7 +532,8 @@ impl Session {
             Ok(opened) => opened,
             Err(error) => return render::error(&format!("{error:#}")),
         };
-        let Snapshot { messages, running } = opened.snapshot;
+        let Snapshot { messages, running, plan } = opened.snapshot;
+        self.note_plan(plan);
         let new = messages.get(self.displayed..).unwrap_or_default();
         if !new.is_empty() {
             render::conversation(new, &self.style);
@@ -545,7 +554,10 @@ impl Session {
     fn record(&mut self, turn: &Turn) {
         self.shown = turn.run.or(self.shown);
         self.displayed = turn.saved.unwrap_or(self.displayed);
-        if turn.context.is_some() {
+        if let Some(plan) = turn.plan {
+            self.note_plan(plan);
+        }
+        if turn.context.is_some() || turn.plan.is_some() {
             self.show_status(turn.context);
         }
     }
@@ -616,6 +628,15 @@ impl Session {
             Command::Copy(scope) => self.copy(scope).await?,
             Command::Compact(focus) => self.compact(focus.unwrap_or_default()).await?,
             Command::Undo => self.undo().await?,
+            Command::Plan => {
+                let on = !self.plan;
+                self.set_plan(on).await;
+                let told = match on {
+                    true => "Plan mode: only tools that change nothing run, until you approve a plan.",
+                    false => "Left plan mode.",
+                };
+                println!("{}\n", told.bold());
+            }
             Command::Model(reference) => self.switch_model(reference).await?,
             Command::Think(level) => self.set_thinking(level)?,
             Command::Theme(theme) => self.switch_theme(theme, editor)?,
@@ -1020,9 +1041,24 @@ impl Session {
         Ok(())
     }
 
+    /// Puts the thread in plan mode or takes it out, on the host.
+    async fn set_plan(&mut self, on: bool) {
+        match self.backend.set_plan(&self.thread, on).await {
+            Ok(()) => self.note_plan(on),
+            Err(error) => render::error(&format!("{error:#}")),
+        }
+    }
+
+    /// The host says the thread is in plan mode, or not.
+    fn note_plan(&mut self, on: bool) {
+        self.plan = on;
+        self.status.lock().unwrap_or_else(PoisonError::into_inner).plan = on;
+    }
+
     fn show_status(&self, context: Option<u64>) {
         let mut status = self.status.lock().unwrap_or_else(PoisonError::into_inner);
         *status = Status {
+            plan: self.plan,
             remote: self.backend.remote().map(str::to_owned),
             model: self.options.model.clone(),
             thinking: self.options.thinking,

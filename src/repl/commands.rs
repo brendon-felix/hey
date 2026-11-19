@@ -16,6 +16,8 @@ pub enum Command {
     Compact(Option<String>),
     /// Put back the files the latest answer changed.
     Undo,
+    /// Enter plan mode, or leave it.
+    Plan,
     Model(Option<String>),
     Think(Option<String>),
     Theme(Option<String>),
@@ -146,6 +148,13 @@ pub const COMMANDS: &[Spec] = &[
         arg: None,
         about: "Put back the files the latest answer changed",
         build: |_| Command::Undo,
+    },
+    Spec {
+        name: "plan",
+        aliases: &[],
+        arg: None,
+        about: "Toggle plan mode: only tools that change nothing, until you approve a plan",
+        build: |_| Command::Plan,
     },
     Spec {
         name: "model",
@@ -287,6 +296,7 @@ mod tests {
         assert_eq!(parse("/new"), Input::Command(Command::New), "commands win");
         assert_eq!(parse("/init"), Input::Command(Command::Init));
         assert_eq!(parse("/undo"), Input::Command(Command::Undo));
+        assert_eq!(parse("/plan"), Input::Command(Command::Plan));
         assert_eq!(
             parse("/compact the parser work"),
             Input::Command(Command::Compact(Some("the parser work".into())))

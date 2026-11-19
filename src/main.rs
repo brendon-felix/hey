@@ -18,6 +18,7 @@ mod log;
 mod mcp;
 mod memory;
 mod mention;
+mod notes;
 mod models;
 mod permissions;
 mod preamble;
@@ -34,6 +35,7 @@ mod subagents;
 mod terminal;
 mod token;
 mod toolbox;
+mod tools;
 mod transcript;
 mod turn;
 mod ui;
@@ -95,6 +97,11 @@ struct Args {
     #[arg(long, short)]
     interactive: bool,
 
+    /// Start in plan mode: only tools that change nothing run, until you
+    /// approve the agent's plan
+    #[arg(long)]
+    plan: bool,
+
     /// Run the agent on NAME from `[remotes]`, which keeps the conversations
     #[arg(long, value_name = "NAME")]
     remote: Option<String>,
@@ -106,7 +113,7 @@ struct Args {
     /// Host the agent for remote clients, as `[server]` configures
     #[arg(
         long,
-        conflicts_with_all = ["prompt_path", "model", "think", "resume", "threads", "memories", "interactive", "remote", "local", "message"],
+        conflicts_with_all = ["prompt_path", "model", "think", "resume", "threads", "memories", "interactive", "remote", "local", "plan", "message"],
     )]
     serve: bool,
 
@@ -114,7 +121,7 @@ struct Args {
     #[arg(
         long,
         value_name = "VENDOR",
-        conflicts_with_all = ["prompt_path", "model", "think", "resume", "threads", "memories", "interactive", "remote", "local", "serve", "message"],
+        conflicts_with_all = ["prompt_path", "model", "think", "resume", "threads", "memories", "interactive", "remote", "local", "serve", "plan", "message"],
     )]
     login: Option<Login>,
 
@@ -203,6 +210,9 @@ async fn run(args: Args) -> Result<ExitCode> {
     let style = render::Style::from(&config.display);
     match launch {
         Launch::Once(prompt) => {
+            if args.plan {
+                backend.set_plan(&thread, true).await?;
+            }
             let request = turn::request(
                 prompt,
                 protocol::RunOptions {
@@ -230,6 +240,7 @@ async fn run(args: Args) -> Result<ExitCode> {
                 config_file: config.file,
                 editor: config.editor,
                 colors: config.display.colors,
+                plan: args.plan,
             })
             .await;
             repl.run(first).await?;

@@ -47,6 +47,7 @@ pub async fn serve(host: Arc<Host>, config: &config::Server) -> Result<()> {
         .route("/v1/threads/{id}/viewed", post(viewed))
         .route("/v1/threads/{id}/archived", put(archive))
         .route("/v1/threads/{id}/fork", post(fork))
+        .route("/v1/threads/{id}/plan", put(plan))
         .route("/v1/threads/{id}/approvals/{approval}", post(answer))
         .route("/v1/threads/{id}/calls/{call}", post(finish))
         .route("/v1/threads/{id}/calls/{call}/claim", post(claim))
@@ -244,6 +245,12 @@ async fn archive(
 ) -> Reply<StatusCode> {
     host.archive(&id, archived)?;
     Ok(StatusCode::NO_CONTENT)
+}
+
+/// Puts the thread in plan mode, or takes it out, as the body says.
+async fn plan(State(host): State<Arc<Host>>, Path(id): Path<SessionId>, Json(on): Json<bool>) -> StatusCode {
+    host.set_plan(&id, on);
+    StatusCode::NO_CONTENT
 }
 
 async fn fork(

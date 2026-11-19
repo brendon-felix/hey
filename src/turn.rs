@@ -34,6 +34,8 @@ pub struct Turn {
     pub run: Option<RunId>,
     /// How many messages the thread held once the run ended.
     pub saved: Option<usize>,
+    /// Whether the thread was left in plan mode, when the run changed it.
+    pub plan: Option<bool>,
 }
 
 /// A request to answer `prompt`, with the files and directories it mentions
@@ -86,6 +88,7 @@ pub async fn run(backend: &Backend, thread: &SessionId, request: RunRequest, sty
                 context: None,
                 run: None,
                 saved: None,
+                plan: None,
             }
         }
     }
@@ -154,6 +157,8 @@ struct Seen {
     agents: HashMap<AgentId, String>,
     /// This terminal's view of the run, when it runs tool calls for the host.
     follower: Option<FollowerId>,
+    /// Plan mode, as the run last changed it.
+    plan: Option<bool>,
 }
 
 impl Seen {
@@ -189,6 +194,7 @@ pub struct Follow {
     lent_calls: JoinSet<()>,
     /// Asked to stop: the rest is waited for, not drawn.
     stopping: bool,
+    style: Style,
 }
 
 impl Follow {
@@ -203,6 +209,7 @@ impl Follow {
             held: VecDeque::new(),
             lent_calls: JoinSet::new(),
             stopping: false,
+            style: style.clone(),
         }
     }
 
@@ -235,7 +242,7 @@ impl Follow {
     /// stops asking at once; what arrives meanwhile is drawn after.
     pub async fn approve(&mut self, backend: &Backend, thread: &SessionId, id: ApprovalId, ask: &Ask) {
         self.stream.settle();
-        let held = approve(backend, thread, &mut self.events, id, ask).await;
+        let held = approve(backend, thread, &mut self.events, id, ask, &self.style).await;
         self.held.extend(held);
     }
 
@@ -268,6 +275,7 @@ impl Follow {
             context: self.seen.context,
             run: self.seen.run,
             saved: self.seen.saved,
+            plan: self.seen.plan,
         }
     }
 
@@ -306,6 +314,11 @@ impl Follow {
             Event::ToolCallArguments { json } => stream.arguments(&json),
             Event::Decided { .. } | Event::Claimed { .. } => {}
             Event::Context { tokens } => self.seen.context = Some(tokens),
+            Event::Plan { on } => {
+                stream.settle();
+                self.seen.plan = Some(on);
+                render::notice(if on { "plan mode" } else { "left plan mode" });
+            }
             Event::Compacted { summary, before, after } => stream.compacted(&summary, Some((before, after))),
             Event::Approval { id, ask } => {
                 stream.settle();
@@ -379,9 +392,10 @@ async fn approve(
     events: &mut Events,
     id: ApprovalId,
     ask: &Ask,
+    style: &Style,
 ) -> Vec<Received> {
     let mut held = Vec::new();
-    let question = ui::confirm(ask);
+    let question = ui::confirm(ask, style);
     tokio::pin!(question);
     let decision = loop {
         tokio::select! {
@@ -439,6 +453,7 @@ fn report(event: Event) -> Option<Outcome> {
         | Event::Decided { .. }
         | Event::Context { .. }
         | Event::Compacted { .. }
+        | Event::Plan { .. }
         | Event::AgentStarted { .. }
         | Event::Agent { .. }
         | Event::AgentEnded { .. }

@@ -38,6 +38,25 @@ pub(super) fn changes(name: &str, args: &str) -> Option<Vec<(Mark, String)>> {
     Some(lines)
 }
 
+/// The lines a call to `todo` shows: its list, each item marked.
+pub(super) fn todos(name: &str, args: &str) -> Option<Vec<String>> {
+    if name != crate::tools::TODO {
+        return None;
+    }
+    let todos = tool_args(args)?.remove("todos")?;
+    let todos: Vec<crate::notes::Todo> = serde_json::from_value(todos).ok()?;
+    let palette = palette();
+    let lines = todos.iter().map(|todo| {
+        let mark = todo.status.mark();
+        match todo.status {
+            crate::notes::TodoStatus::Done => format!("  {}", palette.muted.paint(&format!("{mark} {}", todo.text))),
+            crate::notes::TodoStatus::InProgress => format!("  {} {}", palette.accent.paint(mark), todo.text.bold()),
+            crate::notes::TodoStatus::Pending => format!("  {mark} {}", todo.text),
+        }
+    });
+    Some(lines.collect())
+}
+
 /// A result's text, whatever else it holds left out.
 pub(super) fn text(result: &ToolResult) -> String {
     let text: Vec<_> = result.content.iter().filter_map(|content| content.as_text()).collect();

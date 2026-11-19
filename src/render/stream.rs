@@ -280,6 +280,10 @@ impl Stream {
             },
         );
         self.ran_live = false;
+        if let Some(todos) = tool::todos(name, args) {
+            todos.iter().for_each(|todo| screen::line(todo));
+            return;
+        }
         let Some(changes) = tool::changes(name, args) else {
             return;
         };

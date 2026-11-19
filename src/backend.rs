@@ -241,6 +241,17 @@ impl Backend {
         }
     }
 
+    /// Puts the thread in plan mode or takes it out.
+    pub async fn set_plan(&self, id: &SessionId, on: bool) -> Result<()> {
+        match self {
+            Backend::Local(host) => {
+                host.set_plan(id, on);
+                Ok(())
+            }
+            Backend::Remote(client, _) => client.set_plan(id, on).await,
+        }
+    }
+
     pub async fn tools(&self, id: &SessionId) -> Result<Tools> {
         match self {
             Backend::Local(host) => Ok(host.tools(id)),

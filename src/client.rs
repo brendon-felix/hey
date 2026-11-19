@@ -253,6 +253,13 @@ impl Client {
         self.json(self.http.post(self.url(&path)?)).await
     }
 
+    pub async fn set_plan(&self, id: &SessionId, on: bool) -> Result<()> {
+        let path = format!("v1/threads/{}/plan", id.as_str());
+        self.ok(self.http.put(self.url(&path)?).json(&on))
+            .await
+            .map(drop)
+    }
+
     pub async fn tools(&self, id: &SessionId) -> Result<Tools> {
         self.json(self.get(&format!("v1/threads/{}/tools", id.as_str()))?)
             .await
