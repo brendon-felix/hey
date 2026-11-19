@@ -128,6 +128,16 @@ embedding_model = "ollama/qwen3-embedding:0.6b"
 # Default: the platform's data directory, under hey/memories.md.
 # file = "~/.hey/memories.md"
 
+[instructions]
+# Give the model the project's instructions: ~/.agents/AGENTS.md, then the
+# AGENTS.md in each directory from the repository root down to the working
+# directory, or its CLAUDE.md where it has none, farthest first. They are read
+# when a conversation starts and kept for the whole of it. `/init` has the
+# model write or update the repository's AGENTS.md.
+enabled = true
+# Most bytes of them, together; the rest is cut, and the model told so.
+max_bytes = 32768
+
 [compaction]
 # A long conversation is compacted: its older messages are replaced by a
 # summary the model writes of them, so it fits the model's window and each

@@ -621,6 +621,10 @@ impl Session {
             Command::Tools => self.list_tools().await?,
             Command::Skills => self.list_skills().await?,
             Command::Memories => browser::memories::browse(&self.backend).await?,
+            Command::Init => {
+                self.message(crate::instructions::INIT_PROMPT.to_owned(), Way::Steer)
+                    .await
+            }
             Command::Clear => editor.clear_screen(),
             Command::Exit => {}
         }

@@ -20,6 +20,8 @@ pub enum Command {
     Tools,
     Skills,
     Memories,
+    /// Ask the model to write or update the project's AGENTS.md.
+    Init,
     Clear,
     Exit,
 }
@@ -178,6 +180,13 @@ pub const COMMANDS: &[Spec] = &[
         build: |_| Command::Memories,
     },
     Spec {
+        name: "init",
+        aliases: &[],
+        arg: None,
+        about: "Have the model write or update the project's AGENTS.md",
+        build: |_| Command::Init,
+    },
+    Spec {
         name: "clear",
         aliases: &["c"],
         arg: None,
@@ -259,6 +268,7 @@ mod tests {
         assert_eq!(parse("/nope"), Input::Invalid("unknown command /nope".into()));
         assert_eq!(parse(" /deploy to staging"), Input::Message("/deploy to staging".into()));
         assert_eq!(parse("/new"), Input::Command(Command::New), "commands win");
+        assert_eq!(parse("/init"), Input::Command(Command::Init));
         assert_eq!(
             parse("/compact the parser work"),
             Input::Command(Command::Compact(Some("the parser work".into())))

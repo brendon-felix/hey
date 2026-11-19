@@ -12,6 +12,7 @@ mod config;
 mod copilot;
 mod gate;
 mod host;
+mod instructions;
 mod log;
 mod mcp;
 mod memory;

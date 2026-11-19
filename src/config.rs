@@ -33,6 +33,7 @@ pub struct Config {
     pub shared: Shared,
     pub memory: Memory,
     pub compaction: Compaction,
+    pub instructions: Instructions,
     pub tools: Tools,
     pub subagents: Subagents,
     /// Where a remote host's agents may work on each machine, by its name.
@@ -64,6 +65,7 @@ impl Default for Config {
             shared: Shared::default(),
             memory: Memory::default(),
             compaction: Compaction::default(),
+            instructions: Instructions::default(),
             tools: Tools::default(),
             subagents: Subagents::default(),
             machines: BTreeMap::new(),
@@ -449,6 +451,24 @@ impl Default for Compaction {
     }
 }
 
+/// Which project instructions, `AGENTS.md` files, the model is given.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct Instructions {
+    pub enabled: bool,
+    /// Most bytes of them, together; the rest is cut.
+    pub max_bytes: usize,
+}
+
+impl Default for Instructions {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            max_bytes: 32 * 1024,
+        }
+    }
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Tools {
@@ -825,6 +845,11 @@ mod tests {
             built_in.compaction.threshold
         );
         assert_eq!(documented.compaction.model, built_in.compaction.model);
+        assert_eq!(documented.instructions.enabled, built_in.instructions.enabled);
+        assert_eq!(
+            documented.instructions.max_bytes,
+            built_in.instructions.max_bytes
+        );
         assert_eq!(documented.tools.allow_all, built_in.tools.allow_all);
         assert_eq!(documented.tools.default, built_in.tools.default);
         assert_eq!(documented.tools.permissions, built_in.tools.permissions);

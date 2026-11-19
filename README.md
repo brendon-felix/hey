@@ -90,6 +90,7 @@ Type `/` or press Tab to see commands and skills; the status line describes the 
 | `/skills` | List skills and why any did not load |
 | `/<skill> [message]` | Invoke a skill, with the rest of the line as your message |
 | `/memories`, `/mem` | List memories to write, edit or forget |
+| `/init` | Have the model explore the repository and write or update its `AGENTS.md` |
 | `/clear`, `/c` | Clear the screen |
 | `/exit`, `/quit`, `/q`, `/x` | Exit |
 
@@ -400,6 +401,29 @@ Skills are read afresh for every answer, so adding or editing one takes effect a
 whose `SKILL.md` breaks the spec, such as a `name` that is not lowercase-hyphenated or differs
 from its folder's, is not loaded; `/skills` lists the skills and why any did not load. With a
 remote, skills are the host's, from where `hey --serve` runs, and subagents have the same.
+
+## Project instructions
+
+`hey` gives the model the [AGENTS.md](https://agents.md) files other agents share, which tell it
+how a project is built, tested and written:
+
+- `~/.agents/AGENTS.md`, for every project
+- `AGENTS.md` in each directory from the repository root, the nearest holding `.git`, down to
+  the working directory; a directory with none offers its `CLAUDE.md` instead. Outside a
+  repository, only the working directory's.
+
+They are appended to the system prompt farthest first, each under its path, at most
+`[instructions] max_bytes` (32 KiB) of them together. They are read when a conversation starts
+and kept for the whole of it, so the provider's prompt cache keeps working; edits count from the
+next conversation. `/init` asks the model to explore the repository and write its `AGENTS.md`,
+or update the one there. With a remote, instructions are the host's, from where `hey --serve`
+runs.
+
+```toml
+[instructions]
+# enabled = false                  # give the model no AGENTS.md
+# max_bytes = 65536
+```
 
 ## Memory
 

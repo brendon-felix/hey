@@ -25,6 +25,7 @@ use tokio_util::task::TaskTracker;
 
 use crate::agent::{self, Model};
 use crate::compaction::{self, Applied, Compactor};
+use crate::instructions::Instructions;
 use crate::config::{self, Config, Providers, Thinking};
 use crate::gate;
 use crate::memory::{self, Memory, Recalled};
@@ -77,6 +78,7 @@ pub struct Host {
     /// The last time memory failed, until a client is told.
     memory_failure: Mutex<Option<String>>,
     compaction: config::Compaction,
+    instructions: config::Instructions,
     permissions: Permissions,
     /// Runs subagents here, when the config offers them.
     crew: Option<Arc<Crew>>,
@@ -97,6 +99,9 @@ struct Thread {
     /// preamble stays the same and the provider's prompt cache keeps
     /// working.
     memories: Option<Vec<String>>,
+    /// Read as the thread's first answer here started and kept, for the
+    /// same reason.
+    instructions: Option<Instructions>,
     /// Tokens its last model call took in and gave back, to tell when it is
     /// due to compact; unknown once it was compacted after.
     context: Option<u64>,
@@ -190,6 +195,7 @@ impl Host {
             memory: Memory::open(&config.memory, &config.providers)?,
             memory_failure: Mutex::default(),
             compaction: config.compaction.clone(),
+            instructions: config.instructions.clone(),
             permissions,
             crew,
             subagent_model: config.subagents.model.clone(),
@@ -347,6 +353,7 @@ impl Host {
             seen: Seen::default(),
             permissions: Arc::new(self.permissions.fork()),
             memories: None,
+            instructions: None,
             context: None,
             run: None,
             last: None,
@@ -356,6 +363,12 @@ impl Host {
         }
         if thread.memories.is_none() {
             thread.memories = memories;
+        }
+        if thread.instructions.is_none() && self.instructions.enabled {
+            thread.instructions = Some(Instructions::find(
+                &agent::working_directory(),
+                self.instructions.max_bytes,
+            ));
         }
         let basis = self.sessions.basis(&id).map_err(ThreadError::Other)?;
         // Whether a tool call waits shows in the activity, as it changes.
@@ -609,6 +622,9 @@ impl Host {
         }
         if let Some(memories) = memory::preamble(thread.memories.as_deref().unwrap_or_default()) {
             builder = builder.append_preamble(&memories);
+        }
+        if let Some(instructions) = thread.instructions.as_ref().and_then(Instructions::preamble) {
+            builder = builder.append_preamble(&instructions);
         }
         if let Some(max_tokens) = self.max_tokens {
             builder = builder.max_tokens(max_tokens);
