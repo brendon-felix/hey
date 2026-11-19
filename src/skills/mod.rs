@@ -309,7 +309,12 @@ pub fn find(dir: &Path) -> Found {
 /// directory from the repository `dir` is in down to `dir` itself, or in
 /// `dir` alone outside a repository.
 pub(crate) fn roots(dir: &Path, root: &str) -> Vec<(Source, PathBuf)> {
-    let global = dirs::home_dir().map(|home| home.join(root));
+    roots_in(dirs::home_dir().as_deref(), dir, root)
+}
+
+/// As [`roots`], with `home` as the home directory, so tests need not read the real one.
+pub(crate) fn roots_in(home: Option<&Path>, dir: &Path, root: &str) -> Vec<(Source, PathBuf)> {
+    let global = home.map(|home| home.join(root));
     let ancestors: Vec<&Path> = dir.ancestors().collect();
     let repository = ancestors
         .iter()

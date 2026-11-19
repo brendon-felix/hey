@@ -117,7 +117,12 @@ impl Kinds {
 /// The kinds for an agent working in `dir`, from `~/.agents/agents` and the
 /// project's `.agents/agents` as for skills: the nearest of a name wins.
 pub fn find(dir: &Path) -> Kinds {
-    let roots = skills::roots(dir, ROOT);
+    find_in(dirs::home_dir().as_deref(), dir)
+}
+
+/// As [`find`], with `home` as the home directory.
+fn find_in(home: Option<&Path>, dir: &Path) -> Kinds {
+    let roots = skills::roots_in(home, dir, ROOT);
     let mut kinds = BTreeMap::new();
     let mut problems = Vec::new();
     for (source, root) in &roots {
@@ -204,7 +209,7 @@ mod tests {
         fs::write(inner.join(ROOT).join("Bad.md"), "---\nname: Bad\n---").unwrap();
         fs::write(inner.join(ROOT).join("notes.txt"), "ignored").unwrap();
 
-        let found = find(&inner);
+        let found = find_in(Some(&base.join("home")), &inner);
         assert_eq!(found.kinds.len(), 2);
         assert_eq!(found.get("reviewer").unwrap().description, "the directory's");
         assert_eq!(found.get("tester").unwrap().source, Source::Project);
