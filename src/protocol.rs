@@ -462,3 +462,17 @@ pub struct ServerReport {
     pub name: String,
     pub tools: Result<usize, String>,
 }
+
+/// What `/undo` put back: the files the latest answer that changed any
+/// changed, as they were before it.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct Undone {
+    /// Files written back as they were.
+    pub restored: Vec<String>,
+    /// Files the answer created, removed.
+    pub removed: Vec<String>,
+    /// Files that could not be put back, and why.
+    pub failed: Vec<String>,
+    /// How many earlier answers can still be undone.
+    pub left: usize,
+}

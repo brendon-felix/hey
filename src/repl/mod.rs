@@ -615,6 +615,7 @@ impl Session {
             Command::History => self.show_thread(true).await,
             Command::Copy(scope) => self.copy(scope).await?,
             Command::Compact(focus) => self.compact(focus.unwrap_or_default()).await?,
+            Command::Undo => self.undo().await?,
             Command::Model(reference) => self.switch_model(reference).await?,
             Command::Think(level) => self.set_thinking(level)?,
             Command::Theme(theme) => self.switch_theme(theme, editor)?,
@@ -746,6 +747,36 @@ impl Session {
             true => render::notice("compacts before the model's next step"),
             false => render::notice("not now: the answer is ending, or compacting already"),
         }
+        Ok(())
+    }
+
+    /// Puts back the files the latest answer changed, leaving the
+    /// conversation as it is, and says which.
+    async fn undo(&mut self) -> Result<()> {
+        if self.current.is_some() {
+            render::notice("not while answering; stop the answer first");
+            return Ok(());
+        }
+        let Some(undone) = self.backend.undo(&self.thread).await? else {
+            render::notice("no answer left that changed files");
+            return Ok(());
+        };
+        println!();
+        for path in &undone.restored {
+            println!("  {} {path}", "restored".green());
+        }
+        for path in &undone.removed {
+            println!("  {} {path}", "removed".yellow());
+        }
+        for failure in &undone.failed {
+            println!("  {} {failure}", "not undone".red());
+        }
+        render::notice(&format!(
+            "files only; the conversation is unchanged. {} earlier answer{} to undo",
+            undone.left,
+            if undone.left == 1 { "" } else { "s" }
+        ));
+        println!();
         Ok(())
     }
 

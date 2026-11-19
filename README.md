@@ -26,6 +26,7 @@ of `hey` is on ease of use, speed, and a pleasant terminal experience.
   recalled when a conversation starts
 - Compaction: a long conversation's older messages are replaced by a summary, on its own past a
   token threshold, or when you `/compact` or the agent asks
+- Checkpoints: `/undo` puts back the files the latest answer changed, and earlier ones in turn
 - Remote hosting: run the agent and keep conversations on a server, and pick them up from any
   machine, even while an answer is in progress
 - Syntax highlighting via [syntect](https://github.com/trishume/syntect), with bat's themes
@@ -83,6 +84,7 @@ Type `/` or press Tab to see commands and skills; the status line describes the 
 | `/copy` | Copy the latest reply as Markdown |
 | `/copy-all` | Copy this conversation as Markdown |
 | `/compact [focus]` | Replace older messages with a summary, keeping above all what `focus` names |
+| `/undo` | Put back the files the latest answer changed; again for the one before |
 | `/model [vendor/model]`, `/m` | Switch model; without one, pick from the models the host can use |
 | `/think [level]` | Set thinking: `off`, `minimal`…`max`, or `default` |
 | `/theme [theme]`, `/t` | Switch theme; without one, pick with a live preview |
@@ -230,6 +232,30 @@ conversation keeps its title.
 threshold = 150000                 # compact later
 model = "openai/gpt-5.4-mini"      # a cheaper model to write summaries
 # auto = false                     # only /compact and the agent's tool compact
+```
+
+### Checkpoints
+
+Before an answer changes a file under the working directory, hey keeps it as it was. `/undo` puts
+back the files of the latest answer that changed any, and lists those restored and those it
+removed because the answer created them; each `/undo` after goes one answer further back. It
+undoes files only: the conversation stays as it is, so tell the model what you undid if it
+matters. It waits while an answer is in progress.
+
+`write`, `edit`, `move` and `delete` keep the files they name. `shell` takes a snapshot of the
+working directory just before and just after each command, keeps what changed, and reports it
+under the call as the file tools do. In a git work tree the snapshot is a git tree in a private
+index, so the repository is never written to; elsewhere it is a scan, skipped in a tree of more
+than 20,000 files. Files git ignores, files over 16 MiB and anything outside the working
+directory are not kept.
+
+Checkpoints are kept in the host's data directory, under `hey/checkpoints`, per conversation, and
+removed with it. With a remote, `/undo` runs on the host and puts back the host's files; calls the
+agent runs on your machine are not kept.
+
+```toml
+[checkpoints]
+enabled = false                    # keep nothing; /undo says it is off
 ```
 
 ## Configuration

@@ -14,6 +14,7 @@ use rig_core::tool::{DynamicTool, ToolErrorKind, ToolExecutionError, ToolOutput}
 use rig_tools::{Live, Seen};
 use serde_json::{Value, json};
 
+use crate::checkpoint::{self, Turn};
 use crate::host::Run;
 use crate::protocol::{AgentId, Call, Lent};
 use crate::toolbox::{Place, Toolbox};
@@ -30,6 +31,9 @@ pub struct Kit {
     pub host: String,
     pub lent: Option<Lent>,
     pub run: Arc<Run>,
+    /// Where the answer keeps the files its calls on the host change, for
+    /// `/undo`; `None` when checkpoints are off.
+    pub turn: Option<Arc<Turn>>,
 }
 
 /// A subagent, which the calls it makes on the client are shown under.
@@ -44,6 +48,17 @@ impl Kit {
     /// running command's output through `live`; `tag` names a subagent.
     pub fn tools(&self, seen: &Seen, live: Option<Live>, tag: Option<Tag>) -> (Vec<DynamicTool>, Arc<Routes>) {
         let own = self.toolbox.tools(seen, Place::here(live));
+        let own: Vec<DynamicTool> = match &self.turn {
+            None => own,
+            Some(turn) => own
+                .into_iter()
+                .map(|tool| match tool.name().as_str() {
+                    "write" | "edit" | "move" | "delete" => checkpoint::files(tool, turn.clone(), None),
+                    "shell" => checkpoint::shell(tool, turn.clone()),
+                    _ => tool,
+                })
+                .collect(),
+        };
         let Some(lent) = &self.lent else {
             return (own, Arc::new(Routes::default()));
         };

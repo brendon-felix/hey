@@ -14,6 +14,8 @@ pub enum Command {
     /// Compact the conversation, with what its summary should keep above
     /// all.
     Compact(Option<String>),
+    /// Put back the files the latest answer changed.
+    Undo,
     Model(Option<String>),
     Think(Option<String>),
     Theme(Option<String>),
@@ -134,6 +136,13 @@ pub const COMMANDS: &[Spec] = &[
         arg: Some(Arg::Focus),
         about: "Replace older messages with a summary, keeping what focus names",
         build: Command::Compact,
+    },
+    Spec {
+        name: "undo",
+        aliases: &[],
+        arg: None,
+        about: "Put back the files the latest answer changed",
+        build: |_| Command::Undo,
     },
     Spec {
         name: "model",
@@ -259,6 +268,7 @@ mod tests {
         assert_eq!(parse("/nope"), Input::Invalid("unknown command /nope".into()));
         assert_eq!(parse(" /deploy to staging"), Input::Message("/deploy to staging".into()));
         assert_eq!(parse("/new"), Input::Command(Command::New), "commands win");
+        assert_eq!(parse("/undo"), Input::Command(Command::Undo));
         assert_eq!(
             parse("/compact the parser work"),
             Input::Command(Command::Compact(Some("the parser work".into())))
