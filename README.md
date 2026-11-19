@@ -11,6 +11,10 @@ of `hey` is on ease of use, speed, and a pleasant terminal experience.
 - Any model [rig](https://rig.rs) supports: OpenAI, Anthropic, Gemini, Ollama, OpenRouter, and more
 - Built-in tools to read, list, search, write, edit, move and delete files and run shell commands, with
   live command output
+- Background processes: servers, watchers and long builds the agent starts, reads and stops,
+  killed when hey exits
+- Images: `@shot.png` or Ctrl+V attaches one to a message, and `read` shows the model an image file
+- Headless: `hey --print` answers a script or cron job with the reply alone, or JSON events
 - Web tools: `fetch` reads a page as Markdown in a fraction of a second, and `web_search` searches
   with Brave
 - [MCP](https://modelcontextprotocol.io) servers, local (stdio) or remote (streamable HTTP)
@@ -66,6 +70,7 @@ hey -p ~/prompts/reviewer.txt         # system prompt from a file
 hey --remote fermi                    # run the agent on a remote host
 hey --serve                           # be a remote host
 hey --login copilot                   # sign in to GitHub Copilot
+hey -P summarize @CHANGELOG.md        # print the reply alone, for scripts
 ```
 
 ### Commands
@@ -90,6 +95,7 @@ Type `/` or press Tab to see commands and skills; the status line describes the 
 | `/skills` | List skills and why any did not load |
 | `/<skill> [message]` | Invoke a skill, with the rest of the line as your message |
 | `/memories`, `/mem` | List memories to write, edit or forget |
+| `/paste` | Attach the clipboard's image to the next message |
 | `/clear`, `/c` | Clear the screen |
 | `/exit`, `/quit`, `/q`, `/x` | Exit |
 
@@ -120,6 +126,7 @@ directories from your working directory, then `@shared:` lists the host's shared
 | Mention | Attaches |
 | --- | --- |
 | `@src/main.rs` | The file's contents, up to 50 KiB, from your working directory |
+| `@shot.png` | The image, PNG, JPEG, GIF or WebP up to 3.75 MB, which the model sees |
 | `@src/` | A listing of the directory, skipping what git ignores |
 | `@"my notes.md"` | A path with spaces |
 | `@shared:guide.md` | A file or directory from the host's shared repository, `[shared] dir` |
@@ -144,6 +151,7 @@ work in one-shot messages too: `hey review @src/main.rs`.
 | Ctrl+Q | Queue the message for after the answer |
 | Ctrl+S | Send now, stopping the answer |
 | Alt+Up | Take back the message queued last, to edit |
+| Ctrl+V | Attach the clipboard's image, as a mention of it saved in hey's cache |
 | Ctrl+C | Stop a running answer, or exit |
 | Ctrl+D | Exit |
 
@@ -205,6 +213,24 @@ answering, in a conversation of its own.
 A terminal is told apart by the shell it started (on Windows, the shell hey is typed in), so a
 new tab, window or tmux pane starts a new conversation, while a shell or script started inside
 the terminal keeps its conversation. hey forgets a terminal once it is closed.
+
+### Headless
+
+`hey --print MESSAGE` (`-P`) answers without the terminal, for scripts and cron: the final
+reply, after the last tool call, goes to stdout as the model wrote it, and anything else, such
+as notices, to stderr. The message may come on stdin instead: `git diff | hey -P review this`
+takes the arguments, `hey -P < prompt.md` stdin. `--json` writes every event of the run to
+stdout as a line of JSON instead, as `hey --serve` streams them. Each run is a new conversation,
+or with `-r` the most recent one; it is saved like any other.
+
+Nothing asks: a tool call whose permission is `confirm` is declined, and the model told so,
+unless `--yes` (`-y`) allows every such call. `deny` still denies. A failed or interrupted
+answer exits with status 1.
+
+```bash
+hey -P -y "run the tests and summarize failures" > report.md
+hey --json what changed today? | jq -r 'select(.event == "text") | .text'
+```
 
 ### Compaction
 
@@ -279,7 +305,8 @@ Each tool call is shown as it happens. Whether it runs depends on its permission
 - `confirm` asks first, and offers to allow that tool for the rest of the conversation.
 - `deny` tells the model it is not allowed.
 
-`read`, `list`, `search`, `skill`, `spawn_agents` and `compact` are allowed by default; everything else asks. Rules are
+`read`, `list`, `search`, `process_output`, `process_list`, `skill`, `spawn_agents` and `compact` are
+allowed by default; everything else asks. Rules are
 keyed by tool name, or `mcp:<server>:<tool>` and `mcp:<server>` for MCP tools, which the model sees
 as `mcp__<server>__<tool>`.
 
@@ -289,6 +316,21 @@ To run every tool without asking, ignoring all rules:
 [tools]
 allow_all = true
 ```
+
+### Background processes
+
+`shell` waits for its command to end, so the agent starts what runs on, such as a dev
+server, a watcher or a long build, with `spawn_process`: it runs with `sh -c` in a process
+group of its own, with no stdin, and the call returns its id at once. `process_output` reads
+what it printed, stdout and stderr together, from an offset or its last lines, waiting up to
+two minutes for more if asked; `process_list` lists them, and `process_kill` stops one and all
+it started. The latest 256 KiB of each one's output is kept in memory, and all of it in a file
+the model can `read` or `search`. Every one ends when hey does; with a remote, when the
+host, or the client the process runs on, exits.
+
+`spawn_process` and `process_kill` ask, as `shell` does; `process_output` and `process_list`
+are allowed. With a remote, they run on either machine, as the call's `machine` says, and a
+process is known only to the machine it runs on.
 
 ### Subagents
 

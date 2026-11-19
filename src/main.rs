@@ -11,6 +11,7 @@ mod compaction;
 mod config;
 mod copilot;
 mod gate;
+mod headless;
 mod host;
 mod log;
 mod mcp;
@@ -19,6 +20,7 @@ mod mention;
 mod models;
 mod permissions;
 mod preamble;
+mod processes;
 mod protocol;
 mod render;
 mod repl;
@@ -116,6 +118,19 @@ struct Args {
     )]
     login: Option<Login>,
 
+    /// Answer MESSAGE (or stdin) without the terminal: print only the
+    /// final reply, and decline tool calls that would ask
+    #[arg(long, short = 'P', conflicts_with_all = ["threads", "memories", "interactive", "serve", "login"])]
+    print: bool,
+
+    /// With --print, write every event of the run as a line of JSON
+    #[arg(long, conflicts_with_all = ["threads", "memories", "interactive", "serve", "login"])]
+    json: bool,
+
+    /// With --print, allow every tool call that would ask
+    #[arg(long, short = 'y', conflicts_with_all = ["threads", "memories", "interactive", "serve", "login"])]
+    yes: bool,
+
     /// Message to send; without one, hey starts a REPL
     #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
     message: Vec<String>,
@@ -129,7 +144,10 @@ enum Login {
 
 #[tokio::main]
 async fn main() -> ExitCode {
-    match run(Args::parse()).await {
+    let ran = run(Args::parse()).await;
+    // Background processes the agent started end with hey.
+    processes::kill_all();
+    match ran {
         Ok(code) => code,
         Err(error) => {
             eprintln!("{} {error:#}", "Error:".red());
@@ -139,6 +157,9 @@ async fn main() -> ExitCode {
 }
 
 async fn run(args: Args) -> Result<ExitCode> {
+    if args.print || args.json {
+        render::screen::to_stderr();
+    }
     let config = Config::load(args.config.as_deref())?;
     render::configure(&config.display);
     let _logging = log::init(&config.log)
@@ -160,7 +181,10 @@ async fn run(args: Args) -> Result<ExitCode> {
             listen: config.server.listen,
         };
         let host = Arc::new(Host::new(&config, hosting).await?);
-        server::serve(host, &config.server).await?;
+        tokio::select! {
+            served = server::serve(host, &config.server) => served?,
+            _ = tokio::signal::ctrl_c() => {}
+        }
         return Ok(ExitCode::SUCCESS);
     }
 
@@ -182,6 +206,37 @@ async fn run(args: Args) -> Result<ExitCode> {
         .await?;
     let thinking = args.think.or(defaults.thinking);
     let message = (!args.message.is_empty()).then(|| args.message.join(" "));
+    if args.print || args.json {
+        let prompt = match message {
+            Some(prompt) => prompt,
+            None => std::io::read_to_string(std::io::stdin()).context("cannot read the message from stdin")?,
+        };
+        if prompt.trim().is_empty() {
+            anyhow::bail!("--print needs a message, as arguments or on stdin");
+        }
+        let thread = match args.resume {
+            true => latest(&backend).await?,
+            false => SessionId::new(),
+        };
+        let mut request = turn::request(
+            String::new(),
+            protocol::RunOptions {
+                model: model.reference,
+                thinking,
+                system_prompt,
+            },
+        );
+        request.attachments = headless::attachments(&prompt);
+        request.prompt = prompt;
+        let options = headless::Options {
+            json: args.json,
+            yes: args.yes,
+        };
+        let ran = headless::run(&backend, &thread, request, options).await;
+        backend.settle().await;
+        ran?;
+        return Ok(ExitCode::SUCCESS);
+    }
     let launch = match message {
         Some(prompt) if !(args.interactive || config.interactive) => Launch::Once(prompt),
         first => Launch::Repl(first),

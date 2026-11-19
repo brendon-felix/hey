@@ -21,12 +21,18 @@ pub struct Context {
     files: Vec<String>,
     directories: Vec<String>,
     threads: Vec<String>,
+    /// Images, which follow the text as images.
+    images: Vec<UserContent>,
 }
 
 impl Context {
     pub fn attach(&mut self, attachment: &Attachment) {
         match attachment {
             Attachment::File { path, text } => self.files.push(code_block(path, text)),
+            Attachment::Image { media_type, data, .. } => {
+                self.images
+                    .push(UserContent::image_base64(data.clone(), media_type.clone(), None));
+            }
             Attachment::Directory {
                 path,
                 entries,
@@ -47,14 +53,22 @@ impl Context {
     }
 
     /// `prompt` as the model gets it: what was typed, then what was attached.
-    pub fn message(self, prompt: &str) -> Message {
+    pub fn message(mut self, prompt: &str) -> Message {
+        let images = std::mem::take(&mut self.images);
         let content = std::iter::once(UserContent::text(prompt))
             .chain(self.text().map(UserContent::text))
+            .chain(images)
             .collect();
         Message::User { content }
     }
 
-    /// What was attached, as the part of a message that follows the prompt.
+    /// Whether images were attached, which [`Self::text`] leaves out.
+    pub fn has_images(&self) -> bool {
+        !self.images.is_empty()
+    }
+
+    /// What was attached, as the part of a message that follows the prompt;
+    /// images are left out.
     pub fn text(self) -> Option<String> {
         let sections: Vec<String> = [
             ("skills", self.skills),
@@ -98,4 +112,26 @@ fn listing(path: &str, entries: &[String], truncated: bool) -> String {
         .chain(more.map(str::to_owned))
         .collect::<Vec<_>>()
         .join("\n")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn images_follow_the_prompt_and_the_text_as_images() {
+        let mut context = Context::default();
+        context.attach(&Attachment::Image {
+            path: "/tmp/a.png".into(),
+            media_type: Some(rig_core::message::ImageMediaType::PNG),
+            data: "iVBORw0KGgo=".into(),
+        });
+        assert!(context.has_images());
+        let Message::User { content } = context.message("look") else {
+            unreachable!()
+        };
+        let content: Vec<_> = content.into_iter().collect();
+        assert_eq!(content.len(), 2, "the prompt, then the image");
+        assert!(matches!(content[1], UserContent::Image(_)));
+    }
 }

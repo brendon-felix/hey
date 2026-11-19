@@ -163,13 +163,15 @@ default = "confirm"
 result_bytes = 16384
 
 # Rules by tool. Built-in tools: read, list, search, write, edit, move, delete,
-# shell, skill, fetch, web_search, spawn_agents, compact. MCP tools are
-# "mcp:<server>:<tool>", or "mcp:<server>" for all of a server's tools. Your
-# rules extend these defaults rather than replace them.
+# shell, spawn_process, process_output, process_list, process_kill, skill,
+# fetch, web_search, spawn_agents, compact. MCP tools are "mcp:<server>:<tool>",
+# or "mcp:<server>" for all of a server's tools. Your rules extend these defaults rather than replace them.
 [tools.permissions]
 read = "allow"
 list = "allow"
 search = "allow"
+process_output = "allow"
+process_list = "allow"
 skill = "allow"
 spawn_agents = "allow"
 compact = "allow"

@@ -42,9 +42,21 @@ enum Mode {
     },
 }
 
+/// Whether output goes to stderr, keeping stdout for what `--print` gives.
+static TO_STDERR: AtomicBool = AtomicBool::new(false);
+
+/// Sends what is shown to stderr from now on.
+pub fn to_stderr() {
+    TO_STDERR.store(true, Ordering::Relaxed);
+}
+
 /// Prints `text` and ends its line. Live rows give way until next set.
 pub fn line(text: impl Display) {
     let text = text.to_string();
+    if TO_STDERR.load(Ordering::Relaxed) {
+        eprintln!("{text}");
+        return;
+    }
     let mut screen = lock();
     let Screen { mode, live } = &mut *screen;
     match mode {

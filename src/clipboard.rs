@@ -56,3 +56,14 @@ fn over_ssh() -> bool {
         .iter()
         .any(|variable| std::env::var_os(variable).is_some())
 }
+
+/// Saves the clipboard's image in hey's cache and returns the mention that
+/// attaches it, `@"path"`; `None` when the clipboard holds no image.
+pub fn paste_image() -> Result<Option<String>> {
+    let dir = crate::config::cache_dir()
+        .map(|dir| dir.join("pasted"))
+        .ok_or_else(|| anyhow::anyhow!("no cache directory on this platform"))?;
+    let launcher = rig_tools::process::Launcher::default();
+    let saved = rig_tools::clipboard::read_image(&launcher, &dir)?;
+    Ok(saved.map(|path| crate::mention::typed(&path.display().to_string())))
+}

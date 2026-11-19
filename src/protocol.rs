@@ -342,12 +342,18 @@ pub struct ClientInfo {
 
 /// A file or directory a mention attaches, as read where it was found, by
 /// its absolute path there.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Attachment {
     File {
         path: String,
         text: String,
+    },
+    /// An image, in base64, which the model sees as an image.
+    Image {
+        path: String,
+        media_type: Option<rig_core::message::ImageMediaType>,
+        data: String,
     },
     Directory {
         path: String,
@@ -363,7 +369,7 @@ impl Attachment {
     /// How clients show it: its path, a directory's ending in `/`.
     pub fn name(&self) -> String {
         match self {
-            Attachment::File { path, .. } => path.clone(),
+            Attachment::File { path, .. } | Attachment::Image { path, .. } => path.clone(),
             Attachment::Directory { path, .. } if path.ends_with('/') => path.clone(),
             Attachment::Directory { path, .. } => format!("{path}/"),
         }

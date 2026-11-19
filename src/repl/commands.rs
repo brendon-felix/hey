@@ -21,6 +21,8 @@ pub enum Command {
     Skills,
     Memories,
     Clear,
+    /// Attach the clipboard's image to the next message.
+    Paste,
     Exit,
 }
 
@@ -176,6 +178,13 @@ pub const COMMANDS: &[Spec] = &[
         arg: None,
         about: "Browse, write, edit and forget what hey remembers",
         build: |_| Command::Memories,
+    },
+    Spec {
+        name: "paste",
+        aliases: &[],
+        arg: None,
+        about: "Attach the clipboard's image to the next message",
+        build: |_| Command::Paste,
     },
     Spec {
         name: "clear",

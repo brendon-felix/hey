@@ -27,7 +27,8 @@ pub fn default_rules() -> BTreeMap<String, Permission> {
     // say. Loading a skill only reads instructions the user installed,
     // which `read` could read anyway; what following them does asks as usual.
     // Compacting changes only what the model reads, and keeps what it replaced.
-    let tools = ["read", "list", "search", crate::subagents::TOOL, crate::skills::TOOL, crate::compaction::TOOL];
+    // Reading or listing background processes changes nothing.
+    let tools = ["read", "list", "search", "process_output", "process_list", crate::subagents::TOOL, crate::skills::TOOL, crate::compaction::TOOL];
     tools.map(|tool| (tool.to_owned(), Permission::Allow)).into()
 }
 
