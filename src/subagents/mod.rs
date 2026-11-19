@@ -6,6 +6,7 @@
 //! each. They have its tools, so they work on the host or on the client
 //! that lends its own, as their calls say.
 
+mod kinds;
 mod spawn;
 
 use std::collections::HashMap;
@@ -27,6 +28,7 @@ use crate::route::{Kit, Tag};
 use crate::sessions::SessionId;
 use crate::skills;
 
+pub use kinds::{Kind, Kinds, find as kinds};
 pub use spawn::Spawn;
 
 /// The name the model calls the tool that starts subagents by.
@@ -55,6 +57,8 @@ pub struct Team {
     /// Their conversations, for follow-ups.
     store: MemoryStore,
     seen: Mutex<HashMap<AgentId, Seen>>,
+    /// The kind each agent started as, which its follow-ups keep.
+    kinds: Mutex<HashMap<AgentId, Kind>>,
 }
 
 /// One turn of a subagent's conversation.
@@ -64,6 +68,8 @@ pub struct Turn<'a> {
     pub message: &'a str,
     pub model: &'a str,
     pub thinking: Option<Thinking>,
+    /// The kind of agent, whose prompt, tools, model and thinking it has.
+    pub kind: Option<&'a Kind>,
 }
 
 impl Crew {
@@ -94,13 +100,14 @@ impl Crew {
     /// asking its questions through `reporter`. Gives the agent's final
     /// reply.
     pub async fn run(&self, team: &Team, kit: &Kit, turn: Turn<'_>, reporter: impl Reporter) -> Result<String, String> {
-        let model = Model::connect(turn.model, &self.providers).map_err(|error| format!("{error:#}"))?;
+        let model_name = turn.kind.and_then(|kind| kind.model.as_deref()).unwrap_or(turn.model);
+        let model = Model::connect(model_name, &self.providers).map_err(|error| format!("{error:#}"))?;
         let agent = self.agent(team, kit, &turn, &model, reporter);
         let runner = agent
             .prompt(turn.message.to_owned())
             .conversation(turn.agent.as_str())
             .tool_concurrency(gate::CONCURRENCY);
-        let runner = match turn.thinking {
+        let runner = match turn.kind.and_then(|kind| kind.thinking).or(turn.thinking) {
             Some(thinking) => runner.options(GenerationOptions::default().reasoning(thinking)),
             None => runner,
         };
@@ -115,15 +122,22 @@ impl Crew {
             agent: turn.agent.clone(),
             label: turn.label.to_owned(),
         };
-        let (tools, routes) = kit.tools(&team.seen(turn.agent), None, Some(tag));
+        let (mut tools, routes) = kit.tools(&team.seen(turn.agent), None, Some(tag));
+        if let Some(kind) = turn.kind {
+            tools.retain(|tool| kind.allows(&tool.name()));
+        }
         let cwd = agent::working_directory();
         let client = kit.lent.as_ref().map(|lent| lent.machine.as_str());
+        let prompt = turn.kind.map_or(PROMPT, |kind| kind.prompt.as_str());
         let builder = agent::builder(model, tools, routes, team.permissions.clone(), Arc::new(reporter))
             .name("hey subagent")
-            .preamble(PROMPT)
+            .preamble(prompt)
             .append_preamble(&environment(&cwd, &kit.host, client));
-        let mut builder = skills::find(&cwd)
-            .equip(builder)
+        let builder = match turn.kind.is_none_or(|kind| kind.allows(skills::TOOL)) {
+            true => skills::find(&cwd).equip(builder),
+            false => builder,
+        };
+        let mut builder = builder
             .default_max_turns(self.max_turns)
             .memory(team.store.clone())
             .add_hook(ResultLimit {
@@ -143,7 +157,17 @@ impl Team {
             permissions,
             store: MemoryStore::default(),
             seen: Mutex::default(),
+            kinds: Mutex::default(),
         }
+    }
+
+    /// The kind `agent` started as, if any.
+    fn kind(&self, agent: &AgentId) -> Option<Kind> {
+        lock(&self.kinds).get(agent).cloned()
+    }
+
+    fn set_kind(&self, agent: &AgentId, kind: Kind) {
+        lock(&self.kinds).insert(agent.clone(), kind);
     }
 
     /// Whether `agent` said anything in this conversation before.

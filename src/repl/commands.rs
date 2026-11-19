@@ -19,6 +19,7 @@ pub enum Command {
     Theme(Option<String>),
     Tools,
     Skills,
+    Agents,
     Memories,
     Clear,
     Exit,
@@ -169,6 +170,13 @@ pub const COMMANDS: &[Spec] = &[
         arg: None,
         about: "List skills, which /name invokes",
         build: |_| Command::Skills,
+    },
+    Spec {
+        name: "agents",
+        aliases: &[],
+        arg: None,
+        about: "List the kinds of subagent the agent may start",
+        build: |_| Command::Agents,
     },
     Spec {
         name: "memories",

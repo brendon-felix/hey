@@ -201,7 +201,7 @@ impl Skill {
 
 /// The YAML between a `---` line opening `text` and the next `---` line,
 /// and the Markdown after it.
-fn split(text: &str) -> Option<(&str, &str)> {
+pub(crate) fn split(text: &str) -> Option<(&str, &str)> {
     let text = text.strip_prefix('\u{feff}').unwrap_or(text);
     let mut lines = text.split_inclusive('\n');
     let opening = lines.next()?;
@@ -284,7 +284,7 @@ fn escape(text: &str) -> String {
 /// names repeat, the skill nearest `dir` wins, so a project can replace a
 /// global skill.
 pub fn find(dir: &Path) -> Found {
-    let roots = roots(dir);
+    let roots = roots(dir, ROOT);
     let mut skills = BTreeMap::new();
     let mut problems = Vec::new();
     for (source, root) in &roots {
@@ -304,14 +304,12 @@ pub fn find(dir: &Path) -> Found {
     }
 }
 
-/// `~/.agents/skills`, where skills for every project are kept.
-fn global() -> Option<PathBuf> {
-    dirs::home_dir().map(|home| home.join(ROOT))
-}
-
-/// Where skills for an agent in `dir` are kept, farthest first.
-fn roots(dir: &Path) -> Vec<(Source, PathBuf)> {
-    let global = global();
+/// Where an agent in `dir` finds what is kept under `root` (such as
+/// `.agents/skills`), farthest first: in the home directory, then in each
+/// directory from the repository `dir` is in down to `dir` itself, or in
+/// `dir` alone outside a repository.
+pub(crate) fn roots(dir: &Path, root: &str) -> Vec<(Source, PathBuf)> {
+    let global = dirs::home_dir().map(|home| home.join(root));
     let ancestors: Vec<&Path> = dir.ancestors().collect();
     let repository = ancestors
         .iter()
@@ -320,7 +318,7 @@ fn roots(dir: &Path) -> Vec<(Source, PathBuf)> {
     let projects = ancestors[..=repository]
         .iter()
         .rev()
-        .map(|ancestor| ancestor.join(ROOT))
+        .map(|ancestor| ancestor.join(root))
         .filter(|root| Some(root) != global.as_ref())
         .map(|root| (Source::Project, root))
         .collect::<Vec<_>>();

@@ -620,6 +620,7 @@ impl Session {
             Command::Theme(theme) => self.switch_theme(theme, editor)?,
             Command::Tools => self.list_tools().await?,
             Command::Skills => self.list_skills().await?,
+            Command::Agents => self.list_agents().await?,
             Command::Memories => browser::memories::browse(&self.backend).await?,
             Command::Clear => editor.clear_screen(),
             Command::Exit => {}
@@ -882,6 +883,53 @@ impl Session {
                     Ok(count) => println!("  {} {} ({count} tools)", "●".green(), server.name),
                     Err(error) => println!("  {} {}: {error}", "●".red(), server.name),
                 }
+            }
+        }
+        println!();
+        Ok(())
+    }
+
+    /// The kinds of subagent the host's agent may start, and why any were
+    /// not loaded.
+    async fn list_agents(&self) -> Result<()> {
+        let found = self.backend.agents().await?;
+        let palette = palette();
+        if found.kinds.is_empty() && found.problems.is_empty() {
+            println!(
+                "\n{}",
+                "No agents. An agent is a <name>.md file, in one of:".bold()
+            );
+            for (source, dir) in &found.roots {
+                println!(
+                    "  {} {}",
+                    dir.display(),
+                    palette.muted.paint(source.as_str())
+                );
+            }
+            println!();
+            return Ok(());
+        }
+        println!();
+        for kind in &found.kinds {
+            let mut note = kind.source.as_str().to_owned();
+            if let Some(tools) = &kind.tools {
+                note.push_str(&format!(", tools: {}", tools.join(" ")));
+            }
+            if let Some(model) = &kind.model {
+                note.push_str(&format!(", {model}"));
+            }
+            let room = render::terminal_width().saturating_sub(29 + note.chars().count());
+            println!(
+                "  {} {} {}",
+                palette.name.paint(&format!("{:<24}", kind.name.as_str())),
+                render::clip(&kind.description, room),
+                palette.muted.paint(&note)
+            );
+        }
+        if !found.problems.is_empty() {
+            println!("\n{}", "Not loaded".bold());
+            for problem in &found.problems {
+                println!("  {} {problem}", "✗".red());
             }
         }
         println!();

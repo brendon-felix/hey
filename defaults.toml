@@ -123,6 +123,9 @@ embedding_model = "ollama/qwen3-embedding:0.6b"
 # Model that decides what to remember, as `vendor/model`. When unset, the
 # conversation's model.
 # model = "openai/gpt-5.4-mini"
+# Named kinds of subagent are Markdown files in ~/.agents/agents/ and a
+# project's .agents/agents/ (see the README's "Agent types"); their own
+# `model`, `tools` and `thinking` override these.
 # Where memories are kept, as a Markdown list you can edit. Their embeddings
 # are kept beside it, in memories.vectors.json.
 # Default: the platform's data directory, under hey/memories.md.
