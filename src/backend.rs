@@ -16,6 +16,7 @@ use crate::protocol::{
 };
 use crate::sessions::SessionId;
 use crate::skills::Found;
+use crate::subagents::Kinds;
 use crate::steer::Steer;
 use crate::workbench::{self, Workbench};
 
@@ -131,6 +132,15 @@ impl Backend {
         match self {
             Backend::Local(host) => Ok(host.skills()),
             Backend::Remote(client, _) => client.skills().await,
+        }
+    }
+
+    /// The kinds of subagent the host's agent may start, and why any were
+    /// not loaded.
+    pub async fn agents(&self) -> Result<Kinds> {
+        match self {
+            Backend::Local(host) => Ok(host.agents()),
+            Backend::Remote(client, _) => client.agents().await,
         }
     }
 

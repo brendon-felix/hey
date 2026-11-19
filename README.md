@@ -90,6 +90,7 @@ Type `/` or press Tab to see commands and skills; the status line describes the 
 | `/theme [theme]`, `/t` | Switch theme; without one, pick with a live preview |
 | `/tools` | List tools, their permissions and MCP servers |
 | `/skills` | List skills and why any did not load |
+| `/agents` | List the kinds of subagent the agent may start and why any did not load |
 | `/<skill> [message]` | Invoke a skill, with the rest of the line as your message |
 | `/memories`, `/mem` | List memories to write, edit or forget |
 | `/init` | Have the model explore the repository and write or update its `AGENTS.md` |
@@ -325,6 +326,41 @@ its tool calls show under its label as it works, and are permitted as the agent'
 can follow up with a subagent later in the conversation, which remembers its earlier work until
 hey (or, with a remote, the host) restarts. Subagents cannot start subagents.
 `[subagents] model` picks a cheaper model for them, and `enabled = false` turns them off.
+
+#### Agent types
+
+A named kind of subagent is a Markdown file, `<name>.md`, whose front matter names and describes
+it and whose body is its system prompt, in place of the generic one. `hey` finds them as it finds
+skills: in `~/.agents/agents/` for every project, and in `.agents/agents/` in the working
+directory and each directory above it up to the repository root, the nearer of two with one name
+winning. The `spawn_agents` tool lists each one's name and description, and the agent starts one
+by giving a task its `type`; a follow-up keeps its agent's type.
+
+| Field | |
+|---|---|
+| `name` | Lowercase letters, digits and hyphens, as the file is named |
+| `description` | When to use it, for the agent to choose by |
+| `model` | Its model, as `vendor/model`; unset, the one subagents use otherwise |
+| `tools` | The only tools it has, by name; unset, all a subagent has |
+| `thinking` | `off`, `minimal`…`max`; unset, its parent's |
+
+A file that breaks these, or has fields besides them, is not loaded; `/agents` lists the types and
+why any did not load. They are read afresh for every answer, from the host with a remote. An agent
+without `write`, `edit` and `shell` cannot change anything, such as this reviewer, saved as
+`.agents/agents/reviewer.md`:
+
+```markdown
+---
+name: reviewer
+description: Reviews code changes for bugs, risks and unclear code, without changing anything.
+tools: [read, list, search]
+thinking: high
+---
+You review code. Read the changes you are given and the code around them, then report concrete
+problems: bugs, unhandled errors, races, security holes and code that is hard to follow. Name
+each by file and line, say why it matters and how to fix it, most serious first. You cannot
+edit files or run commands; do not offer to. If you find nothing worth fixing, say so.
+```
 
 ### Your machine's tools, with a remote
 

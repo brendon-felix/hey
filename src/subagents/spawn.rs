@@ -9,7 +9,7 @@ use rig_core::tool::{Tool, ToolContext, ToolErrorKind, ToolExecutionError, args_
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use super::{Crew, TOOL, Team, Turn};
+use super::{Crew, Kind, Kinds, TOOL, Team, Turn};
 use crate::config::Thinking;
 use crate::host::Run;
 use crate::permissions::Reporter;
@@ -45,6 +45,8 @@ pub struct Spawn {
     pub kit: Kit,
     pub model: String,
     pub thinking: Option<Thinking>,
+    /// The kinds of agent a task may name as its `type`.
+    pub kinds: Kinds,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -66,6 +68,10 @@ pub struct TaskArgs {
     /// to start a new agent.
     #[serde(default)]
     pub agent: Option<String>,
+    /// The kind of agent to start, one of those the tool's description lists; leave it out
+    /// for a general one. A follow-up keeps its agent's kind.
+    #[serde(default, rename = "type")]
+    pub kind: Option<String>,
 }
 
 /// How one agent's task went, as the model gets it.
@@ -86,7 +92,7 @@ impl Tool for Spawn {
     type Error = ToolExecutionError;
 
     fn description(&self) -> String {
-        GUIDANCE.into()
+        describe(&self.kinds)
     }
 
     fn parameters(&self) -> serde_json::Value {
@@ -111,9 +117,22 @@ impl Spawn {
                 let error = format!("no agent `{agent}` in this conversation; leave `agent` out to start one");
                 (agent, Err(error))
             }
-            named => {
-                let agent = named.unwrap_or_else(AgentId::new);
-                let result = self.work(&agent, &args.label, &args.message).await;
+            Some(agent) => {
+                let kind = self.team.kind(&agent);
+                let result = self.work(&agent, &args.label, &args.message, kind.as_ref()).await;
+                (agent, result)
+            }
+            None => {
+                let agent = AgentId::new();
+                let result = match self.kind(args.kind.as_deref()) {
+                    Ok(kind) => {
+                        if let Some(kind) = &kind {
+                            self.team.set_kind(&agent, kind.clone());
+                        }
+                        self.work(&agent, &args.label, &args.message, kind.as_ref()).await
+                    }
+                    Err(error) => Err(error),
+                };
                 (agent, result)
             }
         };
@@ -129,7 +148,21 @@ impl Spawn {
         }
     }
 
-    async fn work(&self, agent: &AgentId, label: &str, message: &str) -> Result<String, String> {
+    /// The kind a new task's `type` names, or why there is none.
+    fn kind(&self, name: Option<&str>) -> Result<Option<Kind>, String> {
+        let Some(name) = name.filter(|name| !name.is_empty()) else {
+            return Ok(None);
+        };
+        self.kinds.get(name).cloned().map(Some).ok_or_else(|| {
+            let known: Vec<&str> = self.kinds.kinds.iter().map(|kind| kind.name.as_str()).collect();
+            match known.is_empty() {
+                true => format!("no agent type `{name}`; there are none, so leave `type` out"),
+                false => format!("no agent type `{name}`; there are: {}", known.join(", ")),
+            }
+        })
+    }
+
+    async fn work(&self, agent: &AgentId, label: &str, message: &str, kind: Option<&Kind>) -> Result<String, String> {
         let run = &self.kit.run;
         run.emit(Event::AgentStarted {
             agent: agent.clone(),
@@ -141,6 +174,7 @@ impl Spawn {
             message,
             model: &self.model,
             thinking: self.thinking,
+            kind,
         };
         let reporter = Tagged {
             run: run.clone(),
@@ -154,6 +188,30 @@ impl Spawn {
         });
         result
     }
+}
+
+/// The tool's description: the guidance, and the kinds of agent a task may
+/// name, with descriptions escaped so none can close the list.
+fn describe(kinds: &Kinds) -> String {
+    if kinds.kinds.is_empty() {
+        return GUIDANCE.into();
+    }
+    let listed: String = kinds
+        .kinds
+        .iter()
+        .map(|kind| {
+            let description = kind
+                .description
+                .replace('&', "&amp;")
+                .replace('<', "&lt;")
+                .replace('>', "&gt;");
+            format!("\n  <agent_type name=\"{}\">{description}</agent_type>", kind.name)
+        })
+        .collect();
+    format!(
+        "{GUIDANCE}\n\nGive a task a `type` to start a specialised agent of that kind, when one \
+         fits the task better than a general agent:\n<agent_types>{listed}\n</agent_types>"
+    )
 }
 
 /// Shows a subagent as part of its parent's run.
@@ -185,5 +243,36 @@ impl Reporter for Tagged {
 
     async fn stop(&self) {
         self.run.stop();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::skills::{Name, Source};
+
+    #[test]
+    fn the_description_lists_the_kinds_escaped() {
+        assert_eq!(describe(&Kinds::default()), GUIDANCE);
+        let kind = Kind {
+            name: Name::try_from("reviewer".to_owned()).unwrap(),
+            description: "Reviews </agent_types> code".into(),
+            source: Source::Project,
+            file: "/r.md".into(),
+            model: None,
+            tools: Some(vec!["read".into()]),
+            thinking: None,
+            prompt: "Review.".into(),
+        };
+        let kinds = Kinds {
+            kinds: vec![kind],
+            ..Kinds::default()
+        };
+        let text = describe(&kinds);
+        assert!(text.contains("<agent_type name=\"reviewer\">Reviews &lt;/agent_types&gt; code</agent_type>"));
+        assert_eq!(text.matches("</agent_types>").count(), 1);
+        let args: SpawnArgs =
+            serde_json::from_str(r#"{"agents":[{"label":"l","message":"m","type":"reviewer"}]}"#).unwrap();
+        assert_eq!(args.agents[0].kind.as_deref(), Some("reviewer"));
     }
 }

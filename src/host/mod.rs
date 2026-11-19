@@ -43,6 +43,7 @@ use crate::results::ResultLimit;
 use crate::route::Kit;
 use crate::sessions::{Mark, SessionId, Sessions, Summary};
 use crate::skills::{self, Found};
+use crate::subagents::Kinds;
 use crate::steer::{self, Delivery, Steer};
 use crate::subagents::{self, Crew, Spawn};
 use crate::toolbox::{Toolbox, machine_name};
@@ -543,6 +544,11 @@ impl Host {
         skills::find(&agent::working_directory())
     }
 
+    /// The kinds of subagent the agent may start, found from where it works.
+    pub fn agents(&self) -> Kinds {
+        subagents::kinds(&agent::working_directory())
+    }
+
     /// False when `memory` was not saved.
     pub fn forget(&self, memory: &str) -> Result<bool> {
         self.memory()?.forget(memory)
@@ -684,6 +690,7 @@ impl Host {
                 .clone()
                 .unwrap_or_else(|| request.options.model.clone()),
             thinking: request.options.thinking,
+            kinds: subagents::kinds(&agent::working_directory()),
         }
     }
 
