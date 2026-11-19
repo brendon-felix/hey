@@ -362,13 +362,14 @@ impl Stream {
         screen::line(format_args!("  {} {}", muted.paint("╰─"), muted.paint(&clip(&marker(&summary), room))));
     }
 
-    /// A line of a running command's output.
+    /// More of a running command's output: whole lines, but for its end.
     pub fn output(&mut self, text: String) {
         self.ran_live = true;
         match self.style.tool_output {
             Output::Full => {
                 self.settle();
-                screen::line(line(Mark::Printed, &text));
+                text.split_inclusive('\n')
+                    .for_each(|text| screen::line(line(Mark::Printed, text)));
             }
             Output::Preview => self.preview(Source::Command, &text),
             Output::Hidden => {}

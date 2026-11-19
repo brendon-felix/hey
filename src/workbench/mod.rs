@@ -31,6 +31,9 @@ use crate::toolbox::{Place, Toolbox, machine_name};
 use access::{Access, Verdict};
 use fence::Fenced;
 
+/// The most output [`forward`] gathers into one piece.
+const MAX_BATCH: usize = 64 * 1024;
+
 pub struct Workbench {
     toolbox: Toolbox,
     access: Access,
@@ -260,9 +263,17 @@ impl Reporter for Relay {
     }
 }
 
-/// Shows each piece of output `live` brings, in order, until it ends.
+/// Shows the output `live` brings, in order, until it ends. Each piece
+/// may be a round trip to the host, so what arrives while one is on its
+/// way goes in the next, up to `MAX_BATCH`, and output keeps pace with the
+/// command rather than with the connection.
 async fn forward(mut live: mpsc::UnboundedReceiver<String>, reporter: &impl Reporter) {
-    while let Some(text) = live.recv().await {
+    while let Some(mut text) = live.recv().await {
+        while text.len() < MAX_BATCH
+            && let Ok(more) = live.try_recv()
+        {
+            text.push_str(&more);
+        }
         reporter.emit(Event::Output { text }).await;
     }
 }
