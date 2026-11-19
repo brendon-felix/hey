@@ -98,6 +98,12 @@ impl Waiting {
     pub fn close(&mut self) {
         *self = Self::Closed;
     }
+
+    pub fn reopen(&mut self) {
+        if let Self::Closed = self {
+            *self = Self::Open(Vec::new());
+        }
+    }
 }
 
 /// Hands the model what waits for `run` with the next tool result.

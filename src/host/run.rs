@@ -151,6 +151,11 @@ impl Run {
         lock(&self.steers).take_last()
     }
 
+    /// Takes messages again, as when the run goes on after it seemed to end.
+    pub fn reopen_steers(&self) {
+        lock(&self.steers).reopen();
+    }
+
     /// Takes no more messages, dropping those waiting.
     pub fn close_steers(&self) {
         lock(&self.steers).close();

@@ -11,6 +11,7 @@ use serde::{Deserialize, Serialize};
 
 use super::{Crew, Kind, Kinds, TOOL, Team, Turn};
 use crate::config::Thinking;
+use crate::hooks::{HookEvent, MAX_STOP_BLOCKS, Scope};
 use crate::host::Run;
 use crate::permissions::Reporter;
 use crate::protocol::{AgentId, Ask, Decision, Event};
@@ -47,6 +48,7 @@ pub struct Spawn {
     pub thinking: Option<Thinking>,
     /// The kinds of agent a task may name as its `type`.
     pub kinds: Kinds,
+    pub hooks: Option<Scope>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -168,20 +170,32 @@ impl Spawn {
             agent: agent.clone(),
             label: label.to_owned(),
         });
-        let turn = Turn {
-            agent,
-            label,
-            message,
-            model: &self.model,
-            thinking: self.thinking,
-            kind,
+        let mut message = message.to_owned();
+        let mut blocked = 0;
+        let result = loop {
+            let turn = Turn {
+                agent,
+                label,
+                message: &message,
+                model: &self.model,
+                thinking: self.thinking,
+                kind,
+                hooks: self.hooks.as_ref(),
+            };
+            let reporter = Tagged {
+                run: run.clone(),
+                agent: agent.clone(),
+                label: label.to_owned(),
+            };
+            let result = self.crew.run(&self.team, &self.kit, turn, reporter).await;
+            match (&result, self.stopped(agent, label, &result).await) {
+                (Ok(_), Some(reason)) if blocked < MAX_STOP_BLOCKS => {
+                    blocked += 1;
+                    message = reason;
+                }
+                _ => break result,
+            }
         };
-        let reporter = Tagged {
-            run: run.clone(),
-            agent: agent.clone(),
-            label: label.to_owned(),
-        };
-        let result = self.crew.run(&self.team, &self.kit, turn, reporter).await;
         run.emit(Event::AgentEnded {
             agent: agent.clone(),
             error: result.as_ref().err().cloned(),
@@ -212,6 +226,22 @@ fn describe(kinds: &Kinds) -> String {
         "{GUIDANCE}\n\nGive a task a `type` to start a specialised agent of that kind, when one \
          fits the task better than a general agent:\n<agent_types>{listed}\n</agent_types>"
     )
+}
+
+impl Spawn {
+    /// Why a `SubagentStop` hook sends the subagent back to work, if one does.
+    async fn stopped(&self, agent: &AgentId, label: &str, result: &Result<String, String>) -> Option<String> {
+        let scope = self.hooks.as_ref().filter(|scope| scope.has(HookEvent::SubagentStop))?;
+        let fields = serde_json::json!({
+            "agent_id": agent.as_str(),
+            "label": label,
+            "output": result.as_ref().ok(),
+            "error": result.as_ref().err(),
+        });
+        let verdict = scope.fire(HookEvent::SubagentStop, None, fields).await;
+        verdict.tell(&self.kit.run);
+        verdict.block
+    }
 }
 
 /// Shows a subagent as part of its parent's run.

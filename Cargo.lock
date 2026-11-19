@@ -1693,6 +1693,7 @@ dependencies = [
  "mime",
  "nu-ansi-term",
  "reedline",
+ "regex",
  "reqwest",
  "rig-agent",
  "rig-core",

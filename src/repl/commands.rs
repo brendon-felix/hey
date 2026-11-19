@@ -18,6 +18,8 @@ pub enum Command {
     Undo,
     /// Enter plan mode, or leave it.
     Plan,
+    /// Work toward a condition, judged after each answer; none clears it.
+    Goal(Option<String>),
     Model(Option<String>),
     Think(Option<String>),
     Theme(Option<String>),
@@ -47,6 +49,7 @@ pub enum Arg {
     Thread,
     /// Free text, which completes to nothing.
     Focus,
+    Condition,
 }
 
 impl Arg {
@@ -57,6 +60,7 @@ impl Arg {
             Arg::Theme => "theme",
             Arg::Thread => "thread",
             Arg::Focus => "focus",
+            Arg::Condition => "condition",
         }
     }
 }
@@ -155,6 +159,13 @@ pub const COMMANDS: &[Spec] = &[
         arg: None,
         about: "Toggle plan mode: only tools that change nothing, until you approve a plan",
         build: |_| Command::Plan,
+    },
+    Spec {
+        name: "goal",
+        aliases: &[],
+        arg: Some(Arg::Condition),
+        about: "Keep working until condition is met; without one, clear it",
+        build: Command::Goal,
     },
     Spec {
         name: "model",
@@ -297,6 +308,11 @@ mod tests {
         assert_eq!(parse("/init"), Input::Command(Command::Init));
         assert_eq!(parse("/undo"), Input::Command(Command::Undo));
         assert_eq!(parse("/plan"), Input::Command(Command::Plan));
+        assert_eq!(
+            parse("/goal  all tests pass "),
+            Input::Command(Command::Goal(Some("all tests pass".into())))
+        );
+        assert_eq!(parse("/goal"), Input::Command(Command::Goal(None)));
         assert_eq!(
             parse("/compact the parser work"),
             Input::Command(Command::Compact(Some("the parser work".into())))

@@ -21,6 +21,7 @@ use rig_memory::{CompactReason, CompactionPolicy, Summarizer, SummaryState, Trac
 use crate::agent::Model;
 use crate::config::{self, Providers};
 use crate::notes::{self, Notes};
+use crate::hooks::{HookEvent, Scope};
 use crate::protocol::Event;
 
 pub use hook::{Applied, Hook, Live};
@@ -64,6 +65,8 @@ pub struct Compactor {
     threshold: Option<u64>,
     /// The conversation's notes, whose todo list each summary keeps.
     notes: Option<Arc<Notes>>,
+    /// The conversation's hooks, whose `PreCompact` ones may block it.
+    hooks: Option<Scope>,
 }
 
 /// A summary of a conversation's messages before its `upto`th.
@@ -119,6 +122,7 @@ impl Compactor {
             policy,
             threshold: config.auto.then_some(threshold),
             notes: None,
+            hooks: None,
         })
     }
 
@@ -127,6 +131,14 @@ impl Compactor {
     pub fn keeping(mut self, notes: Arc<Notes>) -> Self {
         self.notes = Some(notes);
         self
+    }
+
+    /// Runs `scope`'s `PreCompact` hooks before each summary.
+    pub fn hooked(self, scope: Scope) -> Self {
+        Self {
+            hooks: Some(scope),
+            ..self
+        }
     }
 
     /// Whether a model call of about `tokens` should compact first.
@@ -147,6 +159,20 @@ impl Compactor {
         let Some(upto) = self.policy.cut(messages, from, reason, Some(&self.spec)) else {
             return Ok(None);
         };
+        if let Some(scope) = self.hooks.as_ref().filter(|scope| scope.has(HookEvent::PreCompact)) {
+            let (trigger, focus) = match reason {
+                CompactReason::Asked { focus } => ("manual", focus.as_str()),
+                CompactReason::Threshold | CompactReason::Overflow => ("auto", ""),
+            };
+            let fields = serde_json::json!({ "trigger": trigger, "focus": focus });
+            let verdict = scope.fire(HookEvent::PreCompact, None, fields).await;
+            for failure in verdict.failures {
+                tracing::warn!(failure, "PreCompact hook");
+            }
+            if let Some(reason) = verdict.block {
+                anyhow::bail!("a hook blocked it: {reason}");
+            }
+        }
         let (mut state, request) = self
             .policy
             .plan(state, messages, from, upto, &self.summarizer_spec, reason)

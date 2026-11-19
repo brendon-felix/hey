@@ -35,6 +35,9 @@ pub struct Config {
     pub compaction: Compaction,
     pub instructions: Instructions,
     pub checkpoints: Checkpoints,
+    pub goal: Goal,
+    /// Commands run at points of a conversation, by event.
+    pub hooks: crate::hooks::Config,
     pub tools: Tools,
     pub subagents: Subagents,
     /// Where a remote host's agents may work on each machine, by its name.
@@ -68,6 +71,8 @@ impl Default for Config {
             compaction: Compaction::default(),
             instructions: Instructions::default(),
             checkpoints: Checkpoints::default(),
+            goal: Goal::default(),
+            hooks: BTreeMap::new(),
             tools: Tools::default(),
             subagents: Subagents::default(),
             machines: BTreeMap::new(),
@@ -471,6 +476,26 @@ impl Default for Instructions {
     }
 }
 
+/// How `/goal` judges whether its condition is met.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct Goal {
+    /// The model that judges; else `compaction.model`, else the
+    /// conversation's.
+    pub model: Option<String>,
+    /// Most times one message is answered again for a goal not yet met.
+    pub max_rounds: usize,
+}
+
+impl Default for Goal {
+    fn default() -> Self {
+        Self {
+            model: None,
+            max_rounds: 10,
+        }
+    }
+}
+
 /// Whether answers keep the files they change as they were, for `/undo`.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default, deny_unknown_fields)]
@@ -866,6 +891,9 @@ mod tests {
             built_in.instructions.max_bytes
         );
         assert_eq!(documented.checkpoints.enabled, built_in.checkpoints.enabled);
+        assert_eq!(documented.goal.model, built_in.goal.model);
+        assert_eq!(documented.goal.max_rounds, built_in.goal.max_rounds);
+        assert!(documented.hooks.is_empty());
         assert_eq!(documented.tools.allow_all, built_in.tools.allow_all);
         assert_eq!(documented.tools.default, built_in.tools.default);
         assert_eq!(documented.tools.permissions, built_in.tools.permissions);

@@ -19,6 +19,7 @@ use rig_tools::Spill;
 use crate::config::{self, Providers};
 use crate::copilot;
 use crate::gate::Gate;
+use crate::hooks::ToolHooks;
 use crate::permissions::{Approval, Permissions, Reporter};
 use crate::protocol::ModelInfo;
 use crate::route::Routes;
@@ -128,7 +129,8 @@ pub fn ollama_daemon(providers: &Providers) -> Result<OllamaConfig> {
 }
 
 /// An agent on `model` with `tools`, each running where `routes` says. Its
-/// tool calls ask as `permissions` say, through `reporter`, and run side by
+/// tool calls first go through the config's tool `hooks`, then ask as
+/// `permissions` say, through `reporter`, and run side by
 /// side where that is safe: the gate sees every tool the agent ends up
 /// with, however it was added.
 pub fn builder<R: Reporter>(
@@ -137,12 +139,19 @@ pub fn builder<R: Reporter>(
     routes: Arc<Routes>,
     permissions: Arc<Permissions>,
     reporter: Arc<R>,
+    hooks: Option<ToolHooks>,
 ) -> AgentBuilder {
     let server = ToolServer::new().run();
     let approval = Approval::new(permissions, reporter, Gate::new(server.clone()), routes);
-    AgentBuilder::new(model.inner.clone())
+    let builder = AgentBuilder::new(model.inner.clone())
         .record_content_telemetry(crate::log::content())
-        .tool_server_handle(server)
+        .tool_server_handle(server);
+    // Before the approval, so a call a hook blocks is never asked about.
+    let builder = match hooks {
+        Some(hooks) => builder.add_hook(hooks),
+        None => builder,
+    };
+    builder
         .add_hook(approval)
         .dynamic_tools(tools)
 }
