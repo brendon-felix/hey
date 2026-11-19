@@ -229,17 +229,20 @@ result_bytes = 16384
 # defer_mcp_above = 40
 
 # Rules by tool. Built-in tools: read, list, search, write, edit, move, delete,
-# shell, skill, fetch, web_search, spawn_agents, compact, todo, ask_user,
-# exit_plan, tool_search, mcp_call, mcp_resources, mcp_read_resource. In plan
-# mode (`/plan`, `hey --plan`) only those that change nothing run, whatever
-# their rule says. MCP tools are "mcp:<server>:<tool>", or "mcp:<server>" for
-# all of a server's tools; a deferred tool called through `mcp_call` is
-# permitted under its own rules, not `mcp_call`'s. Your rules extend these
-# defaults rather than replace them.
+# shell, spawn_process, process_output, process_list, process_kill, skill,
+# fetch, web_search, spawn_agents, compact, todo, ask_user, exit_plan,
+# tool_search, mcp_call, mcp_resources, mcp_read_resource. In plan mode
+# (`/plan`, `hey --plan`) only those that change nothing run, whatever their
+# rule says. MCP tools are "mcp:<server>:<tool>", or "mcp:<server>" for all of
+# a server's tools; a deferred tool called through `mcp_call` is permitted
+# under its own rules, not `mcp_call`'s. Your rules extend these defaults
+# rather than replace them.
 [tools.permissions]
 read = "allow"
 list = "allow"
 search = "allow"
+process_output = "allow"
+process_list = "allow"
 skill = "allow"
 spawn_agents = "allow"
 compact = "allow"

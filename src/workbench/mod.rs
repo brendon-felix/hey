@@ -288,7 +288,7 @@ fn directories(tool: &str, args: &Value, cwd: &Path) -> Vec<PathBuf> {
         Read::NAME | Write::NAME | Edit::NAME | Delete::NAME => vec![field("path")],
         List::NAME | Search::NAME => vec![field("path").or(Some("."))],
         Move::NAME => vec![field("from"), field("to")],
-        Shell::NAME => vec![field("cwd").or(Some("."))],
+        Shell::NAME | "spawn_process" => vec![field("cwd").or(Some("."))],
         _ => Vec::new(),
     };
     let mut dirs = Vec::new();

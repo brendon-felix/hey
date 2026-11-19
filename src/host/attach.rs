@@ -66,6 +66,11 @@ impl Host {
             Ok(model) => {
                 let skills = self.skills();
                 let (context, told) = self.context(&steer.prompt, &steer.attachments, &skills, model).await;
+                if context.has_images() {
+                    run.emit(Event::Notice {
+                        text: "images are not handed over while steering; send them with a message".into(),
+                    });
+                }
                 told.into_iter()
                     .filter(|event| matches!(event, Event::Notice { .. }))
                     .for_each(|event| run.emit(event));

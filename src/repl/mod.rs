@@ -271,7 +271,7 @@ impl Session {
         // here would be drawn over.
         match read {
             Read::Line(_) | Read::Interrupted(_) | Read::Exit => screen::direct(),
-            Read::Queue(_) | Read::Now(_) | Read::Unqueue | Read::Woken => {}
+            Read::Queue(_) | Read::Now(_) | Read::Unqueue | Read::Paste | Read::Woken => {}
         }
         (editor, read)
     }
@@ -298,6 +298,11 @@ impl Session {
             Read::Line(line) => return self.input(&line, Way::Steer, editor).await,
             Read::Queue(typed) => return self.input(&typed, Way::Queue, editor).await,
             Read::Now(typed) => return self.input(&typed, Way::Now, editor).await,
+            Read::Paste => match crate::clipboard::paste_image() {
+                Ok(Some(mention)) => editor.type_text(&format!("{mention} ")),
+                Ok(None) => render::notice("no image in the clipboard"),
+                Err(error) => render::notice(&format!("nothing pasted: {error:#}")),
+            },
             Read::Unqueue => {
                 if let Some(message) = self.outbox.unqueue() {
                     editor.insert(&message);
@@ -660,6 +665,13 @@ impl Session {
                     .await
             }
             Command::Clear => editor.clear_screen(),
+            Command::Paste => match crate::clipboard::paste_image()? {
+                Some(mention) => {
+                    render::notice(&format!("attached to your next message: {mention}"));
+                    self.returned.push(format!("{mention} "));
+                }
+                None => render::notice("no image in the clipboard"),
+            },
             Command::Exit => {}
         }
         Ok(())
@@ -1141,6 +1153,7 @@ fn help() {
         ("Ctrl+Q", "queue the message for after the answer"),
         ("Ctrl+S", "send now, stopping the answer"),
         ("Alt+Up", "edit the message queued last"),
+        ("Ctrl+V", "attach the clipboard's image"),
         ("Ctrl+C", "stop a running answer, or exit"),
         ("Ctrl+D", "exit"),
     ] {

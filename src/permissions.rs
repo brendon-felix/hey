@@ -30,11 +30,14 @@ pub fn default_rules() -> BTreeMap<String, Permission> {
     // Compacting changes only what the model reads, and keeps what it replaced.
     // The todo list, questions to the user and the plan put to the user
     // change nothing outside the conversation, and the last two ask anyway.
+    // Reading or listing background processes changes nothing.
     // Looking up deferred tools only reads their descriptions.
     let tools = [
         "read",
         "list",
         "search",
+        "process_output",
+        "process_list",
         crate::subagents::TOOL,
         crate::skills::TOOL,
         crate::compaction::TOOL,
@@ -48,10 +51,12 @@ pub fn default_rules() -> BTreeMap<String, Permission> {
 
 /// The tools plan mode lets run: those that change nothing. Subagents
 /// share their conversation's permissions, so theirs are held to it too.
-const PLANNING: [&str; 14] = [
+const PLANNING: [&str; 16] = [
     "read",
     "list",
     "search",
+    "process_output",
+    "process_list",
     "fetch",
     "web_search",
     crate::skills::TOOL,

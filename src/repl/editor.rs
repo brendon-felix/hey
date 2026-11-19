@@ -126,6 +126,8 @@ pub enum Read {
     Now(String),
     /// Alt+Up: the message queued last, back to edit.
     Unqueue,
+    /// Ctrl+V: attach the clipboard's image.
+    Paste,
     /// Ctrl+C, with what was typed.
     Interrupted(String),
     /// Something outside the editor needs the terminal. What was typed
@@ -138,6 +140,7 @@ pub enum Read {
 const QUEUE: &str = "queue";
 const NOW: &str = "now";
 const UNQUEUE: &str = "unqueue";
+const PASTE: &str = "paste";
 
 pub struct Editor {
     line_editor: Reedline,
@@ -257,6 +260,11 @@ impl Editor {
         erase(rows(line, render::terminal_width().max(1)));
     }
 
+    /// Types `text` at the cursor.
+    pub fn type_text(&mut self, text: &str) {
+        self.line_editor.run_edit_commands(&[EditCommand::InsertString(text.to_owned())]);
+    }
+
     /// Puts `text` in the input, before what is typed there.
     pub fn insert(&mut self, text: &str) {
         let commands = match self.line_editor.current_buffer_contents().is_empty() {
@@ -277,6 +285,7 @@ impl Editor {
             QUEUE => Read::Queue,
             NOW => Read::Now,
             UNQUEUE => return Read::Unqueue,
+            PASTE => return Read::Paste,
             _ => return Read::Woken,
         };
         let typed = self.line_editor.current_buffer_contents().to_owned();
@@ -452,6 +461,7 @@ fn with_menu_bindings(mut keybindings: Keybindings) -> Keybindings {
         (KeyModifiers::CONTROL, KeyCode::Char('q'), QUEUE),
         (KeyModifiers::CONTROL, KeyCode::Char('s'), NOW),
         (KeyModifiers::ALT, KeyCode::Up, UNQUEUE),
+        (KeyModifiers::CONTROL, KeyCode::Char('v'), PASTE),
     ] {
         keybindings.add_binding(
             modifiers,

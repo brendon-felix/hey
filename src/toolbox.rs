@@ -23,12 +23,13 @@ use crate::config::Config;
 use crate::mcp::{self, deferred, deferred::Deferred};
 use rig_rmcp::McpConnection;
 use crate::permissions::Origin;
+use crate::processes::{ProcessKill, ProcessList, ProcessOutput, SpawnProcess};
 use crate::protocol::ServerReport;
 use crate::render;
 use crate::web::Web;
 
 /// The built-in tools every machine has, by name.
-pub const BUILTIN: [&str; 8] = [
+pub const BUILTIN: [&str; 12] = [
     Read::NAME,
     List::NAME,
     Search::NAME,
@@ -37,6 +38,10 @@ pub const BUILTIN: [&str; 8] = [
     Move::NAME,
     Delete::NAME,
     Shell::NAME,
+    SpawnProcess::NAME,
+    ProcessOutput::NAME,
+    ProcessList::NAME,
+    ProcessKill::NAME,
 ];
 
 /// This machine's name: `HEY_MACHINE`, else its host name without the
@@ -162,6 +167,12 @@ impl Toolbox {
             Some(dir) => Launcher::default().in_dir(dir),
             None => Launcher::default(),
         };
+        let spawn = SpawnProcess {
+            workspace: workspace.clone(),
+            launcher: launcher.clone(),
+            confine,
+            spill: agent::spill(),
+        };
         let shell = Shell {
             workspace: workspace.clone(),
             launcher,
@@ -210,6 +221,10 @@ impl Toolbox {
                 confine,
             }),
             dynamic(shell),
+            dynamic(spawn),
+            dynamic(ProcessOutput),
+            dynamic(ProcessList),
+            dynamic(ProcessKill),
             dynamic(self.web.fetch()),
         ];
         let search = self.web.search().map(dynamic);

@@ -197,10 +197,26 @@ impl Item {
         }
     }
 
-    /// The file whole, if the read tool would show it whole, or the
-    /// directory's listing.
+    /// The file whole, if the read tool would show it whole, an image as
+    /// one (PNG, JPEG, GIF or WebP, up to the 3.75 MB providers take), or
+    /// the directory's listing.
     pub fn load(&self) -> Result<Attachment> {
         match self {
+            Self::File(path) if rig_tools::attach::is_image_path(path) => {
+                use rig_core::message::{DocumentSourceKind, UserContent};
+                let read = rig_tools::attach::read_image(&rig_tools::workspace::Local, path).map_err(|why| anyhow!(why))?;
+                match read {
+                    UserContent::Image(image) => match image.data {
+                        DocumentSourceKind::Base64(data) => Ok(Attachment::Image {
+                            path: absolute(path)?,
+                            media_type: image.media_type,
+                            data,
+                        }),
+                        _ => bail!("not read as base64"),
+                    },
+                    _ => bail!("not an image"),
+                }
+            }
             Self::File(path) => {
                 let size = std::fs::metadata(path)?.len();
                 if size > rig_tools::MAX_BYTES as u64 {

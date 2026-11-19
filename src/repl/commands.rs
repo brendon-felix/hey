@@ -30,6 +30,8 @@ pub enum Command {
     /// Ask the model to write or update the project's AGENTS.md.
     Init,
     Clear,
+    /// Attach the clipboard's image to the next message.
+    Paste,
     Exit,
 }
 
@@ -222,6 +224,13 @@ pub const COMMANDS: &[Spec] = &[
         arg: None,
         about: "Have the model write or update the project's AGENTS.md",
         build: |_| Command::Init,
+    },
+    Spec {
+        name: "paste",
+        aliases: &[],
+        arg: None,
+        about: "Attach the clipboard's image to the next message",
+        build: |_| Command::Paste,
     },
     Spec {
         name: "clear",
