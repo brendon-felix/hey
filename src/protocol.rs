@@ -461,4 +461,7 @@ pub struct Revision {
 pub struct ServerReport {
     pub name: String,
     pub tools: Result<usize, String>,
+    /// Whether its tools are found with `tool_search` rather than described.
+    #[serde(default)]
+    pub deferred: bool,
 }

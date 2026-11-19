@@ -504,6 +504,11 @@ impl Host {
         skills::find(&agent::working_directory())
     }
 
+    /// The prompts the host's MCP servers offer.
+    pub fn prompts(&self) -> Vec<crate::mcp::Prompt> {
+        self.toolbox.prompts().to_vec()
+    }
+
     /// False when `memory` was not saved.
     pub fn forget(&self, memory: &str) -> Result<bool> {
         self.memory()?.forget(memory)
@@ -606,6 +611,9 @@ impl Host {
             .tool(compaction::Compact { run: run.clone() });
         if let Some(crew) = &self.crew {
             builder = builder.tool(self.spawn(crew, id, thread, request, kit));
+        }
+        if let Some(deferred) = self.toolbox.preamble() {
+            builder = builder.append_preamble(&deferred);
         }
         if let Some(memories) = memory::preamble(thread.memories.as_deref().unwrap_or_default()) {
             builder = builder.append_preamble(&memories);

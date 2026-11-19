@@ -102,6 +102,19 @@ impl Host {
             });
             context.attach(attachment);
         }
+        if let Some(invoked) = skills::invoked(prompt)
+            && let Some(mcp_prompt) = crate::mcp::invoked(self.toolbox.prompts(), invoked)
+        {
+            let name = format!("prompt {}", mcp_prompt.command());
+            told.push(Event::Attached { name: name.clone() });
+            let arguments = prompt.trim_start().get(invoked.len() + 1..).unwrap_or_default();
+            match self.toolbox.prompt(mcp_prompt, arguments).await {
+                Ok(text) => context.prompt(text),
+                Err(error) => told.push(Event::Notice {
+                    text: format!("{name} not attached: {error:#}"),
+                }),
+            }
+        }
         for target in self.targets(prompt, skills) {
             told.push(Event::Attached {
                 name: target.to_string(),

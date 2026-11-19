@@ -84,7 +84,8 @@ impl ResultLimit {
 }
 
 fn unbounded(tool: &str) -> bool {
-    tool.starts_with(mcp::PREFIX) || web::TOOLS.contains(&tool)
+    use mcp::deferred::{CALL, READ_RESOURCE, RESOURCES};
+    tool.starts_with(mcp::PREFIX) || web::TOOLS.contains(&tool) || [CALL, RESOURCES, READ_RESOURCE].contains(&tool)
 }
 
 /// Bytes of text the model reads of `blocks`, JSON as the provider sends it.

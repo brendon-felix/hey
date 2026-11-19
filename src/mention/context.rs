@@ -18,6 +18,7 @@ They are up-to-date and don't need to be re-read.\n";
 #[derive(Default)]
 pub struct Context {
     skills: Vec<String>,
+    prompts: Vec<String>,
     files: Vec<String>,
     directories: Vec<String>,
     threads: Vec<String>,
@@ -41,6 +42,11 @@ impl Context {
         self.skills.push(content);
     }
 
+    /// The text an MCP server's prompt gave, the user having invoked it.
+    pub fn prompt(&mut self, text: String) {
+        self.prompts.push(text);
+    }
+
     pub fn summary(&mut self, id: &SessionId, summary: &str) {
         self.threads
             .push(format!("Summary of conversation {id}\n\n{summary}"));
@@ -58,6 +64,7 @@ impl Context {
     pub fn text(self) -> Option<String> {
         let sections: Vec<String> = [
             ("skills", self.skills),
+            ("prompts", self.prompts),
             ("files", self.files),
             ("directories", self.directories),
             ("threads", self.threads),

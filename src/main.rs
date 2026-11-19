@@ -17,6 +17,7 @@ mod mcp;
 mod memory;
 mod mention;
 mod models;
+mod notify;
 mod permissions;
 mod preamble;
 mod protocol;

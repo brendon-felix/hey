@@ -72,6 +72,8 @@ pub struct Style {
     pub thinking_output: Output,
     pub tool_output: Output,
     pub subagent_output: Output,
+    /// How long an answer goes before its end is notified.
+    pub notify_after: Option<std::time::Duration>,
 }
 
 impl From<&Display> for Style {
@@ -82,6 +84,8 @@ impl From<&Display> for Style {
             thinking_output: display.thinking_output,
             tool_output: display.tool_output,
             subagent_output: display.subagent_output,
+            notify_after: (display.notify_after_secs > 0)
+                .then(|| std::time::Duration::from_secs(display.notify_after_secs)),
         }
     }
 }

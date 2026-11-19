@@ -13,6 +13,7 @@ use reedline::{Span, Suggestion};
 
 use super::commands;
 
+use crate::mcp;
 use crate::mention::{self, Item, Reference, SHARED, SKILL, THREAD};
 use crate::protocol::ModelChoice;
 use crate::sessions::Summary;
@@ -30,6 +31,7 @@ pub struct HostIndex {
     pub threads: Vec<Summary>,
     pub shared: Vec<String>,
     pub skills: Found,
+    pub prompts: Vec<mcp::Prompt>,
     pub models: Vec<ModelChoice>,
 }
 
@@ -45,6 +47,11 @@ impl HostIndex {
         self.skills
             .get(name)
             .filter(|_| commands::find(name).is_none())
+    }
+
+    /// The MCP prompt `/word` invokes.
+    pub fn prompt(&self, word: &str) -> Option<&mcp::Prompt> {
+        mcp::invoked(&self.prompts, word)
     }
 
     /// What `reference` attaches, for the status line; `None` when it names

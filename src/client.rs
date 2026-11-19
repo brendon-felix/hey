@@ -181,6 +181,10 @@ impl Client {
         self.json(self.get("v1/skills")?).await
     }
 
+    pub async fn prompts(&self) -> Result<Vec<crate::mcp::Prompt>> {
+        self.json(self.get("v1/prompts")?).await
+    }
+
     pub async fn open(&self, id: &SessionId) -> Result<Opened> {
         let response = self
             .ok(self.get(&format!("v1/threads/{}", id.as_str()))?)

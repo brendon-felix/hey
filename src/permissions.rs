@@ -27,7 +27,16 @@ pub fn default_rules() -> BTreeMap<String, Permission> {
     // say. Loading a skill only reads instructions the user installed,
     // which `read` could read anyway; what following them does asks as usual.
     // Compacting changes only what the model reads, and keeps what it replaced.
-    let tools = ["read", "list", "search", crate::subagents::TOOL, crate::skills::TOOL, crate::compaction::TOOL];
+    // Looking up deferred tools only reads their descriptions.
+    let tools = [
+        "read",
+        "list",
+        "search",
+        crate::subagents::TOOL,
+        crate::skills::TOOL,
+        crate::compaction::TOOL,
+        crate::mcp::deferred::SEARCH,
+    ];
     tools.map(|tool| (tool.to_owned(), Permission::Allow)).into()
 }
 
@@ -199,6 +208,9 @@ impl<R: Reporter> Approval<R> {
             Ok(Target::Client(_)) => return DispatchAction::proceed(),
             Err(error) => return DispatchAction::skip(error),
         }
+        // A deferred tool called through `mcp_call` asks as that tool does.
+        let called = crate::mcp::deferred::called(name, args);
+        let name = called.as_deref().unwrap_or(name);
         match self.permissions.get(name) {
             Permission::Allow => DispatchAction::proceed(),
             Permission::Deny => {

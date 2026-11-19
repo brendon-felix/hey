@@ -122,6 +122,10 @@ impl Crew {
             .name("hey subagent")
             .preamble(PROMPT)
             .append_preamble(&environment(&cwd, &kit.host, client));
+        let builder = match kit.toolbox.preamble() {
+            Some(deferred) => builder.append_preamble(&deferred),
+            None => builder,
+        };
         let mut builder = skills::find(&cwd)
             .equip(builder)
             .default_max_turns(self.max_turns)
