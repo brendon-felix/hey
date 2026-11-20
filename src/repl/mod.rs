@@ -653,6 +653,7 @@ impl Session {
             Command::Fork => self.fork().await?,
             Command::View(query) => self.view(query.as_deref()).await?,
             Command::Copy(scope) => self.copy(scope).await?,
+            Command::Open(path) => self.write_markdown(path.as_deref()).await?,
             Command::Compact(focus) => self.compact(focus.unwrap_or_default()).await?,
             Command::Undo => self.undo().await?,
             Command::Plan => {
@@ -843,6 +844,52 @@ impl Session {
                 println!();
             }
         }
+        Ok(())
+    }
+
+    /// Opens the Markdown file hey keeps of this conversation, which is
+    /// redrawn as the conversation goes, in `$VISUAL` or `$EDITOR`. With a
+    /// `path`, or when the agent runs on a remote host, whose file is not
+    /// here, it saves a copy as of now there instead, without opening it.
+    async fn write_markdown(&mut self, path: Option<&str>) -> Result<()> {
+        let live = self.backend.markdown(&self.thread);
+        if let (None, Some(live)) = (path, &live) {
+            println!("{}", format!("Opening {}", live.display()).bold());
+            if let Err(error) = editor::buffer_editor().arg(live).status() {
+                render::notice(&format!("cannot start the editor: {error}"));
+            }
+            println!();
+            return Ok(());
+        }
+        let messages = self.backend.open(&self.thread).await?.snapshot.messages;
+        let started = self
+            .thread
+            .started()
+            .map(|started| started.format("%Y-%m-%dT%H:%M:%S").to_string());
+        let Some(text) = transcript::document(self.thread.as_str(), started.as_deref(), &messages)
+        else {
+            println!("{}\n", "Nothing to open yet.".bold());
+            return Ok(());
+        };
+        let file = match path {
+            Some(path) => crate::config::expand_path(path)?,
+            None => crate::config::data_dir()?
+                .join("markdown")
+                .join(format!("{}.md", self.thread.as_str())),
+        };
+        if let Some(parent) = file.parent() {
+            std::fs::create_dir_all(parent)
+                .map_err(|e| anyhow::anyhow!("cannot create {}: {e}", parent.display()))?;
+        }
+        std::fs::write(&file, text)
+            .map_err(|e| anyhow::anyhow!("cannot write {}: {e}", file.display()))?;
+        println!("{}", format!("Wrote {}", file.display()).bold());
+        if path.is_none() {
+            if let Err(error) = editor::buffer_editor().arg(&file).status() {
+                render::notice(&format!("cannot start the editor: {error}"));
+            }
+        }
+        println!();
         Ok(())
     }
 

@@ -11,6 +11,7 @@ mod clipboard;
 mod compaction;
 mod config;
 mod copilot;
+mod fsio;
 mod gate;
 mod goal;
 mod headless;
@@ -33,6 +34,7 @@ mod render;
 mod repl;
 mod results;
 mod retry;
+mod mirror;
 mod route;
 mod server;
 mod sessions;
@@ -88,6 +90,10 @@ struct Args {
     /// Read this config file instead of the default one
     #[arg(long)]
     config: Option<PathBuf>,
+
+    /// Load the config, report whether it is valid, and exit
+    #[arg(long, conflicts_with_all = ["resume", "threads", "memories", "interactive", "remote", "local", "serve", "login", "print", "json", "yes", "plan", "message"])]
+    check_config: bool,
 
     /// Continue the most recent conversation that is not archived
     #[arg(long, short)]
@@ -177,6 +183,13 @@ async fn run(args: Args) -> Result<ExitCode> {
         render::screen::to_stderr();
     }
     let config = Config::load(args.config.as_deref())?;
+    if args.check_config {
+        match &config.file {
+            Some(file) if file.exists() => println!("config OK: {}", file.display()),
+            _ => println!("config OK: defaults"),
+        }
+        return Ok(ExitCode::SUCCESS);
+    }
     render::configure(&config.display);
     let _logging = log::init(&config.log)
         .inspect_err(|error| render::notice(&format!("not logging: {error:#}")))

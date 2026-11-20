@@ -76,6 +76,7 @@ hey -p ~/prompts/reviewer.txt         # system prompt from a file
 hey --plan refactor the parser        # start in plan mode
 hey --remote fermi                    # run the agent on a remote host
 hey --serve                           # be a remote host
+hey --check-config                    # validate the config and exit
 hey --login copilot                   # sign in to GitHub Copilot
 hey -P summarize @CHANGELOG.md        # print the reply alone, for scripts
 ```
@@ -94,6 +95,7 @@ Type `/` or press Tab to see commands and skills; the status line describes the 
 | `/view [agent]`, `/v` | View this conversation full-screen, or one of its subagents; see [Viewing a conversation](#viewing-a-conversation) |
 | `/copy` | Copy the latest reply as Markdown |
 | `/copy-all` | Copy this conversation as Markdown |
+| `/open [path]`, `/export` | Open the conversation's live Markdown file in `$VISUAL`/`$EDITOR`; with a path, save a copy there instead; see [Markdown files](#markdown-files) |
 | `/compact [focus]` | Replace older messages with a summary, keeping above all what `focus` names |
 | `/undo` | Put back the files the latest answer changed; again for the one before |
 | `/plan` | Enter or leave plan mode |
@@ -792,3 +794,20 @@ headers = { CF-Access-Client-Id = "${HEY_ACCESS_ID}", CF-Access-Client-Secret = 
 
 A run lives in the server's memory until it finishes and is saved. Restarting the server loses an
 answer in progress, but not the conversation before it.
+
+## Markdown files
+
+Every conversation is also kept as a Markdown file that hey redraws after each write to the
+conversation's log, as the answer is saved, compacted or forked, so a file open in an editor, `bat`
+or Obsidian (which opens Markdown outside a vault) follows the conversation. The log stays the
+source of truth: the file holds what `/copy-all` copies, under YAML front matter (`title`, `thread`,
+`started`, `tags`), and editing it changes nothing. Deleting a conversation deletes its file.
+
+```toml
+[sessions]
+markdown = true                      # false keeps no files
+markdown_dir = "~/Notes/hey"         # default: <data dir>/hey/markdown, named <thread id>.md
+```
+
+Point `markdown_dir` at an Obsidian vault folder to browse threads there. On a remote host the
+files are on that host.

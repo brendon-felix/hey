@@ -104,6 +104,15 @@ impl Backend {
         }
     }
 
+    /// The file holding the thread as Markdown, redrawn as it goes; none on
+    /// a remote host, whose files are not on this machine.
+    pub fn markdown(&self, id: &SessionId) -> Option<std::path::PathBuf> {
+        match self {
+            Backend::Local(host) => host.markdown(id),
+            Backend::Remote(..) => None,
+        }
+    }
+
     /// Removes the thread, unless it is answering.
     pub async fn delete(&self, id: &SessionId) -> Result<()> {
         match self {

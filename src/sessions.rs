@@ -15,6 +15,8 @@ use chrono::{Local, NaiveDateTime};
 use rig_core::conversation::Conversation;
 use rig_core::message::{Message, UserContent};
 use rig_memory::{DirStore, Store, SummaryState};
+
+use crate::mirror::Mirror;
 use serde::{Deserialize, Serialize};
 
 use crate::{compaction, mention};
@@ -118,16 +120,19 @@ pub struct Basis {
 /// run; hey itself copies, removes, marks and compacts them.
 #[derive(Clone)]
 pub struct Sessions {
-    store: DirStore,
+    store: Mirror,
     dir: PathBuf,
     /// Held while the marks file is read and rewritten.
     marking: Arc<Mutex<()>>,
 }
 
 impl Sessions {
-    pub fn open(dir: PathBuf) -> Result<Self> {
+    /// Opens the store in `dir`, which also keeps each conversation's
+    /// Markdown in `markdown`, when that is given.
+    pub fn open(dir: PathBuf, markdown: Option<PathBuf>) -> Result<Self> {
         let store = DirStore::open(&dir)
             .with_context(|| format!("cannot open sessions in {}", dir.display()))?;
+        let store = Mirror::new(store, markdown);
         Ok(Self {
             store,
             dir,
@@ -135,12 +140,17 @@ impl Sessions {
         })
     }
 
-    pub fn store(&self) -> DirStore {
+    pub fn store(&self) -> Mirror {
         self.store.clone()
     }
 
     pub fn dir(&self) -> &Path {
         &self.dir
+    }
+
+    /// The Markdown file of `id`, when files are kept and it is written.
+    pub fn markdown(&self, id: &SessionId) -> Option<PathBuf> {
+        self.store.path(id).filter(|path| path.exists())
     }
 
     pub fn messages(&self, id: &SessionId) -> Result<Vec<Message>> {
@@ -282,6 +292,9 @@ impl Sessions {
                 return Err(error).with_context(|| format!("cannot remove {}", log.display()));
             }
         };
+        if let Err(error) = self.store.forget(id) {
+            tracing::warn!(thread = id.as_str(), %error, "cannot remove a thread's Markdown");
+        }
         self.mark(id, |mark| *mark = Mark::default())?;
         Ok(removed)
     }
@@ -290,8 +303,11 @@ impl Sessions {
     pub fn marks(&self) -> Result<BTreeMap<SessionId, Mark>> {
         let path = self.dir.join(MARKS);
         match fs::read(&path) {
-            Ok(bytes) => serde_json::from_slice(&bytes)
-                .with_context(|| format!("cannot read {}", path.display())),
+            Ok(bytes) => Ok(serde_json::from_slice(&bytes).unwrap_or_else(|error| {
+                let aside = crate::fsio::set_aside(&path);
+                tracing::warn!(file = %path.display(), %error, ?aside, "unreadable marks file set aside");
+                BTreeMap::new()
+            })),
             Err(error) if error.kind() == ErrorKind::NotFound => Ok(BTreeMap::new()),
             Err(error) => Err(error).with_context(|| format!("cannot read {}", path.display())),
         }
@@ -312,9 +328,7 @@ impl Sessions {
             marks.remove(id);
         }
         let path = self.dir.join(MARKS);
-        let written = path.with_extension("json.new");
-        fs::write(&written, serde_json::to_vec_pretty(&marks)?)
-            .and_then(|()| fs::rename(&written, &path))
+        crate::fsio::write_atomic(&path, serde_json::to_vec_pretty(&marks)?)
             .with_context(|| format!("cannot write {}", path.display()))
     }
 }
@@ -359,9 +373,24 @@ mod tests {
     }
 
     #[test]
+    fn a_corrupt_marks_file_is_set_aside() {
+        let dir = std::env::temp_dir().join(format!("hey-marks-bad-{}", std::process::id()));
+        let sessions = Sessions::open(dir.clone(), None).unwrap();
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join(MARKS), "{ not json").unwrap();
+        assert!(sessions.marks().unwrap().is_empty());
+        assert!(!dir.join(MARKS).exists());
+        assert!(dir.join(format!("{MARKS}.bad")).exists());
+        let id: SessionId = "a".parse().unwrap();
+        sessions.mark(&id, |mark| mark.unseen = true).unwrap();
+        assert!(sessions.marks().unwrap()[&id].unseen);
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
     fn forks_go_on_apart_and_deletes_take_the_mark() {
         let dir = std::env::temp_dir().join(format!("hey-sessions-test-{}", std::process::id()));
-        let sessions = Sessions::open(dir.clone()).unwrap();
+        let sessions = Sessions::open(dir.clone(), None).unwrap();
         let original: SessionId = "20260101-000000000".parse().unwrap();
         let mut conversation = Conversation::from_messages([Message::user("first question")]);
         rig_memory::save(&sessions.store, original.as_str(), &mut conversation).unwrap();
@@ -388,7 +417,7 @@ mod tests {
     #[test]
     fn a_summary_replaces_older_messages_but_not_the_title() {
         let dir = std::env::temp_dir().join(format!("hey-compaction-test-{}", std::process::id()));
-        let sessions = Sessions::open(dir.clone()).unwrap();
+        let sessions = Sessions::open(dir.clone(), None).unwrap();
         let id: SessionId = "20260101-000000000".parse().unwrap();
         let said = [
             "first question",

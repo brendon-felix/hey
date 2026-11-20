@@ -41,6 +41,32 @@ pub fn thread(messages: &[Message]) -> String {
         .join("\n\n")
 }
 
+/// The conversation as a file of its own: YAML front matter, which Obsidian
+/// shows as properties and other tools skip over, then [`thread`]. None when
+/// nothing was said yet.
+pub fn document(id: &str, started: Option<&str>, messages: &[Message]) -> Option<String> {
+    let body = thread(messages);
+    if body.is_empty() {
+        return None;
+    }
+    let title = messages
+        .iter()
+        .filter_map(said)
+        .find(|(speaker, _)| *speaker == Speaker::User)
+        .map(|(_, texts)| rig_memory::title_of(texts[0]))
+        .unwrap_or_else(|| id.to_owned());
+    let title = title.replace(['\n', '\r'], " ");
+    let mut front = format!(
+        "---\ntitle: {}\nthread: {id}\n",
+        serde_json::to_string(&title).ok()?
+    );
+    if let Some(started) = started {
+        front.push_str(&format!("started: {started}\n"));
+    }
+    front.push_str("tags: [hey]\n---\n\n");
+    Some(format!("{front}# {title}\n\n{body}\n"))
+}
+
 /// The latest reply: all the model wrote after the prompt it answered, as
 /// Zed copies an agent response.
 pub fn last_reply(messages: &[Message]) -> Option<String> {

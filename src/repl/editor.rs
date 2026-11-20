@@ -524,7 +524,7 @@ impl Hinter for MessageHinter {
 
 /// `$VISUAL`, else `$EDITOR`, else `vi`, split into program and arguments so
 /// values like `code --wait` work.
-fn buffer_editor() -> std::process::Command {
+pub fn buffer_editor() -> std::process::Command {
     let editor = std::env::var("VISUAL")
         .or_else(|_| std::env::var("EDITOR"))
         .unwrap_or_else(|_| "vi".into());
@@ -608,7 +608,7 @@ impl Choices {
                     .map(|info| host::agent_suggestion(info, span))
                     .collect();
             }
-            Some(Arg::Focus | Arg::Condition) | None => return Vec::new(),
+            Some(Arg::Focus | Arg::Condition | Arg::Path) | None => return Vec::new(),
         };
         values
             .iter()

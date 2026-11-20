@@ -200,7 +200,7 @@ impl std::error::Error for ThreadError {}
 impl Host {
     /// Opens the sessions store and connects every MCP server.
     pub async fn new(config: &Config, hosting: Hosting) -> Result<Self> {
-        let sessions = Sessions::open(config.sessions.dir()?)?;
+        let sessions = Sessions::open(config.sessions.dir()?, config.sessions.markdown_dir()?)?;
         let toolbox = Toolbox::new(config).await?;
         let crew = config
             .subagents
@@ -381,6 +381,11 @@ impl Host {
                 last: None,
             }
         })
+    }
+
+    /// Where the thread's Markdown is kept up to date, once it has any.
+    pub fn markdown(&self, id: &SessionId) -> Option<std::path::PathBuf> {
+        self.sessions.markdown(id)
     }
 
     /// Removes the thread, unless it is answering.

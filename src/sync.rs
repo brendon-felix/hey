@@ -87,6 +87,27 @@ impl Store {
         Ok(path)
     }
 
+    /// Refuses when an existing directory between the synced root and
+    /// `path` is a symlink, which could lead a write out of the root.
+    fn no_symlinks(&self, machine: &str, name: &str, path: &Path) -> Result<()> {
+        let root = self.root(machine, name)?;
+        let mut here = root.clone();
+        let rel = path.strip_prefix(&root)?;
+        let parents = rel.parent().into_iter().flat_map(Path::components);
+        for part in parents {
+            here.push(part);
+            match std::fs::symlink_metadata(&here) {
+                Ok(meta) if meta.file_type().is_symlink() => {
+                    bail!("`{}` is a symlink inside the synced folder", here.display())
+                }
+                Ok(_) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => break,
+                Err(error) => return Err(error.into()),
+            }
+        }
+        Ok(())
+    }
+
     /// What the host holds of `name` from `machine`.
     pub fn manifest(&self, machine: &str, name: &str) -> Result<Manifest> {
         let root = self.root(machine, name)?;
@@ -103,15 +124,15 @@ impl Store {
 
     pub async fn put(&self, machine: &str, name: &str, rel: &str, bytes: &[u8]) -> Result<()> {
         let path = self.path(machine, name, rel)?;
-        if let Some(parent) = path.parent() {
-            tokio::fs::create_dir_all(parent).await?;
-        }
-        tokio::fs::write(path, bytes).await?;
+        self.no_symlinks(machine, name, &path)?;
+        let bytes = bytes.to_vec();
+        tokio::task::spawn_blocking(move || crate::fsio::write_atomic(&path, bytes)).await??;
         Ok(())
     }
 
     pub async fn remove(&self, machine: &str, name: &str, rel: &str) -> Result<()> {
         let path = self.path(machine, name, rel)?;
+        self.no_symlinks(machine, name, &path)?;
         match tokio::fs::remove_file(path).await {
             Err(error) if error.kind() != std::io::ErrorKind::NotFound => Err(error.into()),
             _ => Ok(()),
@@ -286,5 +307,21 @@ mod tests {
         store.remove("m", "p", "x/y.txt").await.unwrap();
         assert!(store.manifest("m", "p").unwrap().is_empty());
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_symlinked_folder_is_refused() {
+        let base = std::env::temp_dir().join(format!("hey-sync-link-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let (store, outside) = (Store::new(base.join("store")), base.join("outside"));
+        std::fs::create_dir_all(&outside).unwrap();
+        store.put("m", "p", "a.txt", b"x").await.unwrap();
+        let root = store.root("m", "p").unwrap();
+        std::os::unix::fs::symlink(&outside, root.join("link")).unwrap();
+        assert!(store.put("m", "p", "link/evil", b"x").await.is_err());
+        assert!(store.remove("m", "p", "link/evil").await.is_err());
+        assert!(!outside.join("evil").exists());
+        let _ = std::fs::remove_dir_all(base);
     }
 }

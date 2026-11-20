@@ -98,6 +98,8 @@ impl Config {
             Some(file) if path.is_some() || file.exists() => {
                 let text = fs::read_to_string(file)
                     .with_context(|| format!("failed to read config {}", file.display()))?;
+                // The toml error names the line and column and shows the
+                // source line; `{:#}` keeps it after this path.
                 toml::from_str(&text)
                     .with_context(|| format!("invalid config {}", file.display()))?
             }
@@ -158,7 +160,8 @@ pub fn edit(file: &Path, change: impl FnOnce(&mut DocumentMut) -> Result<()>) ->
     if let Some(parent) = file.parent() {
         fs::create_dir_all(parent)?;
     }
-    fs::write(file, document.to_string())?;
+    crate::fsio::write_atomic(file, document.to_string())
+        .with_context(|| format!("failed to write config {}", file.display()))?;
     Ok(())
 }
 
@@ -336,13 +339,41 @@ impl Default for Editor {
     }
 }
 
-#[derive(Debug, Default, Deserialize)]
+#[derive(Debug, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Sessions {
     dir: Option<String>,
+    /// Keep every conversation as a Markdown file, redrawn as it goes, to
+    /// read in an editor, `bat` or Obsidian.
+    markdown: bool,
+    /// Where those files go; `<data dir>/hey/markdown` unless set.
+    markdown_dir: Option<String>,
+}
+
+impl Default for Sessions {
+    fn default() -> Self {
+        Self {
+            dir: None,
+            markdown: true,
+            markdown_dir: None,
+        }
+    }
 }
 
 impl Sessions {
+    /// Where the Markdown of conversations is kept; none when `markdown` is off.
+    pub fn markdown_dir(&self) -> Result<Option<PathBuf>> {
+        if !self.markdown {
+            return Ok(None);
+        }
+        match &self.markdown_dir {
+            Some(dir) => expand_path(dir).map(Some),
+            None => data_dir()
+                .map(|dir| Some(dir.join("markdown")))
+                .context("set `sessions.markdown_dir`"),
+        }
+    }
+
     pub fn dir(&self) -> Result<PathBuf> {
         match &self.dir {
             Some(dir) => expand_path(dir),
@@ -984,6 +1015,26 @@ mod tests {
         assert!(error("[tools]\ndefault = \"maybe\"").contains("unknown variant"));
         assert!(error("thinking = \"huge\"").contains("unknown variant"));
         assert!(error("[server]\ntoken = \"t\"\ntoken_file = \"f\"").contains("not both"));
+    }
+
+    #[test]
+    fn load_errors_name_file_line_and_key() {
+        let dir = std::env::temp_dir().join(format!("hey-load-err-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("hey.toml");
+        let load = |text: &str| {
+            fs::write(&file, text).unwrap();
+            format!("{:#}", Config::load(Some(&file)).unwrap_err())
+        };
+        let syntax = load("model = \"a\"\nmax_turns = = 3\n");
+        assert!(syntax.contains(&file.display().to_string()), "{syntax}");
+        assert!(syntax.contains("line 2, column"), "{syntax}");
+        assert!(syntax.contains("max_turns = = 3"), "{syntax}");
+        let typo = load("max_turn = 3\n");
+        assert!(typo.contains(&file.display().to_string()), "{typo}");
+        assert!(typo.contains("unknown field `max_turn`"), "{typo}");
+        assert!(typo.contains("line 1"), "{typo}");
+        fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

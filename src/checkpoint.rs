@@ -213,9 +213,7 @@ impl Turn {
             Ok(None) => Was::Absent,
             Ok(Some(bytes)) => {
                 let blob = kept.entries.len().to_string();
-                match fs::create_dir_all(&self.dir)
-                    .and_then(|()| fs::write(self.dir.join(&blob), bytes))
-                {
+                match crate::fsio::write_atomic(&self.dir.join(&blob), bytes) {
                     Ok(()) => Was::Kept(blob),
                     Err(error) => Was::Lost(format!("not kept: {error}")),
                 }
@@ -227,10 +225,9 @@ impl Turn {
             path: path.to_path_buf(),
             was,
         });
-        let saved = fs::create_dir_all(&self.dir).and_then(|()| {
-            let json = serde_json::to_vec(&kept.entries).map_err(std::io::Error::other)?;
-            fs::write(self.dir.join(MANIFEST), json)
-        });
+        let saved = serde_json::to_vec(&kept.entries)
+            .map_err(std::io::Error::other)
+            .and_then(|json| crate::fsio::write_atomic(&self.dir.join(MANIFEST), json));
         if let Err(error) = saved {
             tracing::warn!(dir = %self.dir.display(), "cannot save a checkpoint: {error}");
         }

@@ -155,6 +155,8 @@ pub struct Stream {
     writing: Vec<Call>,
     /// Whether the latest call's output showed as it ran.
     ran_live: bool,
+    /// Whether the result shown last left the chain of results open.
+    chained: bool,
     /// Received but not yet shown.
     backlog: VecDeque<Chunk>,
     started: Instant,
@@ -187,6 +189,7 @@ impl Stream {
             calls: Calls::default(),
             writing: Vec::new(),
             ran_live: false,
+            chained: false,
             backlog: VecDeque::new(),
             started: now,
             quiet_since: now,
@@ -286,6 +289,7 @@ impl Stream {
             },
         );
         self.ran_live = false;
+        self.chained = false;
         if let Some(todos) = tool::todos(name, args) {
             todos.iter().for_each(|todo| screen::line(todo));
             return;
@@ -344,7 +348,10 @@ impl Stream {
         self.settle();
         let called = match placement {
             Placement::Apart(Some(called)) => {
-                screen::line("");
+                match self.chained {
+                    true => screen::line(format_args!("  {}", palette().muted.paint("│"))),
+                    false => screen::line(""),
+                }
                 Some(called)
             }
             Placement::Under | Placement::Apart(None) => None,
@@ -388,9 +395,11 @@ impl Stream {
             Output::Full | Output::Preview | Output::Hidden => {}
         }
         let muted = palette().muted;
+        let more = !self.calls.named.is_empty();
+        self.chained = more;
         screen::line(format_args!(
             "  {} {}",
-            muted.paint("╰─"),
+            muted.paint(if more { "├─" } else { "╰─" }),
             muted.paint(&clip(&marker(&summary), room))
         ));
     }

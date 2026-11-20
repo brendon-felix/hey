@@ -122,11 +122,14 @@ impl Notes {
             plan: self.planning(),
             todos: self.todos(),
         };
-        let written = file
-            .parent()
-            .map_or(Ok(()), std::fs::create_dir_all)
-            .and_then(|()| std::fs::write(file, serde_json::to_vec(&saved).unwrap_or_default()));
-        if let Err(error) = written {
+        let json = match serde_json::to_vec(&saved) {
+            Ok(json) => json,
+            Err(error) => {
+                tracing::warn!(file = %file.display(), %error, "cannot serialize a conversation's notes");
+                return;
+            }
+        };
+        if let Err(error) = crate::fsio::write_atomic(file, json) {
             tracing::warn!(file = %file.display(), %error, "cannot save a conversation's notes");
         }
     }

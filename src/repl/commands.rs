@@ -12,6 +12,9 @@ pub enum Command {
     /// View this conversation full-screen, or the subagent of it named.
     View(Option<String>),
     Copy(Scope),
+    /// Write this conversation as a Markdown file and open it in the
+    /// editor, or only write it to the path given.
+    Open(Option<String>),
     /// Compact the conversation, with what its summary should keep above
     /// all.
     Compact(Option<String>),
@@ -55,6 +58,7 @@ pub enum Arg {
     /// Free text, which completes to nothing.
     Focus,
     Condition,
+    Path,
 }
 
 impl Arg {
@@ -67,6 +71,7 @@ impl Arg {
             Arg::Agent => "agent",
             Arg::Focus => "focus",
             Arg::Condition => "condition",
+            Arg::Path => "path",
         }
     }
 }
@@ -144,6 +149,13 @@ pub const COMMANDS: &[Spec] = &[
         arg: None,
         about: "Copy this conversation as Markdown",
         build: |_| Command::Copy(Scope::Thread),
+    },
+    Spec {
+        name: "open",
+        aliases: &["export"],
+        arg: Some(Arg::Path),
+        about: "Open this conversation's live Markdown file in $VISUAL/$EDITOR, or save a copy to path",
+        build: Command::Open,
     },
     Spec {
         name: "compact",

@@ -98,22 +98,20 @@ struct Kept {
 impl Terminals {
     fn read(file: &Path) -> Result<Self> {
         match fs::read(file) {
-            Ok(bytes) => serde_json::from_slice(&bytes)
-                .with_context(|| format!("cannot read {}", file.display())),
+            Ok(bytes) => Ok(serde_json::from_slice(&bytes).unwrap_or_else(|error| {
+                let aside = crate::fsio::set_aside(file);
+                tracing::warn!(file = %file.display(), %error, ?aside, "unreadable terminals file set aside");
+                Self::default()
+            })),
             Err(error) if error.kind() == ErrorKind::NotFound => Ok(Self::default()),
             Err(error) => Err(error).with_context(|| format!("cannot read {}", file.display())),
         }
     }
 
-    /// Replaces the file whole, through a file of this process's own, so
-    /// terminals sending at once cannot interleave what they write.
+    /// Replaces the file whole, atomically, so terminals sending at once
+    /// cannot interleave what they write.
     fn write(&self, file: &Path) -> Result<()> {
-        if let Some(dir) = file.parent() {
-            fs::create_dir_all(dir)?;
-        }
-        let written = file.with_extension(format!("json.{}", std::process::id()));
-        fs::write(&written, serde_json::to_vec_pretty(self)?)?;
-        fs::rename(&written, file)?;
+        crate::fsio::write_atomic(file, serde_json::to_vec_pretty(self)?)?;
         Ok(())
     }
 
@@ -136,6 +134,17 @@ impl Terminals {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_corrupt_file_is_set_aside() {
+        let dir = std::env::temp_dir().join(format!("hey-terminals-bad-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let file = dir.join(FILE);
+        fs::write(&file, "garbage").unwrap();
+        assert!(Terminals::read(&file).unwrap().0.is_empty());
+        assert!(!file.exists() && dir.join("terminals.json.bad").exists());
+        fs::remove_dir_all(dir).unwrap();
+    }
 
     #[test]
     fn a_terminal_is_open_only_as_the_process_it_started_with() {
