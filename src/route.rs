@@ -230,9 +230,7 @@ impl Routes {
     }
 
     /// Where a call to `tool` naming `machine` runs. A call to a tool both
-    /// have must name one: taking the host for a call that left it out sent
-    /// calls meant for the user's machine, such as writes to their paths,
-    /// to the host, where they failed in ways that did not say why.
+    /// have that names none runs on the host.
     fn target(&self, tool: &str, machine: Option<&str>) -> Result<Target, String> {
         let client = || self.client.clone().unwrap_or_default();
         match (self.on.get(tool), machine) {
@@ -242,11 +240,8 @@ impl Routes {
             (Some(On::Either), Some(machine)) if Some(machine) == self.client.as_deref() => {
                 Ok(Target::Client(client()))
             }
-            (Some(On::Either), None) => Err(format!(
-                "`{ARG}` is required: `{}`, where you run, or `{}`, the user's machine",
-                self.host,
-                client()
-            )),
+            // A call that leaves it out runs where the model runs.
+            (Some(On::Either), None) => Ok(Target::Host),
             (Some(On::Either), Some(machine)) => Err(format!(
                 "no machine `{machine}`; `{ARG}` is `{}` or `{}`",
                 self.host,
@@ -256,24 +251,20 @@ impl Routes {
     }
 }
 
-/// `parameters` with the required `machine` argument, which names `host` or
+/// `parameters` with the optional `machine` argument, which names `host` or
 /// `client`.
 fn with_machine(mut parameters: Value, host: &str, client: &str) -> Value {
     let argument = json!({
         "type": "string",
         "enum": [host, client],
         "description": format!(
-            "The machine it runs on: `{host}`, where you run, or `{client}`, the user's machine."
+            "The machine it runs on: `{host}`, where you run (the default), or `{client}`, the user's machine."
         ),
     });
     if let Some(schema) = parameters.as_object_mut() {
         let properties = schema.entry("properties").or_insert_with(|| json!({}));
         if let Some(properties) = properties.as_object_mut() {
             properties.insert(ARG.to_owned(), argument);
-        }
-        let required = schema.entry("required").or_insert_with(|| json!([]));
-        if let Some(required) = required.as_array_mut() {
-            required.push(json!(ARG));
         }
     }
     parameters
@@ -323,11 +314,10 @@ mod tests {
     fn calls_to_a_tool_both_have_name_the_machine_and_others_run_where_the_tool_is() {
         let routes = routes();
         let laptop = || Ok(Target::Client("laptop".into()));
-        assert!(
-            routes
-                .target_of("read", r#"{"path": "a"}"#)
-                .unwrap_err()
-                .contains("`machine` is required")
+        assert_eq!(
+            routes.target_of("read", r#"{"path": "a"}"#),
+            Ok(Target::Host),
+            "left out, it is the host"
         );
         assert_eq!(
             routes.target_of("read", r#"{"machine": "fermi"}"#),
@@ -361,7 +351,7 @@ mod tests {
     }
 
     #[test]
-    fn the_machine_argument_is_required_and_taken_out_before_the_tool_sees_it() {
+    fn the_machine_argument_is_optional_and_taken_out_before_the_tool_sees_it() {
         let parameters = with_machine(
             json!({ "type": "object", "required": ["path"] }),
             "fermi",
@@ -371,7 +361,7 @@ mod tests {
             parameters["properties"]["machine"]["enum"],
             json!(["fermi", "laptop"])
         );
-        assert_eq!(parameters["required"], json!(["path", "machine"]));
+        assert_eq!(parameters["required"], json!(["path"]));
 
         let mut args = json!({ "path": "a", "machine": "laptop" });
         assert_eq!(take_machine(&mut args).as_deref(), Some("laptop"));

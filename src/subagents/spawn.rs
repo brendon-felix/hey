@@ -62,9 +62,11 @@ pub struct SpawnArgs {
 #[serde(deny_unknown_fields)]
 pub struct TaskArgs {
     /// A few words shown to the user while it works, e.g. "Finding the config loader".
+    #[serde(alias = "description")]
     pub label: String,
     /// What to do. A new agent knows nothing else, so give it all the context it needs; a
     /// follow-up needs only the new message.
+    #[serde(alias = "prompt")]
     pub message: String,
     /// The id of an agent from an earlier call, to continue its conversation; leave it out
     /// to start a new agent.
@@ -72,7 +74,7 @@ pub struct TaskArgs {
     pub agent: Option<String>,
     /// The kind of agent to start, one of those the tool's description lists; leave it out
     /// for a general one. A follow-up keeps its agent's kind.
-    #[serde(default, rename = "type")]
+    #[serde(default, rename = "type", alias = "subagent_type")]
     pub kind: Option<String>,
 }
 

@@ -28,6 +28,8 @@ pub struct Todo {
 pub enum TodoStatus {
     Pending,
     InProgress,
+    /// Also spelled as other agents' todo tools do.
+    #[serde(alias = "completed", alias = "complete", alias = "cancelled")]
     Done,
 }
 

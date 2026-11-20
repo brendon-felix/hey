@@ -99,6 +99,12 @@ impl Setting<'_> {
             Some(self.memories_line()),
             self.skills_line(),
             Some(
+                "Tool arguments are one JSON object each. `edit` takes `path` and either `old_text` \
+                 and `new_text` for one change, or `edits`, an array of such pairs, never a \
+                 string; keep each edit small, and use `write` to replace a whole file."
+                    .into(),
+            ),
+            Some(
                 "Your replies are printed to the terminal as raw Markdown, so Markdown tables \
                  come out misaligned. To show a table, call the `table` tool and paste its \
                  output verbatim in a code block; never write a Markdown table yourself."
@@ -194,7 +200,9 @@ impl Setting<'_> {
                 let reach = match lent {
                     Some(lent) => format!(
                         "Tools with a `machine` argument run on the machine each call names: the \
-                         host, or theirs, `{}`, while they have this conversation open there. \
+                         host, which is where a call that leaves it out runs, or theirs, `{}`, \
+                         while they have this conversation open there. Name theirs for paths \
+                         on their machine. \
                          Tools described as running there run only there; files they mention \
                          with `@` arrive attached to their message.",
                         lent.machine

@@ -16,7 +16,22 @@ pub fn normalize(name: &str, mut args: Value) -> Value {
         return args;
     };
     match name {
-        "read" | "write" | "list" => path(object),
+        "read" | "write" | "list" | "delete" => path(object),
+        "move" => relocate(object),
+        "fetch" => {
+            // Claude Code's WebFetch takes a prompt to run over the page.
+            object.remove("prompt");
+        }
+        "web_search" => {
+            for key in ["allowed_domains", "blocked_domains"] {
+                object.remove(key);
+            }
+        }
+        "spawn_process" => {
+            shell(object);
+            // It has no timeout: the process runs until it ends or is killed.
+            object.remove("timeout_secs");
+        }
         "edit" => edit(object),
         "shell" => shell(object),
         "search" => search(object),
@@ -50,9 +65,47 @@ fn path(object: &mut Map<String, Value>) {
     rename(object, &["directory", "dir"], "path");
 }
 
+fn relocate(object: &mut Map<String, Value>) {
+    rename(
+        object,
+        &[
+            "source",
+            "src",
+            "old_path",
+            "oldPath",
+            "from_path",
+            "source_path",
+        ],
+        "from",
+    );
+    rename(
+        object,
+        &[
+            "destination",
+            "dest",
+            "new_path",
+            "newPath",
+            "to_path",
+            "destination_path",
+        ],
+        "to",
+    );
+}
+
 fn edit(object: &mut Map<String, Value>) {
     path(object);
     replacement(object);
+    // The list sent as a JSON string, or as one edit rather than a list.
+    if let Some(Value::String(text)) = object.get("edits")
+        && let Ok(parsed @ (Value::Array(_) | Value::Object(_))) =
+            serde_json::from_str::<Value>(text)
+    {
+        object.insert("edits".into(), parsed);
+    }
+    if let Some(Value::Object(_)) = object.get("edits") {
+        let single = object.remove("edits").unwrap_or_default();
+        object.insert("edits".into(), Value::Array(vec![single]));
+    }
     // One flat replacement, as other agents' edit tools take it.
     if !object.contains_key("edits") && object.contains_key("old_text") {
         let mut flat = Map::new();
@@ -240,9 +293,44 @@ mod tests {
     }
 
     #[test]
+    fn move_delete_fetch_and_web_search_spellings_are_mapped() {
+        assert_eq!(
+            normalize("move", json!({"source": "a", "destination": "b"})),
+            json!({"from": "a", "to": "b"})
+        );
+        assert_eq!(
+            normalize("delete", json!({"file_path": "a"})),
+            json!({"path": "a"})
+        );
+        assert_eq!(
+            normalize("fetch", json!({"url": "u", "prompt": "summarise"})),
+            json!({"url": "u"})
+        );
+        assert_eq!(
+            normalize(
+                "web_search",
+                json!({"query": "q", "allowed_domains": ["a.com"]})
+            ),
+            json!({"query": "q"})
+        );
+    }
+
+    #[test]
+    fn edits_sent_as_a_json_string_or_a_single_object_become_a_list() {
+        let text =
+            json!({"path": "a", "edits": "[{\"old_string\": \"x\", \"new_string\": \"y\"}]"});
+        let expected = json!({"path": "a", "edits": [{"old_text": "x", "new_text": "y"}]});
+        assert_eq!(normalize("edit", text), expected);
+        let single = json!({"path": "a", "edits": {"old_text": "x", "new_text": "y"}});
+        assert_eq!(normalize("edit", single), expected);
+        let broken = json!({"path": "a", "edits": "[{\"old_text\">"});
+        assert_eq!(normalize("edit", broken.clone()), broken);
+    }
+
+    #[test]
     fn other_tools_and_non_objects_pass_through() {
         let args = json!({"file_path": "a"});
-        assert_eq!(normalize("fetch", args.clone()), args);
+        assert_eq!(normalize("table", args.clone()), args);
         assert_eq!(normalize("read", json!("x")), json!("x"));
     }
 }

@@ -477,7 +477,7 @@ impl Client {
             let sent = self.http.execute(copy).await;
             let missed = match &sent {
                 Ok(response) => unreached(request.method(), response.status()),
-                Err(error) => error.is_connect() || error.is_timeout(),
+                Err(error) => error.is_connect() || error.is_timeout() || stale(error),
             };
             let Some(retry) = missed.then(|| attempts.next(None)).flatten() else {
                 return sent.with_context(|| format!("cannot reach remote `{}`", self.name));
@@ -832,4 +832,32 @@ mod tests {
         );
         assert!(told[2].contains("following the run again"), "{told:?}");
     }
+}
+
+/// Whether `error` is a pooled connection found dead as the request was
+/// written to it (a proxy or tunnel dropped it while idle). The request is
+/// sent again on a new connection.
+fn stale(error: &reqwest::Error) -> bool {
+    use std::error::Error as _;
+    use std::io::ErrorKind::{BrokenPipe, ConnectionAborted, ConnectionReset, UnexpectedEof};
+    let mut source = error.source();
+    while let Some(cause) = source {
+        if let Some(io) = cause.downcast_ref::<std::io::Error>()
+            && matches!(
+                io.kind(),
+                ConnectionReset | ConnectionAborted | BrokenPipe | UnexpectedEof
+            )
+        {
+            return true;
+        }
+        let text = cause.to_string();
+        if text.contains("connection reset")
+            || text.contains("connection closed before message completed")
+            || text.contains("connection was not ready")
+        {
+            return true;
+        }
+        source = cause.source();
+    }
+    false
 }

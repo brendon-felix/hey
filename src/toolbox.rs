@@ -13,7 +13,7 @@ use anyhow::{Context, Result};
 use rig_core::completion::ToolDefinition;
 use rig_core::message::ToolName;
 use rig_core::serve::adapters::ToolAdapter;
-use rig_core::tool::{DynamicTool, Tool};
+use rig_core::tool::{DynamicTool, Tool, ToolErrorKind, ToolExecutionError};
 use rig_tools::process::Launcher;
 use rig_tools::workspace::{Local, Workspace};
 use rig_tools::{Delete, Edit, List, Live, Move, Read, Search, Seen, Shell, Write};
@@ -177,12 +177,13 @@ impl Toolbox {
             Some(dir) => Launcher::default().in_dir(dir),
             None => Launcher::default(),
         };
-        let spawn = SpawnProcess {
+        let spawn = || SpawnProcess {
             workspace: workspace.clone(),
             launcher: launcher.clone(),
             confine,
             spill: agent::spill(),
         };
+        let background = dynamic(spawn());
         let shell = Shell {
             workspace: workspace.clone(),
             launcher,
@@ -230,8 +231,8 @@ impl Toolbox {
                 base,
                 confine,
             }),
-            dynamic(shell),
-            dynamic(spawn),
+            backgrounded(dynamic(shell), background.clone()),
+            background,
             dynamic(ProcessOutput),
             dynamic(ProcessList),
             dynamic(ProcessKill),
@@ -270,9 +271,65 @@ pub fn dynamic<T: Tool + 'static>(tool: T) -> DynamicTool {
     DynamicTool::new_with_context(name, description, parameters, move |context, args| {
         let tool = tool.clone();
         let args = lenient::normalize(T::NAME, args);
-        Box::pin(async move { tool.run_with(context, args).await })
+        Box::pin(async move {
+            tool.run_with(context, args)
+                .await
+                .map_err(|error| briefly(T::NAME, error))
+        })
     })
     .with_annotations(annotations)
+}
+
+/// The longest part of an argument error the model is shown.
+const ARGUMENT_ERROR: usize = 300;
+
+/// `error`, when it is arguments that did not parse, without the arguments
+/// it echoes: a long edit sent back whole costs the model its context and
+/// does not say what was wrong.
+fn briefly(tool: &str, error: ToolExecutionError) -> ToolExecutionError {
+    if error.kind() != ToolErrorKind::InvalidArgs
+        || !error
+            .message()
+            .starts_with("failed to parse tool arguments")
+    {
+        return error;
+    }
+    let message = error.message();
+    let end = message
+        .char_indices()
+        .nth(ARGUMENT_ERROR)
+        .map_or(message.len(), |(at, _)| at);
+    let cut = if end < message.len() { "…" } else { "" };
+    let hint = match tool {
+        "edit" => {
+            " `edits` must be a JSON array of {\"old_text\", \"new_text\"} objects, not a \
+             string; or send `old_text` and `new_text` themselves for one change. For a large \
+             change, make several smaller edits, or use `write`."
+        }
+        _ => " Send the arguments as one JSON object that matches the tool's schema.",
+    };
+    ToolExecutionError::invalid_args(format!("{}{cut}.{hint}", &message[..end]))
+}
+
+/// `shell`, which sends a call that asks for `run_in_background`, as Claude
+/// Code's Bash tool takes it, to `spawn_process`. The schema stays `shell`'s.
+fn backgrounded(shell: DynamicTool, spawn: DynamicTool) -> DynamicTool {
+    let definition = shell.definition();
+    DynamicTool::new_with_context(
+        definition.name,
+        definition.description,
+        definition.parameters,
+        move |context, args| {
+            let background = args
+                .get("run_in_background")
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(false);
+            let tool = if background { &spawn } else { &shell };
+            let tool = tool.clone();
+            Box::pin(async move { tool.run_with(context, args).await })
+        },
+    )
+    .with_annotations(definition.annotations)
 }
 
 /// What the MCP servers that connected offer, and how each connection went.
@@ -339,4 +396,19 @@ async fn connect_mcp(config: &Config) -> McpConnected {
         });
     }
     connected
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn an_argument_error_is_cut_and_says_what_an_edit_takes() {
+        let long = format!("failed to parse tool arguments: {}", "x".repeat(5000));
+        let error = briefly("edit", ToolExecutionError::invalid_args(long));
+        assert!(error.message().len() < 800);
+        assert!(error.message().contains("array"));
+        let other = ToolExecutionError::invalid_args("no such file");
+        assert_eq!(briefly("edit", other).message(), "no such file");
+    }
 }
