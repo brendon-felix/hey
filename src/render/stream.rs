@@ -15,7 +15,7 @@ use super::preview::{Call, Preview, Source};
 use super::reply::{Part, Reply};
 use super::tool::{self, Mark, line};
 use super::{
-    Style, animations, call_line, clip, clock, compacted, machine_arg, palette, screen,
+    Style, animations, call_line, call_path, clip, clock, compacted, machine_arg, palette, screen,
     summarize_args, terminal_height, terminal_width, theme, thought, thought_text,
 };
 use crate::config::Output;
@@ -70,6 +70,8 @@ struct Calls {
 struct Named {
     tool: String,
     argument: String,
+    /// The file it names, if any.
+    path: Option<String>,
 }
 
 impl Named {
@@ -280,6 +282,7 @@ impl Stream {
             Named {
                 tool: name.to_owned(),
                 argument: summary.clone(),
+                path: call_path(args),
             },
         );
         self.ran_live = false;
@@ -296,6 +299,7 @@ impl Stream {
                 .for_each(|(mark, text)| screen::line(line(*mark, text))),
             Output::Preview => {
                 let mut preview = Preview::new(Source::Changes);
+                preview.code_of(self.style.highlight.then(|| call_path(args)).flatten());
                 preview.push(
                     &changes
                         .iter()
@@ -361,12 +365,16 @@ impl Stream {
         let name = result.name.as_str();
         let (source, given) = match name {
             "shell" => (Source::Command, split_status(&text).0),
+            "read" if self.style.highlight => (Source::Returned, super::read_lines(&text)),
             _ => (Source::Returned, text.as_str()),
         };
         let shown = self.ran_live || tool::shows_changes(name) || given.trim().is_empty();
         match self.style.tool_output {
             Output::Preview if !shown && given.lines().count() > 1 => {
                 let mut preview = Preview::new(source);
+                if name == "read" && self.style.highlight {
+                    preview.code_of(called.as_ref().and_then(|called| called.path.clone()));
+                }
                 preview.label(called.as_ref().map(Named::label).unwrap_or_default());
                 preview.push(given);
                 self.preview = Some(preview);

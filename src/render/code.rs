@@ -26,6 +26,11 @@ impl Code {
 
     /// The next line, cut to `width` columns, tabs as four spaces.
     pub fn row(&mut self, line: &str, width: usize) -> String {
+        self.sized(line, width).0
+    }
+
+    /// [`Self::row`], and the columns it takes.
+    pub fn sized(&mut self, line: &str, width: usize) -> (String, usize) {
         let line = line.replace('\t', "    ").replace('\r', "");
         let cut = if display_width(&line) > width {
             let mut used = 0;
@@ -43,7 +48,10 @@ impl Code {
         let shown = &line[..cut.unwrap_or(line.len())];
         let ellipsis = if cut.is_some() { "…" } else { "" };
         let Some(highlighter) = &mut self.0 else {
-            return format!("{shown}{ellipsis}");
+            return (
+                format!("{shown}{ellipsis}"),
+                display_width(shown) + cut.map_or(0, |_| 1),
+            );
         };
         let text = format!("{line}\n");
         let painted: String = highlighter
@@ -54,7 +62,10 @@ impl Code {
                 (range.start < range.end).then(|| color.paint(&text[range]).to_string())
             })
             .collect();
-        format!("{painted}{ellipsis}")
+        (
+            format!("{painted}{ellipsis}"),
+            display_width(shown) + cut.map_or(0, |_| 1),
+        )
     }
 }
 

@@ -8,6 +8,7 @@ use rig_core::streaming::parse_partial_arguments;
 use textwrap::core::display_width;
 use yansi::{Paint, Style};
 
+use super::code::Code;
 use super::tool::PREVIEW_LINES;
 use super::{call_line, clip, palette, summarize, wrap};
 use crate::route;
@@ -48,6 +49,8 @@ pub struct Preview {
     lines: VecDeque<String>,
     /// How many lines it has been given.
     total: usize,
+    /// The file whose code it shows, to highlight in its language.
+    path: Option<String>,
 }
 
 impl Preview {
@@ -57,7 +60,13 @@ impl Preview {
             label: String::new(),
             lines: VecDeque::new(),
             total: 0,
+            path: None,
         }
+    }
+
+    /// Highlights the lines as code of the file at `path`.
+    pub fn code_of(&mut self, path: Option<String>) {
+        self.path = path;
     }
 
     pub fn source(&self) -> Source {
@@ -133,7 +142,19 @@ impl Preview {
             .iter()
             .map(|line| line.strip_suffix('\n').unwrap_or(line));
         let lines = lines.map(|line| line.replace('\t', "    "));
+        let mut added = Code::new(self.path.as_deref(), true);
+        let mut removed = Code::new(self.path.as_deref(), true);
         let mut rows: Vec<Row> = match self.source {
+            Source::Returned if added.is_on() => lines
+                .map(|line| Row::code(&mut added, "", &line, width))
+                .collect(),
+            Source::Changes if added.is_on() => lines
+                .map(|line| match line.split_at_checked(2) {
+                    Some(("+ ", code)) => Row::code(&mut added, "+ ", code, width),
+                    Some(("- ", code)) => Row::code(&mut removed, "- ", code, width),
+                    _ => change(&line, width),
+                })
+                .collect(),
             Source::Command | Source::Returned => lines
                 .map(|line| Row::new(&[(&clip(&line, width), Style::new())]))
                 .collect(),
@@ -187,6 +208,20 @@ pub struct Row {
 }
 
 impl Row {
+    /// A line of code, highlighted, after its `sign` when it has one.
+    fn code(code: &mut Code, sign: &str, line: &str, width: usize) -> Self {
+        let (painted, taken) = code.sized(line, width.saturating_sub(sign.len()));
+        let colored = match sign {
+            "+ " => sign.green().to_string(),
+            "- " => sign.red().to_string(),
+            _ => String::new(),
+        };
+        Self {
+            painted: format!("{colored}{painted}"),
+            width: taken + sign.len(),
+        }
+    }
+
     fn new(parts: &[(&str, Style)]) -> Self {
         Self {
             painted: parts
