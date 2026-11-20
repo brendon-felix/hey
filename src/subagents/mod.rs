@@ -329,9 +329,17 @@ fn environment(dir: &Path, host: &str, client: Option<&str>) -> String {
             )
         })
         .unwrap_or_default();
+    let windows = match std::env::consts::OS {
+        "windows" => {
+            "\n- This machine runs Windows: in `shell` calls use only shells and commands Windows \
+             supports (PowerShell, cmd or the named shell), not `sh`, bash, `&&`, `$(...)`, \
+             `/dev/null` or Unix tools; prefer the dedicated file tools"
+        }
+        _ => "",
+    };
     format!(
         "\nEnvironment:\n- Machine: `{host}` ({}, {}), where your tools run\n- Working directory: \
-         {}{client}\n- Date: {}",
+         {}{client}{windows}\n- Date: {}",
         std::env::consts::OS,
         std::env::consts::ARCH,
         dir.display(),

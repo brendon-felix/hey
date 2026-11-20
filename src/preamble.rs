@@ -60,6 +60,8 @@ impl Setting<'_> {
             )),
             Some(self.host_line()),
             self.user_line(),
+            self.system_line(),
+            self.windows_line(),
             self.started.map(|started| {
                 format!(
                     "This conversation started {} in the user's local time, and may have gone \
@@ -231,6 +233,43 @@ impl Setting<'_> {
         }
     }
 
+    /// The operating system of the client that started the conversation, which
+    /// may differ from the host's.
+    fn system_line(&self) -> Option<String> {
+        let client = self.client?;
+        Some(format!(
+            "The client that started this conversation runs {} ({}); {}",
+            os_name(&client.machine.os),
+            client.machine.arch,
+            match client.machine.os.as_str() {
+                "windows" => "expect Windows paths and conventions on their machine.",
+                _ => "expect that system's paths and conventions on their machine.",
+            }
+        ))
+    }
+
+    /// Shell guidance, for whichever machines in play run Windows.
+    fn windows_line(&self) -> Option<String> {
+        let host_windows = self.host.os == "windows";
+        let client_windows = self.client.is_some_and(|c| c.machine.os == "windows");
+        let on = match (host_windows, client_windows) {
+            (false, false) => return None,
+            (true, true) => "the host and the user's machine run",
+            (true, false) => "the host runs",
+            (false, true) => "the user's machine runs",
+        };
+        Some(format!(
+            "Because {on} Windows, a `shell` call there must use a shell and commands Windows \
+             supports: do not assume `sh`, bash, or Unix tools such as `ls`, `cat`, `grep`, \
+             `sed`, `head` or `rm`, and do not write `&&`, `$(...)`, `/dev/null` or \
+             `~` paths. Use PowerShell or cmd syntax, or the shell the tool's description \
+             names (for example Nushell), and Windows paths. Prefer the dedicated `read`, \
+             `write`, `edit`, `list`, `search`, `move` and `delete` tools over shell \
+             commands. If a call fails with `program not found`, the shell is not available \
+             there; switch to a supported one instead of retrying."
+        ))
+    }
+
     fn config_line(&self, config: &str) -> String {
         let missing = match Path::new(config).exists() {
             true => "",
@@ -245,6 +284,15 @@ impl Setting<'_> {
              permissions, MCP servers and memory; every option, with its default, is documented \
              at {DEFAULTS}. Changes take effect {restart}."
         )
+    }
+}
+
+fn os_name(os: &str) -> &str {
+    match os {
+        "windows" => "Windows",
+        "macos" => "macOS",
+        "linux" => "Linux",
+        other => other,
     }
 }
 
