@@ -8,7 +8,7 @@
 //! show at the top of the prompt, so typing and the answer share the screen.
 
 use std::fmt::Display;
-use std::io::{self, Write, stdout};
+use std::io::{self, IsTerminal, Write, stdout};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
@@ -53,7 +53,16 @@ pub fn to_stderr() {
 /// Prints `text` and ends its line. Live rows give way until next set.
 pub fn line(text: impl Display) {
     let text = text.to_string();
-    if TO_STDERR.load(Ordering::Relaxed) {
+    let to_stderr = TO_STDERR.load(Ordering::Relaxed);
+    let terminal = match to_stderr {
+        true => io::stderr().is_terminal(),
+        false => stdout().is_terminal(),
+    };
+    let text = match terminal {
+        true => super::link::linkify(&text),
+        false => text,
+    };
+    if to_stderr {
         eprintln!("{text}");
         return;
     }

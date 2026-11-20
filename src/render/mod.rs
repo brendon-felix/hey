@@ -2,6 +2,7 @@
 /*                               render/mod.rs                                */
 /* -------------------------------------------------------------------------- */
 
+mod link;
 mod code;
 mod highlight;
 mod preview;
