@@ -2,9 +2,9 @@
 /*                               render/mod.rs                                */
 /* -------------------------------------------------------------------------- */
 
-mod link;
 mod code;
 mod highlight;
+mod link;
 mod preview;
 mod reply;
 pub mod screen;

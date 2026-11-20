@@ -32,7 +32,11 @@ struct Named {
 
 /// The name `model` gives the conversation `messages`, which is `current`
 /// when the topic has not shifted enough. None when nothing was said yet.
-pub async fn name(model: &Model, current: Option<&str>, messages: &[Message]) -> Result<Option<String>> {
+pub async fn name(
+    model: &Model,
+    current: Option<&str>,
+    messages: &[Message],
+) -> Result<Option<String>> {
     let said = transcript::thread(messages);
     if said.is_empty() {
         return Ok(None);
@@ -68,11 +72,7 @@ fn excerpt(text: &str) -> String {
 fn read(answer: &str) -> Option<String> {
     let (start, end) = (answer.find('{')?, answer.rfind('}')?);
     let named: Named = serde_json::from_str(answer.get(start..=end)?).ok()?;
-    let title = named
-        .title
-        .split_whitespace()
-        .collect::<Vec<_>>()
-        .join(" ");
+    let title = named.title.split_whitespace().collect::<Vec<_>>().join(" ");
     let title = title
         .trim_matches(['"', '“', '”', '\'', '.'])
         .chars()
@@ -101,7 +101,10 @@ mod tests {
     async fn names_a_conversation_from_what_was_said() {
         let mock = MockCompletionModel::text("{\"title\": \"Rename threads with an LLM\"}");
         let model = Model::scripted("openai/mock", mock.clone());
-        let messages = [Message::user("name threads better"), Message::assistant("ok")];
+        let messages = [
+            Message::user("name threads better"),
+            Message::assistant("ok"),
+        ];
         let named = name(&model, None, &messages).await.unwrap();
         assert_eq!(named.as_deref(), Some("Rename threads with an LLM"));
         assert_eq!(name(&model, None, &[]).await.unwrap(), None);

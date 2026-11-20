@@ -613,8 +613,7 @@ impl Resumable {
                             continue;
                         }
                         Err(_) => {
-                            let error =
-                                anyhow!("the host said nothing for {}s", SILENCE.as_secs());
+                            let error = anyhow!("the host said nothing for {}s", SILENCE.as_secs());
                             if let Some(error) = self.broke(error) {
                                 return Some((Err(error), self));
                             }

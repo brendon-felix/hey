@@ -169,7 +169,11 @@ mod tests {
 
         conversation.push(Message::assistant("an answer"));
         rig_memory::save(&mirror, id.as_str(), &mut conversation).unwrap();
-        assert!(fs::read_to_string(&path).unwrap().contains("## Assistant\n\nan answer"));
+        assert!(
+            fs::read_to_string(&path)
+                .unwrap()
+                .contains("## Assistant\n\nan answer")
+        );
 
         mirror.forget(&id).unwrap();
         assert!(!path.exists());

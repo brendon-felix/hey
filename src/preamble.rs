@@ -173,11 +173,16 @@ impl Setting<'_> {
         match self.hosting {
             Hosting::Local => format!(
                 "You run in the user's terminal on their machine, {host}. Your tools act on it, \
-                 from {cwd}."
+                 from {cwd}. That is the user's current working directory: the project or files \
+                 they mean by \"here\" or \"this\" are likely in it, so look there (list, read, \
+                 search, run commands) when a request may depend on local files; relative paths \
+                 resolve against it."
             ),
             Hosting::Served { listen } => format!(
                 "You run on a hey host, {host}, served by `hey --serve` listening on {listen}. \
-                 Your tools act on the host, from {cwd}, or on the machine a call names."
+                 Your tools act on the host, from {cwd}, or on the machine a call names. Treat {cwd} as the working directory for the \
+                 request: when it may depend on local files, inspect them there rather than \
+                 guessing; relative paths resolve against it."
             ),
         }
     }

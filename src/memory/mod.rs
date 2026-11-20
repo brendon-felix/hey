@@ -14,9 +14,9 @@ use std::time::Duration;
 use anyhow::{Context, Result, anyhow, bail};
 use rig_agent::agent::AgentBuilder;
 use rig_core::message::ToolName;
+use rig_core::message::{AssistantContent, Message, UserContent};
 use rig_core::tool::{DynamicTool, ToolOutput};
 use serde_json::json;
-use rig_core::message::{AssistantContent, Message, UserContent};
 use std::sync::Arc;
 
 use crate::agent::{self, Model};
@@ -262,21 +262,30 @@ fn apply(ops: Vec<Op>, memories: &mut Vec<String>) -> bool {
 /// changes are collected in `ops`, to be saved once it is done.
 fn tools(shown: &[&String], ops: &Arc<Mutex<Vec<Op>>>) -> Vec<DynamicTool> {
     let shown: Arc<Vec<String>> = Arc::new(shown.iter().map(|memory| (*memory).clone()).collect());
-    let tool = |name: &str, description: &str, parameters: serde_json::Value, run: fn(&[String], &serde_json::Value) -> Result<Op, String>| {
+    let tool = |name: &str,
+                description: &str,
+                parameters: serde_json::Value,
+                run: fn(&[String], &serde_json::Value) -> Result<Op, String>| {
         let (shown, ops) = (shown.clone(), ops.clone());
-        DynamicTool::new(ToolName::new(name).expect("a valid tool name"), description, parameters, move |arguments| {
-            let reply = match run(&shown, &arguments) {
-                Ok(op) => {
-                    ops.lock().unwrap_or_else(PoisonError::into_inner).push(op);
-                    "ok".to_owned()
-                }
-                Err(problem) => problem,
-            };
-            Box::pin(async move { Ok(ToolOutput::text(reply)) })
-        })
+        DynamicTool::new(
+            ToolName::new(name).expect("a valid tool name"),
+            description,
+            parameters,
+            move |arguments| {
+                let reply = match run(&shown, &arguments) {
+                    Ok(op) => {
+                        ops.lock().unwrap_or_else(PoisonError::into_inner).push(op);
+                        "ok".to_owned()
+                    }
+                    Err(problem) => problem,
+                };
+                Box::pin(async move { Ok(ToolOutput::text(reply)) })
+            },
+        )
     };
     let text = json!({ "type": "string", "description": "One short, self-contained sentence about the user." });
-    let number = json!({ "type": "integer", "description": "The number of a saved memory, as listed." });
+    let number =
+        json!({ "type": "integer", "description": "The number of a saved memory, as listed." });
     vec![
         tool(
             "remember",
@@ -316,12 +325,19 @@ fn argument(arguments: &serde_json::Value, name: &str) -> Option<String> {
 /// The saved memory that `arguments` number, or why there is none.
 fn numbered(shown: &[String], arguments: &serde_json::Value) -> Result<String, String> {
     let number = arguments.get("number").and_then(|number| {
-        number.as_u64().or_else(|| number.as_str()?.trim().parse().ok())
+        number
+            .as_u64()
+            .or_else(|| number.as_str()?.trim().parse().ok())
     });
     number
         .and_then(|number| shown.get(usize::try_from(number).ok()?.checked_sub(1)?))
         .cloned()
-        .ok_or_else(|| format!("no saved memory has that number; the numbers are 1 to {}", shown.len()))
+        .ok_or_else(|| {
+            format!(
+                "no saved memory has that number; the numbers are 1 to {}",
+                shown.len()
+            )
+        })
 }
 
 /// Saves `memory` unless it is empty or already saved, ignoring case.
@@ -449,23 +465,38 @@ mod tests {
         let mut memories = parse(&format!(
             "{HEADER}- The user lives in Lisbon.\n- The user  uses\tVim.\nnot a memory\n"
         ));
-        assert_eq!(memories, ["The user lives in Lisbon.", "The user uses Vim."]);
+        assert_eq!(
+            memories,
+            ["The user lives in Lisbon.", "The user uses Vim."]
+        );
         let ops = vec![
             Op::Forget("The user lives in Lisbon.".into()),
             Op::Remember("the user uses vim.".into()),
             Op::Remember("The user lives in\nBerlin.".into()),
-            Op::Revise { old: "The user uses Vim.".into(), new: "The user uses Neovim.".into() },
+            Op::Revise {
+                old: "The user uses Vim.".into(),
+                new: "The user uses Neovim.".into(),
+            },
         ];
         assert!(apply(ops, &mut memories));
-        assert_eq!(memories, ["The user uses Neovim.", "The user lives in Berlin."]);
+        assert_eq!(
+            memories,
+            ["The user uses Neovim.", "The user lives in Berlin."]
+        );
         assert!(!apply(vec![Op::Remember(" ".into())], &mut memories));
     }
 
     #[test]
     fn tools_name_memories_by_their_listed_number() {
         let shown = strings(&["Uses vim.", "Likes tea."]);
-        assert_eq!(numbered(&shown, &json!({ "number": 2 })).unwrap(), "Likes tea.");
-        assert_eq!(numbered(&shown, &json!({ "number": "1" })).unwrap(), "Uses vim.");
+        assert_eq!(
+            numbered(&shown, &json!({ "number": 2 })).unwrap(),
+            "Likes tea."
+        );
+        assert_eq!(
+            numbered(&shown, &json!({ "number": "1" })).unwrap(),
+            "Uses vim."
+        );
         assert!(numbered(&shown, &json!({ "number": 3 })).is_err());
         assert!(numbered(&shown, &json!({ "number": 0 })).is_err());
     }

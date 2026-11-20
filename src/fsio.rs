@@ -10,7 +10,10 @@ use std::path::{Path, PathBuf};
 /// new one, never part of either. The temporary name is per process, so two
 /// heys writing the same file do not share one.
 pub fn write_atomic(path: &Path, bytes: impl AsRef<[u8]>) -> io::Result<()> {
-    if let Some(parent) = path.parent().filter(|parent| !parent.as_os_str().is_empty()) {
+    if let Some(parent) = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+    {
         fs::create_dir_all(parent)?;
     }
     let mut name = path.file_name().unwrap_or_default().to_os_string();

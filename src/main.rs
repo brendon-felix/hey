@@ -218,8 +218,7 @@ async fn shutdown() -> Result<()> {
         }
     }
     #[cfg(not(unix))]
-    tokio::signal::ctrl_c()
-           .await?;
+    tokio::signal::ctrl_c().await?;
     Ok(())
 }
 

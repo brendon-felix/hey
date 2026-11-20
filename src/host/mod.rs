@@ -28,7 +28,6 @@ use tokio_util::task::TaskTracker;
 use crate::agent::{self, Model};
 use crate::checkpoint::{Checkpoints, Turn};
 use crate::compaction::{self, Applied, Compactor};
-use crate::naming;
 use crate::config::{self, Config, Providers, Thinking};
 use crate::gate;
 use crate::goal;
@@ -36,6 +35,7 @@ use crate::hooks::{HookEvent, Hooks, MAX_STOP_BLOCKS, Scope, ToolHooks};
 use crate::instructions::Instructions;
 use crate::memory::{self, Memory, Recalled};
 use crate::models;
+use crate::naming;
 use crate::notes::Notes;
 use crate::permissions::{Origin, Permissions};
 use crate::preamble::{Hosting, Setting};
@@ -711,13 +711,20 @@ impl Host {
     /// does this first, or the turn in progress is lost with the process.
     pub async fn wind_down(&self, within: Duration) {
         self.closing.store(true, Ordering::SeqCst);
-        let runs: Vec<_> = self.lock().values().filter_map(|thread| thread.run.clone()).collect();
+        let runs: Vec<_> = self
+            .lock()
+            .values()
+            .filter_map(|thread| thread.run.clone())
+            .collect();
         if !runs.is_empty() {
             tracing::info!(runs = runs.len(), "stopping runs to save what they said");
         }
         runs.iter().for_each(|run| run.stop());
         self.tasks.close();
-        if tokio::time::timeout(within, self.tasks.wait()).await.is_err() {
+        if tokio::time::timeout(within, self.tasks.wait())
+            .await
+            .is_err()
+        {
             tracing::warn!("runs did not finish saving in time");
         }
     }
@@ -963,7 +970,11 @@ impl Host {
                 .transpose()?;
             let messages = self.sessions.messages(id)?;
             let current = self.sessions.names()?.remove(id);
-            let naming = naming::name(namer.as_ref().unwrap_or(model), current.as_deref(), &messages);
+            let naming = naming::name(
+                namer.as_ref().unwrap_or(model),
+                current.as_deref(),
+                &messages,
+            );
             let named = tokio::time::timeout(NAMING_TIMEOUT, naming)
                 .await
                 .context("naming took too long")??;
