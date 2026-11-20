@@ -67,7 +67,7 @@ animations = true
 #
 # The model's reasoning, under "Thought for 12s". In full it streams dimmed,
 # like the reply.
-thinking_output = "preview"
+thinking_output = "hidden"
 # What a tool call writes, prints or gives back, under it: a file's new
 # content, an edit's removed and added lines, a command's output, a page
 # fetched, search results.

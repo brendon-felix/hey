@@ -283,7 +283,7 @@ impl Default for Display {
             wrap_width: 100,
             colors: true,
             animations: true,
-            thinking_output: Output::Preview,
+            thinking_output: Output::Hidden,
             tool_output: Output::Hidden,
             subagent_output: Output::Preview,
             notify_after_secs: 30,
