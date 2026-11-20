@@ -15,8 +15,8 @@ use super::preview::{Call, Preview, Source};
 use super::reply::{Part, Reply};
 use super::tool::{self, Mark, line};
 use super::{
-    Style, animations, call_line, clip, clock, compacted, machine_arg, palette, screen, summarize_args,
-    terminal_height, terminal_width, theme, thought, thought_text,
+    Style, animations, call_line, clip, clock, compacted, machine_arg, palette, screen,
+    summarize_args, terminal_height, terminal_width, theme, thought, thought_text,
 };
 use crate::config::Output;
 
@@ -271,7 +271,10 @@ impl Stream {
         self.activity = Activity::Running(name.to_owned());
         let summary = summarize_args(args);
         let machine = machine.map(str::to_owned).or_else(|| machine_arg(args));
-        screen::line(format_args!("\n{}", call_line(name, machine.as_deref(), &summary, terminal_width())));
+        screen::line(format_args!(
+            "\n{}",
+            call_line(name, machine.as_deref(), &summary, terminal_width())
+        ));
         self.calls.called(
             id,
             Named {
@@ -288,10 +291,17 @@ impl Stream {
             return;
         };
         match self.style.tool_output {
-            Output::Full => changes.iter().for_each(|(mark, text)| screen::line(line(*mark, text))),
+            Output::Full => changes
+                .iter()
+                .for_each(|(mark, text)| screen::line(line(*mark, text))),
             Output::Preview => {
                 let mut preview = Preview::new(Source::Changes);
-                preview.push(&changes.iter().map(|(mark, text)| format!("{}{text}\n", mark.sign())).collect::<String>());
+                preview.push(
+                    &changes
+                        .iter()
+                        .map(|(mark, text)| format!("{}{text}\n", mark.sign()))
+                        .collect::<String>(),
+                );
                 self.preview = Some(preview);
             }
             Output::Hidden => {}
@@ -312,7 +322,8 @@ impl Stream {
         };
         let own_box = match &self.preview {
             Some(preview) if !result.is_error && matches!(placement, Placement::Under) => {
-                Some(preview.source()).filter(|source| matches!(source, Source::Command | Source::Changes))
+                Some(preview.source())
+                    .filter(|source| matches!(source, Source::Command | Source::Changes))
             }
             _ => None,
         };
@@ -340,7 +351,11 @@ impl Stream {
         };
         let room = terminal_width().saturating_sub(5);
         if result.is_error {
-            screen::line(format_args!("  {} {}", "✗".red(), clip(&marker(&summary), room).red()));
+            screen::line(format_args!(
+                "  {} {}",
+                "✗".red(),
+                clip(&marker(&summary), room).red()
+            ));
             return;
         }
         let name = result.name.as_str();
@@ -358,12 +373,18 @@ impl Stream {
                 return self.end_preview(Ending::Answered(""));
             }
             Output::Full if !shown => {
-                given.lines().for_each(|text| screen::line(line(Mark::Printed, text)));
+                given
+                    .lines()
+                    .for_each(|text| screen::line(line(Mark::Printed, text)));
             }
             Output::Full | Output::Preview | Output::Hidden => {}
         }
         let muted = palette().muted;
-        screen::line(format_args!("  {} {}", muted.paint("╰─"), muted.paint(&clip(&marker(&summary), room))));
+        screen::line(format_args!(
+            "  {} {}",
+            muted.paint("╰─"),
+            muted.paint(&clip(&marker(&summary), room))
+        ));
     }
 
     /// More of a running command's output: whole lines, but for its end.
@@ -386,7 +407,10 @@ impl Stream {
             Output::Full => {
                 self.settle();
                 let muted = palette().muted;
-                screen::line(format_args!("  {}", muted.paint(&clip(&step, terminal_width().saturating_sub(2)))));
+                screen::line(format_args!(
+                    "  {}",
+                    muted.paint(&clip(&step, terminal_width().saturating_sub(2)))
+                ));
             }
             Output::Preview => self.preview(Source::Agents, &format!("{step}\n")),
             Output::Hidden => {}
@@ -402,7 +426,11 @@ impl Stream {
             return;
         }
         let tail = self.reply.tail();
-        let rows = tail.iter().cloned().chain(self.status(tail.iter().len())).collect();
+        let rows = tail
+            .iter()
+            .cloned()
+            .chain(self.status(tail.iter().len()))
+            .collect();
         screen::set_live(rows);
     }
 
@@ -435,10 +463,16 @@ impl Stream {
         if !self.backlog.is_empty() {
             self.flush();
         }
-        if self.preview.as_ref().is_some_and(|preview| preview.source() != source) {
+        if self
+            .preview
+            .as_ref()
+            .is_some_and(|preview| preview.source() != source)
+        {
             self.end_preview(Ending::Interrupted);
         }
-        self.preview.get_or_insert_with(|| Preview::new(source)).push(text);
+        self.preview
+            .get_or_insert_with(|| Preview::new(source))
+            .push(text);
     }
 
     /// Leaves the preview shown for good, with what ended it.
@@ -519,7 +553,10 @@ impl Stream {
                 Chunk::End => self.reply.finish(),
                 Chunk::Thought(duration) => thought(duration),
                 Chunk::Text(part, mut text) => {
-                    let end = text.char_indices().nth(budget).map_or(text.len(), |(at, _)| at);
+                    let end = text
+                        .char_indices()
+                        .nth(budget)
+                        .map_or(text.len(), |(at, _)| at);
                     let rest = text.split_off(end);
                     if !text.is_empty() {
                         self.reply.push(part, &text);

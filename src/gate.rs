@@ -85,7 +85,9 @@ mod tests {
     #[tokio::test]
     async fn reads_run_together_and_anything_else_alone_in_turn() {
         let tools = ToolServer::new().run();
-        tools.add_tool(Load { skills: Arc::from([]) });
+        tools.add_tool(Load {
+            skills: Arc::from([]),
+        });
         tools.add_tool(Delete {
             workspace: Arc::new(Local),
             base: None,
@@ -98,14 +100,26 @@ mod tests {
         assert!(second.is_some(), "reads run together");
 
         let mut delete = Box::pin(gate.admit("delete"));
-        assert!(poll!(&mut delete).is_pending(), "a change waits for the reads before it");
+        assert!(
+            poll!(&mut delete).is_pending(),
+            "a change waits for the reads before it"
+        );
         let mut read = Box::pin(gate.admit("skill"));
-        assert!(poll!(&mut read).is_pending(), "a read after a change waits its turn");
+        assert!(
+            poll!(&mut read).is_pending(),
+            "a read after a change waits its turn"
+        );
 
         drop((first, second));
         let delete = delete.await;
-        assert!(poll!(&mut read).is_pending(), "nothing runs beside a change");
-        assert!(gate.admit("unknown").now_or_never().is_none(), "an unknown tool runs alone");
+        assert!(
+            poll!(&mut read).is_pending(),
+            "nothing runs beside a change"
+        );
+        assert!(
+            gate.admit("unknown").now_or_never().is_none(),
+            "an unknown tool runs alone"
+        );
         drop(delete);
         read.await;
     }

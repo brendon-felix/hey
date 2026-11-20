@@ -65,10 +65,13 @@ impl Host {
         let context = match &model {
             Ok(model) => {
                 let skills = self.skills();
-                let (context, told) = self.context(&steer.prompt, &steer.attachments, &skills, model).await;
+                let (context, told) = self
+                    .context(&steer.prompt, &steer.attachments, &skills, model)
+                    .await;
                 if context.has_images() {
                     run.emit(Event::Notice {
-                        text: "images are not handed over while steering; send them with a message".into(),
+                        text: "images are not handed over while steering; send them with a message"
+                            .into(),
                     });
                 }
                 told.into_iter()
@@ -77,7 +80,10 @@ impl Host {
                 context.text()
             }
             Err(error) => {
-                tracing::warn!(error = format!("{error:#}"), "nothing attached to a steering message");
+                tracing::warn!(
+                    error = format!("{error:#}"),
+                    "nothing attached to a steering message"
+                );
                 run.emit(Event::Notice {
                     text: format!("nothing attached: {error:#}"),
                 });
@@ -113,7 +119,10 @@ impl Host {
         {
             let name = format!("prompt {}", mcp_prompt.command());
             told.push(Event::Attached { name: name.clone() });
-            let arguments = prompt.trim_start().get(invoked.len() + 1..).unwrap_or_default();
+            let arguments = prompt
+                .trim_start()
+                .get(invoked.len() + 1..)
+                .unwrap_or_default();
             match self.toolbox.prompt(mcp_prompt, arguments).await {
                 Ok(text) => context.prompt(text),
                 Err(error) => {
@@ -170,7 +179,10 @@ impl Host {
             })
         });
         let mut targets = Vec::new();
-        for target in invoked.into_iter().chain(mentioned.map(|(target, _)| target)) {
+        for target in invoked
+            .into_iter()
+            .chain(mentioned.map(|(target, _)| target))
+        {
             if !targets.contains(&target) {
                 targets.push(target);
             }

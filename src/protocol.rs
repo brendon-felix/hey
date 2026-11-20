@@ -569,4 +569,3 @@ mod tests {
         assert!(read.at.is_none() && matches!(read.event, Event::PartEnd));
     }
 }
-

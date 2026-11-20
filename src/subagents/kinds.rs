@@ -71,7 +71,9 @@ impl Kind {
         }
         let description = front.description.trim().to_owned();
         if description.is_empty() || description.chars().count() > MAX_DESCRIPTION {
-            return Err(format!("description must be 1 to {MAX_DESCRIPTION} characters"));
+            return Err(format!(
+                "description must be 1 to {MAX_DESCRIPTION} characters"
+            ));
         }
         let prompt = body.trim().to_owned();
         if prompt.is_empty() {
@@ -166,7 +168,11 @@ mod tests {
     use super::*;
 
     fn describe(text: &str, stem: &str) -> Result<Kind, String> {
-        Kind::describe(text, PathBuf::from(format!("/agents/{stem}.md")), Source::Global)
+        Kind::describe(
+            text,
+            PathBuf::from(format!("/agents/{stem}.md")),
+            Source::Global,
+        )
     }
 
     #[test]
@@ -185,8 +191,16 @@ mod tests {
         let problem = |text: &str, stem| describe(text, stem).unwrap_err();
         assert!(problem("---\nname: a\ndescription: d\n---\nGo.", "b").contains("file"));
         assert!(problem("---\nname: a\ndescription: d\n---\n", "a").contains("system prompt"));
-        assert!(problem("---\nname: a\ndescription: d\ncolor: red\n---\nGo.", "a").contains("color"));
-        assert!(problem("---\nname: a\ndescription: d\nthinking: lots\n---\nGo.", "a").contains("front matter"));
+        assert!(
+            problem("---\nname: a\ndescription: d\ncolor: red\n---\nGo.", "a").contains("color")
+        );
+        assert!(
+            problem(
+                "---\nname: a\ndescription: d\nthinking: lots\n---\nGo.",
+                "a"
+            )
+            .contains("front matter")
+        );
         assert!(problem("Go.", "a").contains("front matter"));
     }
 
@@ -211,7 +225,10 @@ mod tests {
 
         let found = find_in(Some(&base.join("home")), &inner);
         assert_eq!(found.kinds.len(), 2);
-        assert_eq!(found.get("reviewer").unwrap().description, "the directory's");
+        assert_eq!(
+            found.get("reviewer").unwrap().description,
+            "the directory's"
+        );
         assert_eq!(found.get("tester").unwrap().source, Source::Project);
         assert_eq!(found.problems.len(), 1);
         assert!(found.problems[0].contains("Bad.md"));

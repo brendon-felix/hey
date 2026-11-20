@@ -31,6 +31,7 @@ pub struct Config {
     pub editor: Editor,
     pub sessions: Sessions,
     pub shared: Shared,
+    pub sync: Sync,
     pub memory: Memory,
     pub compaction: Compaction,
     pub instructions: Instructions,
@@ -67,6 +68,7 @@ impl Default for Config {
             editor: Editor::default(),
             sessions: Sessions::default(),
             shared: Shared::default(),
+            sync: Sync::default(),
             memory: Memory::default(),
             compaction: Compaction::default(),
             instructions: Instructions::default(),
@@ -397,6 +399,44 @@ impl Shared {
             None => data_dir()
                 .map(|dir| dir.join("shared"))
                 .context("set `shared.dir`"),
+        }
+    }
+}
+
+/// Files, folders and git repositories a client copies to its remote host,
+/// and where the host keeps what clients copied.
+#[derive(Debug, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct Sync {
+    /// Paths on this machine to keep copied on the host.
+    pub paths: Vec<String>,
+    /// Seconds between pushes.
+    pub interval_secs: u64,
+    dir: Option<String>,
+}
+
+impl Default for Sync {
+    fn default() -> Self {
+        Self {
+            paths: Vec::new(),
+            interval_secs: 30,
+            dir: None,
+        }
+    }
+}
+
+impl Sync {
+    pub fn interval(&self) -> std::time::Duration {
+        std::time::Duration::from_secs(self.interval_secs.max(1))
+    }
+
+    /// Where the host keeps synced copies, by machine and name.
+    pub fn dir(&self) -> Result<PathBuf> {
+        match &self.dir {
+            Some(dir) => expand_path(dir),
+            None => data_dir()
+                .map(|dir| dir.join("sync"))
+                .context("set `sync.dir`"),
         }
     }
 }
@@ -899,7 +939,10 @@ mod tests {
             built_in.compaction.threshold
         );
         assert_eq!(documented.compaction.model, built_in.compaction.model);
-        assert_eq!(documented.instructions.enabled, built_in.instructions.enabled);
+        assert_eq!(
+            documented.instructions.enabled,
+            built_in.instructions.enabled
+        );
         assert_eq!(
             documented.instructions.max_bytes,
             built_in.instructions.max_bytes
@@ -912,8 +955,14 @@ mod tests {
         assert_eq!(documented.tools.default, built_in.tools.default);
         assert_eq!(documented.tools.permissions, built_in.tools.permissions);
         assert_eq!(documented.tools.result_bytes, built_in.tools.result_bytes);
-        assert_eq!(documented.tools.defer_mcp_above, built_in.tools.defer_mcp_above);
-        assert_eq!(documented.display.notify_after_secs, built_in.display.notify_after_secs);
+        assert_eq!(
+            documented.tools.defer_mcp_above,
+            built_in.tools.defer_mcp_above
+        );
+        assert_eq!(
+            documented.display.notify_after_secs,
+            built_in.display.notify_after_secs
+        );
         assert_eq!(documented.subagents.enabled, built_in.subagents.enabled);
         assert_eq!(documented.subagents.model, built_in.subagents.model);
         assert_eq!(documented.server.listen, built_in.server.listen);

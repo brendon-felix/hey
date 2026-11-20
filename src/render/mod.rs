@@ -2,6 +2,7 @@
 /*                               render/mod.rs                                */
 /* -------------------------------------------------------------------------- */
 
+mod code;
 mod highlight;
 mod preview;
 mod reply;
@@ -30,6 +31,7 @@ use crate::route;
 use crate::steer;
 use preview::{Preview, Source};
 
+pub use code::Code;
 pub use reply::{Reply, rows as reply_rows};
 pub use stream::{FRAME, Stream};
 pub use theme::{Color, Palette, Theme, palette, themes};
@@ -358,6 +360,41 @@ pub fn changed_lines(name: &str, args: &str) -> Option<Vec<(char, String)>> {
         tool::Mark::Added | tool::Mark::Printed => ('+', text),
     });
     Some(lines.collect())
+}
+
+/// The file a call's arguments name, if any.
+pub fn call_path(args: &str) -> Option<String> {
+    match tool_args(args)?.remove("path")? {
+        serde_json::Value::String(path) => Some(path),
+        _ => None,
+    }
+}
+
+/// The lines of a `read` result, without the notes it ends with.
+pub fn read_lines(text: &str) -> &str {
+    const NOTES: [&str; 4] = [
+        "more lines; read on",
+        "cut at",
+        "[empty file]",
+        "is past the end",
+    ];
+    let mut end = text.trim_end().len();
+    let mut kept = &text[..end];
+    while let Some(at) = kept.rfind('\n').map(|at| at + 1).or(Some(0)) {
+        let line = &kept[at..];
+        let note =
+            line.starts_with('[') && line.ends_with(']') && NOTES.iter().any(|n| line.contains(n));
+        if !note {
+            break;
+        }
+        end = at;
+        kept = &text[..end];
+        if end == 0 {
+            break;
+        }
+        kept = kept.trim_end_matches('\n');
+    }
+    &text[..end]
 }
 
 /// The rows a call to `todo` shows: its list, each item marked.

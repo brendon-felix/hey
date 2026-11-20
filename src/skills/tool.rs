@@ -46,12 +46,28 @@ impl Tool for Load {
             .with_open_world(false)
     }
 
-    async fn call(&self, _context: &mut ToolContext, args: LoadArgs) -> Result<String, ToolExecutionError> {
-        let Some(skill) = self.skills.iter().find(|skill| skill.name.as_str() == args.name) else {
-            let names: Vec<&str> = self.skills.iter().map(|skill| skill.name.as_str()).collect();
+    async fn call(
+        &self,
+        _context: &mut ToolContext,
+        args: LoadArgs,
+    ) -> Result<String, ToolExecutionError> {
+        let Some(skill) = self
+            .skills
+            .iter()
+            .find(|skill| skill.name.as_str() == args.name)
+        else {
+            let names: Vec<&str> = self
+                .skills
+                .iter()
+                .map(|skill| skill.name.as_str())
+                .collect();
             return Err(ToolExecutionError::new(
                 ToolErrorKind::NotFound,
-                format!("no skill `{}`; the skills are {}", args.name, names.join(", ")),
+                format!(
+                    "no skill `{}`; the skills are {}",
+                    args.name,
+                    names.join(", ")
+                ),
             ));
         };
         skill

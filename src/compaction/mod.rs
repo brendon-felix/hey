@@ -16,12 +16,14 @@ use std::sync::Arc;
 use anyhow::{Context, Result};
 use rig_core::catalog::ModelSpec;
 use rig_core::message::Message;
-use rig_memory::{CompactReason, CompactionPolicy, Summarizer, SummaryState, TrackArgument, estimate_tokens};
+use rig_memory::{
+    CompactReason, CompactionPolicy, Summarizer, SummaryState, TrackArgument, estimate_tokens,
+};
 
 use crate::agent::Model;
 use crate::config::{self, Providers};
-use crate::notes::{self, Notes};
 use crate::hooks::{HookEvent, Scope};
+use crate::notes::{self, Notes};
 use crate::protocol::Event;
 
 pub use hook::{Applied, Hook, Live};
@@ -40,7 +42,8 @@ const TRACKED: [TrackArgument; 3] = [
 /// How rig-memory opens the message that stands for the messages a summary
 /// replaced ([`SummaryState::message`]), by which a saved conversation's
 /// summary is told from what the user typed.
-const SUMMARY_OPEN: &str = "The conversation before this point was compacted into this summary:\n\n<summary>\n";
+const SUMMARY_OPEN: &str =
+    "The conversation before this point was compacted into this summary:\n\n<summary>\n";
 const SUMMARY_CLOSE: &str = "\n</summary>";
 
 /// The summary `text` holds, when it is the message that stands for the
@@ -100,12 +103,14 @@ impl Compactor {
     pub fn new(config: &config::Compaction, model: &Model, providers: &Providers) -> Result<Self> {
         let spec = model.spec()?;
         let summarizer = match &config.model {
-            Some(reference) => Model::connect(reference, providers).context("cannot use `compaction.model`")?,
+            Some(reference) => {
+                Model::connect(reference, providers).context("cannot use `compaction.model`")?
+            }
             None => model.clone(),
         };
-        let threshold = spec
-            .input_limit()
-            .map_or(config.threshold, |window| config.threshold.min(u64::from(window) / 10 * 9));
+        let threshold = spec.input_limit().map_or(config.threshold, |window| {
+            config.threshold.min(u64::from(window) / 10 * 9)
+        });
         let defaults = CompactionPolicy::default();
         // What is kept as it is stays well under the threshold, so the
         // conversation is not due again at once.
@@ -159,7 +164,11 @@ impl Compactor {
         let Some(upto) = self.policy.cut(messages, from, reason, Some(&self.spec)) else {
             return Ok(None);
         };
-        if let Some(scope) = self.hooks.as_ref().filter(|scope| scope.has(HookEvent::PreCompact)) {
+        if let Some(scope) = self
+            .hooks
+            .as_ref()
+            .filter(|scope| scope.has(HookEvent::PreCompact))
+        {
             let (trigger, focus) = match reason {
                 CompactReason::Asked { focus } => ("manual", focus.as_str()),
                 CompactReason::Threshold | CompactReason::Overflow => ("auto", ""),
@@ -179,7 +188,11 @@ impl Compactor {
             .map_err(|error| anyhow::anyhow!("{error}"))?;
         let response = self.summarizer.completion().call(request).await?;
         state.summary = Summarizer::summary_text(&response)?;
-        let todos = self.notes.as_ref().map(|notes| notes.todos()).unwrap_or_default();
+        let todos = self
+            .notes
+            .as_ref()
+            .map(|notes| notes.todos())
+            .unwrap_or_default();
         state.summary = with_todos(&state.summary, notes::todo_section(&todos));
         Ok(Some(Summary {
             upto,
@@ -223,7 +236,10 @@ impl Requests {
         let Self::Open(asked) = self else {
             return false;
         };
-        let focuses = asked.take().into_iter().chain(Some(focus.trim().to_owned()));
+        let focuses = asked
+            .take()
+            .into_iter()
+            .chain(Some(focus.trim().to_owned()));
         let focuses: Vec<String> = focuses.filter(|focus| !focus.is_empty()).collect();
         *asked = Some(focuses.join("\n"));
         true
@@ -266,7 +282,10 @@ mod tests {
     fn a_summary_ends_with_the_todo_list_as_it_is_now() {
         let old = "## Goal\nShip it\n\n## Todo list\n- [ ] stale";
         let now = Some("## Todo list\n- [x] done".to_owned());
-        assert_eq!(with_todos(old, now), "## Goal\nShip it\n\n## Todo list\n- [x] done");
+        assert_eq!(
+            with_todos(old, now),
+            "## Goal\nShip it\n\n## Todo list\n- [x] done"
+        );
         assert_eq!(with_todos(old, None), "## Goal\nShip it");
     }
 

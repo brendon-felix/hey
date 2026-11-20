@@ -40,7 +40,10 @@ impl Terminal {
 
 fn sequence(body: &str, terminal: &Terminal) -> String {
     // A control character would end the sequence early.
-    let body: String = body.chars().filter(|c| !c.is_control() && *c != ';').collect();
+    let body: String = body
+        .chars()
+        .filter(|c| !c.is_control() && *c != ';')
+        .collect();
     let osc = match terminal.osc_777 {
         true => format!("\x1b]777;notify;hey;{body}\x1b\\"),
         false => format!("\x1b]9;hey: {body}\x1b\\"),
@@ -58,11 +61,26 @@ mod tests {
 
     #[test]
     fn rings_and_notifies_as_the_terminal_takes_it() {
-        let plain = Terminal { osc_777: false, tmux: false };
-        assert_eq!(sequence("done;\n now", &plain), "\x07\x1b]9;hey: done now\x1b\\");
-        let vte = Terminal { osc_777: true, tmux: false };
+        let plain = Terminal {
+            osc_777: false,
+            tmux: false,
+        };
+        assert_eq!(
+            sequence("done;\n now", &plain),
+            "\x07\x1b]9;hey: done now\x1b\\"
+        );
+        let vte = Terminal {
+            osc_777: true,
+            tmux: false,
+        };
         assert_eq!(sequence("done", &vte), "\x07\x1b]777;notify;hey;done\x1b\\");
-        let tmux = Terminal { osc_777: false, tmux: true };
-        assert_eq!(sequence("done", &tmux), "\x07\x1bPtmux;\x1b\x1b]9;hey: done\x1b\x1b\\\x1b\\");
+        let tmux = Terminal {
+            osc_777: false,
+            tmux: true,
+        };
+        assert_eq!(
+            sequence("done", &tmux),
+            "\x07\x1bPtmux;\x1b\x1b]9;hey: done\x1b\x1b\\\x1b\\"
+        );
     }
 }

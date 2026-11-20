@@ -77,7 +77,9 @@ impl State {
 
     /// What was printed from `offset` on, of what is kept.
     fn since(&self, offset: u64) -> String {
-        let skip = offset.saturating_sub(self.first()).min(self.kept.len() as u64) as usize;
+        let skip = offset
+            .saturating_sub(self.first())
+            .min(self.kept.len() as u64) as usize;
         let bytes: Vec<u8> = self.kept.iter().skip(skip).copied().collect();
         String::from_utf8_lossy(&bytes).into_owned()
     }
@@ -182,10 +184,11 @@ fn spawn(
 }
 
 fn find(id: u32) -> Result<Arc<Background>, ToolExecutionError> {
-    lock(&TABLE)
-        .get(&id)
-        .cloned()
-        .ok_or_else(|| ToolExecutionError::invalid_args(format!("no background process {id}; `process_list` lists them")))
+    lock(&TABLE).get(&id).cloned().ok_or_else(|| {
+        ToolExecutionError::invalid_args(format!(
+            "no background process {id}; `process_list` lists them"
+        ))
+    })
 }
 
 /// Stops every background process this hey started, as it exits.
@@ -238,19 +241,32 @@ impl Tool for SpawnProcess {
         ToolAnnotations::default().with_title("Spawn process")
     }
 
-    async fn call(&self, _context: &mut ToolContext, args: SpawnArgs) -> Result<String, ToolExecutionError> {
+    async fn call(
+        &self,
+        _context: &mut ToolContext,
+        args: SpawnArgs,
+    ) -> Result<String, ToolExecutionError> {
         let base = self.launcher.cwd.as_deref();
         let dir = match &args.cwd {
             Some(dir) => {
                 if self.confine {
                     self.workspace.place(base, true, dir)?;
                 }
-                Some(self.workspace.join(base.unwrap_or(Path::new("")), Path::new(dir)))
+                Some(
+                    self.workspace
+                        .join(base.unwrap_or(Path::new("")), Path::new(dir)),
+                )
             }
             None => base.map(Path::to_path_buf),
         };
-        let id = spawn(self.workspace.as_ref(), &self.launcher, dir.as_deref(), &args.command, self.spill.as_ref())
-            .map_err(|error| ToolExecutionError::other(format!("could not run sh: {error}")))?;
+        let id = spawn(
+            self.workspace.as_ref(),
+            &self.launcher,
+            dir.as_deref(),
+            &args.command,
+            self.spill.as_ref(),
+        )
+        .map_err(|error| ToolExecutionError::other(format!("could not run sh: {error}")))?;
         Ok(format!(
             "Started background process {id}. Read its output with `process_output`, and stop it with `process_kill`."
         ))
@@ -295,10 +311,16 @@ impl Tool for ProcessOutput {
     }
 
     fn annotations(&self) -> ToolAnnotations {
-        ToolAnnotations::default().with_read_only(true).with_open_world(false)
+        ToolAnnotations::default()
+            .with_read_only(true)
+            .with_open_world(false)
     }
 
-    async fn call(&self, _context: &mut ToolContext, args: OutputArgs) -> Result<String, ToolExecutionError> {
+    async fn call(
+        &self,
+        _context: &mut ToolContext,
+        args: OutputArgs,
+    ) -> Result<String, ToolExecutionError> {
         let background = find(args.id)?;
         let since = args.since.unwrap_or(0);
         let wait = Duration::from_secs(args.wait_secs.unwrap_or(0)).min(MAX_WAIT);
@@ -337,7 +359,10 @@ fn report(id: u32, background: &Background, since: u64, tail: Option<usize>) -> 
     };
     let (shown, dropped) = limit.tail(&text);
     if dropped > 0 {
-        notes.push(format!("{dropped} earlier lines left out{}", spilled(&state)));
+        notes.push(format!(
+            "{dropped} earlier lines left out{}",
+            spilled(&state)
+        ));
     }
     notes.push(format!("next offset: {}", state.total));
     let body = match shown.is_empty() {
@@ -369,7 +394,8 @@ impl Tool for ProcessList {
     type Error = ToolExecutionError;
 
     fn description(&self) -> String {
-        "List the background processes `spawn_process` started: id, status, directory and command.".into()
+        "List the background processes `spawn_process` started: id, status, directory and command."
+            .into()
     }
 
     fn parameters(&self) -> serde_json::Value {
@@ -377,11 +403,20 @@ impl Tool for ProcessList {
     }
 
     fn annotations(&self) -> ToolAnnotations {
-        ToolAnnotations::default().with_read_only(true).with_open_world(false)
+        ToolAnnotations::default()
+            .with_read_only(true)
+            .with_open_world(false)
     }
 
-    async fn call(&self, _context: &mut ToolContext, _args: ListArgs) -> Result<String, ToolExecutionError> {
-        let all: Vec<_> = lock(&TABLE).iter().map(|(id, background)| (*id, background.clone())).collect();
+    async fn call(
+        &self,
+        _context: &mut ToolContext,
+        _args: ListArgs,
+    ) -> Result<String, ToolExecutionError> {
+        let all: Vec<_> = lock(&TABLE)
+            .iter()
+            .map(|(id, background)| (*id, background.clone()))
+            .collect();
         if all.is_empty() {
             return Ok("No background processes.".into());
         }
@@ -389,7 +424,11 @@ impl Tool for ProcessList {
             .iter()
             .map(|(id, background)| {
                 background.pump();
-                let dir = background.dir.as_ref().map(|dir| format!(" in {}", dir.display())).unwrap_or_default();
+                let dir = background
+                    .dir
+                    .as_ref()
+                    .map(|dir| format!(" in {}", dir.display()))
+                    .unwrap_or_default();
                 format!("{id}: {}{dir}: {}", background.status(), background.command)
             })
             .collect::<Vec<_>>()
@@ -427,7 +466,11 @@ impl Tool for ProcessKill {
         ToolAnnotations::default().with_title("Kill process")
     }
 
-    async fn call(&self, _context: &mut ToolContext, args: KillArgs) -> Result<String, ToolExecutionError> {
+    async fn call(
+        &self,
+        _context: &mut ToolContext,
+        args: KillArgs,
+    ) -> Result<String, ToolExecutionError> {
         let background = find(args.id)?;
         let how = rig_tools::blocking(move || Ok(background.kill())).await?;
         Ok(format!("process {}: {how}", args.id))
@@ -459,8 +502,20 @@ mod tests {
     #[tokio::test]
     async fn a_background_process_is_read_waited_for_and_killed() {
         let mut context = ToolContext::default();
-        let id = spawn(&Local, &Launcher::default(), None, "echo one; sleep 30", None).unwrap();
-        let args = OutputArgs { id, since: None, tail: None, wait_secs: Some(5) };
+        let id = spawn(
+            &Local,
+            &Launcher::default(),
+            None,
+            "echo one; sleep 30",
+            None,
+        )
+        .unwrap();
+        let args = OutputArgs {
+            id,
+            since: None,
+            tail: None,
+            wait_secs: Some(5),
+        };
         let read = ProcessOutput.call(&mut context, args).await.unwrap();
         assert!(read.starts_with("one\n"), "{read}");
         assert!(read.contains("running"), "{read}");
@@ -469,9 +524,17 @@ mod tests {
         let listed = ProcessList.call(&mut context, ListArgs {}).await.unwrap();
         assert!(listed.contains("sleep 30"), "{listed}");
 
-        let killed = ProcessKill.call(&mut context, KillArgs { id }).await.unwrap();
+        let killed = ProcessKill
+            .call(&mut context, KillArgs { id })
+            .await
+            .unwrap();
         assert!(killed.contains("killed"), "{killed}");
-        let args = OutputArgs { id, since: Some(4), tail: None, wait_secs: None };
+        let args = OutputArgs {
+            id,
+            since: Some(4),
+            tail: None,
+            wait_secs: None,
+        };
         let read = ProcessOutput.call(&mut context, args).await.unwrap();
         assert!(read.starts_with("(no new output)"), "{read}");
     }

@@ -45,12 +45,19 @@ pub fn thread(messages: &[Message]) -> String {
 /// Zed copies an agent response.
 pub fn last_reply(messages: &[Message]) -> Option<String> {
     let said: Vec<_> = messages.iter().filter_map(said).collect();
-    let end = said.iter().rposition(|(speaker, _)| *speaker == Speaker::Assistant)? + 1;
+    let end = said
+        .iter()
+        .rposition(|(speaker, _)| *speaker == Speaker::Assistant)?
+        + 1;
     let start = said[..end]
         .iter()
         .rposition(|(speaker, _)| *speaker != Speaker::Assistant)
         .map_or(0, |prompt| prompt + 1);
-    let texts: Vec<&str> = said[start..end].iter().flat_map(|(_, texts)| texts).copied().collect();
+    let texts: Vec<&str> = said[start..end]
+        .iter()
+        .flat_map(|(_, texts)| texts)
+        .copied()
+        .collect();
     Some(texts.join("\n\n"))
 }
 
@@ -72,7 +79,9 @@ fn said(message: &Message) -> Option<(Speaker, Vec<&str>)> {
                     content
                         .iter()
                         .flat_map(|content| match content {
-                            UserContent::Text(text) if !is_context(&text.text) => vec![text.text.as_str()],
+                            UserContent::Text(text) if !is_context(&text.text) => {
+                                vec![text.text.as_str()]
+                            }
                             UserContent::ToolResult(result) => steer::prompts(result).collect(),
                             _ => Vec::new(),
                         })
@@ -123,12 +132,16 @@ mod tests {
                 AssistantContent::tool_call("1", read.clone(), serde_json::json!({})),
             ]),
             Message::tool_result(CallId::from_wire("1"), read, "file contents"),
-            assistant(vec![AssistantContent::text("A long line that the terminal wraps.\n\n```rs\nfn main() {}\n```")]),
+            assistant(vec![AssistantContent::text(
+                "A long line that the terminal wraps.\n\n```rs\nfn main() {}\n```",
+            )]),
             Message::user("stopped before any answer"),
         ];
         assert_eq!(
             last_reply(&messages).as_deref(),
-            Some("Let me look.\n\nA long line that the terminal wraps.\n\n```rs\nfn main() {}\n```")
+            Some(
+                "Let me look.\n\nA long line that the terminal wraps.\n\n```rs\nfn main() {}\n```"
+            )
         );
         assert_eq!(last_reply(&messages[..1]), None);
     }

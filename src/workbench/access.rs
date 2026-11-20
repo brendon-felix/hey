@@ -36,7 +36,11 @@ pub enum Verdict {
 }
 
 impl Access {
-    pub fn new(machine: String, directories: Option<&Directories>, file: Option<PathBuf>) -> Result<Self> {
+    pub fn new(
+        machine: String,
+        directories: Option<&Directories>,
+        file: Option<PathBuf>,
+    ) -> Result<Self> {
         let directories = directories.cloned().unwrap_or_default();
         let paths = |rules: &[String]| -> Result<Vec<PathBuf>> {
             rules.iter().map(|rule| rule_path(rule)).collect()
@@ -62,10 +66,19 @@ impl Access {
     /// the directories this conversation already `granted`. Exclusion wins.
     pub fn verdict(&self, dir: &Path, granted: &[PathBuf]) -> Verdict {
         let rules = self.lock();
-        if let Some(excluded) = rules.exclude.iter().find(|excluded| dir.starts_with(excluded)) {
+        if let Some(excluded) = rules
+            .exclude
+            .iter()
+            .find(|excluded| dir.starts_with(excluded))
+        {
             return Verdict::Excluded(excluded.clone());
         }
-        match rules.allow.iter().chain(granted).any(|allowed| dir.starts_with(allowed)) {
+        match rules
+            .allow
+            .iter()
+            .chain(granted)
+            .any(|allowed| dir.starts_with(allowed))
+        {
             true => Verdict::Allowed,
             false => Verdict::Ask,
         }
@@ -149,8 +162,15 @@ mod tests {
         let verdict = |dir: &str| access.verdict(Path::new(dir), &granted);
         assert_eq!(verdict("/srv"), Verdict::Allowed);
         assert_eq!(verdict("/srv/app/src"), Verdict::Allowed);
-        assert_eq!(verdict("/srv/secrets/keys"), Verdict::Excluded("/srv/secrets".into()));
-        assert_eq!(verdict("/srv-other"), Verdict::Ask, "a sibling sharing a prefix is not inside");
+        assert_eq!(
+            verdict("/srv/secrets/keys"),
+            Verdict::Excluded("/srv/secrets".into())
+        );
+        assert_eq!(
+            verdict("/srv-other"),
+            Verdict::Ask,
+            "a sibling sharing a prefix is not inside"
+        );
         assert_eq!(verdict("/home/me/project/src"), Verdict::Allowed);
         assert_eq!(verdict("/home/me"), Verdict::Ask);
     }
@@ -160,12 +180,19 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("hey-access-{}", std::process::id()));
         fs::create_dir_all(&dir).unwrap();
         let file = dir.join("hey.toml");
-        fs::write(&file, "# mine\nmodel = \"openai/gpt-5.5\"\n\n[machines.box]\nexclude = [\"/srv/secrets\"]\n").unwrap();
+        fs::write(
+            &file,
+            "# mine\nmodel = \"openai/gpt-5.5\"\n\n[machines.box]\nexclude = [\"/srv/secrets\"]\n",
+        )
+        .unwrap();
         let access = access(&[], &["/srv/secrets"], Some(file.clone()));
 
         access.allow_always(Path::new("/srv/app")).unwrap();
         access.allow_always(Path::new("/opt/data")).unwrap();
-        assert_eq!(access.verdict(Path::new("/srv/app/src"), &[]), Verdict::Allowed);
+        assert_eq!(
+            access.verdict(Path::new("/srv/app/src"), &[]),
+            Verdict::Allowed
+        );
 
         let saved = fs::read_to_string(&file).unwrap();
         assert!(saved.starts_with("# mine\n"), "{saved}");

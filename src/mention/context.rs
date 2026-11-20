@@ -30,9 +30,14 @@ impl Context {
     pub fn attach(&mut self, attachment: &Attachment) {
         match attachment {
             Attachment::File { path, text } => self.files.push(code_block(path, text)),
-            Attachment::Image { media_type, data, .. } => {
-                self.images
-                    .push(UserContent::image_base64(data.clone(), media_type.clone(), None));
+            Attachment::Image {
+                media_type, data, ..
+            } => {
+                self.images.push(UserContent::image_base64(
+                    data.clone(),
+                    media_type.clone(),
+                    None,
+                ));
             }
             Attachment::Directory {
                 path,
@@ -103,7 +108,10 @@ pub fn is_context(text: &str) -> bool {
 fn code_block(path: &str, text: &str) -> String {
     let longest = text.split(|c| c != '`').map(str::len).max().unwrap_or(0);
     let fence = "`".repeat(longest.max(2) + 1);
-    let tag = match Path::new(path).extension().and_then(|extension| extension.to_str()) {
+    let tag = match Path::new(path)
+        .extension()
+        .and_then(|extension| extension.to_str())
+    {
         Some(extension) => format!("{extension} {path}"),
         None => path.to_owned(),
     };

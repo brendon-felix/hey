@@ -53,7 +53,10 @@ pub fn pick() -> Result<Option<String>> {
     }
     let current = render::current_theme();
     let names = render::themes();
-    let selected = names.iter().position(|name| *name == current.name).or(Some(0));
+    let selected = names
+        .iter()
+        .position(|name| *name == current.name)
+        .or(Some(0));
     let mut picker = Picker {
         names,
         filter: String::new(),
@@ -123,7 +126,9 @@ impl Picker {
             .names
             .iter()
             .enumerate()
-            .filter_map(|(index, name)| Some((index, self.matcher.fuzzy_match(name, &self.filter)?)))
+            .filter_map(|(index, name)| {
+                Some((index, self.matcher.fuzzy_match(name, &self.filter)?))
+            })
             .collect();
         scored.sort_by_key(|(_, score)| std::cmp::Reverse(*score));
         scored.into_iter().map(|(index, _)| index).collect()
@@ -141,7 +146,10 @@ impl Picker {
     }
 
     fn position(&self, shown: &[usize]) -> usize {
-        shown.iter().position(|index| Some(*index) == self.selected).unwrap_or(0)
+        shown
+            .iter()
+            .position(|index| Some(*index) == self.selected)
+            .unwrap_or(0)
     }
 
     fn previewed(&mut self) -> Result<Arc<Theme>> {
@@ -170,7 +178,12 @@ impl Picker {
         let mut out = stdout().lock();
         queue!(out, BeginSynchronizedUpdate)?;
         for (row, line) in lines.iter().enumerate() {
-            queue!(out, cursor::MoveTo(0, row as u16), Print(line), Clear(ClearType::UntilNewLine))?;
+            queue!(
+                out,
+                cursor::MoveTo(0, row as u16),
+                Print(line),
+                Clear(ClearType::UntilNewLine)
+            )?;
         }
         queue!(out, EndSynchronizedUpdate)?;
         out.flush()?;
@@ -192,7 +205,14 @@ impl Picker {
             let mut line = String::new();
             let active = Some(*index) == self.selected;
             let name = &self.names[*index];
-            style.format_fuzzy_select_prompt_item(&mut line, name, active, true, &self.matcher, &self.filter)?;
+            style.format_fuzzy_select_prompt_item(
+                &mut line,
+                name,
+                active,
+                true,
+                &self.matcher,
+                &self.filter,
+            )?;
             lines.push(line);
         }
         lines.push(String::new());
@@ -203,7 +223,11 @@ impl Picker {
 
 /// A question and its answer as the REPL draws them.
 fn sample(theme: &Arc<Theme>, width: usize) -> Vec<String> {
-    let mut lines = vec![String::new(), render::user_line(QUESTION, theme.palette), String::new()];
+    let mut lines = vec![
+        String::new(),
+        render::user_line(QUESTION, theme.palette),
+        String::new(),
+    ];
     lines.extend(render::reply_rows(SAMPLE, theme.clone(), width));
     lines.push(String::new());
     lines

@@ -85,7 +85,9 @@ impl ResultLimit {
 
 fn unbounded(tool: &str) -> bool {
     use mcp::deferred::{CALL, READ_RESOURCE, RESOURCES};
-    tool.starts_with(mcp::PREFIX) || web::TOOLS.contains(&tool) || [CALL, RESOURCES, READ_RESOURCE].contains(&tool)
+    tool.starts_with(mcp::PREFIX)
+        || web::TOOLS.contains(&tool)
+        || [CALL, RESOURCES, READ_RESOURCE].contains(&tool)
 }
 
 /// Bytes of text the model reads of `blocks`, JSON as the provider sends it.
@@ -145,7 +147,10 @@ mod tests {
         let big = ToolOutput::json(serde_json::json!({ "items": items }));
         let cut = limit.cut("mcp__x__y", &big).unwrap();
         let text = cut.as_text().unwrap();
-        assert!(text.starts_with("{\n  \"items\": [\n    \"item 0\",\n"), "{text}");
+        assert!(
+            text.starts_with("{\n  \"items\": [\n    \"item 0\",\n"),
+            "{text}"
+        );
         assert!(text.contains("Cut to 29 of"), "{text}");
         assert!(text.contains("from offset 4 for the rest"), "{text}");
         let kept = std::fs::read_to_string(dir.join("mcp__x__y-1.txt")).unwrap();

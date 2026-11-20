@@ -80,8 +80,16 @@ impl Deferred {
             .iter()
             .map(|server| {
                 let names: Vec<&str> = server.tools.iter().map(|tool| mcp_tool(tool)).collect();
-                let summary = server.summary.as_deref().map(|summary| format!(" {summary}")).unwrap_or_default();
-                format!("\n- `{}`:{summary} Tools: {}.", server.name, names.join(", "))
+                let summary = server
+                    .summary
+                    .as_deref()
+                    .map(|summary| format!(" {summary}"))
+                    .unwrap_or_default();
+                format!(
+                    "\n- `{}`:{summary} Tools: {}.",
+                    server.name,
+                    names.join(", ")
+                )
             })
             .collect();
         Some(format!(
@@ -103,17 +111,26 @@ impl Deferred {
                 let description = tool.tool.definition().description.to_lowercase();
                 let score: usize = words
                     .iter()
-                    .map(|word| match (name.contains(word.as_str()), description.contains(word.as_str())) {
-                        (true, _) => 3,
-                        (false, true) => 1,
-                        _ => 0,
+                    .map(|word| {
+                        match (
+                            name.contains(word.as_str()),
+                            description.contains(word.as_str()),
+                        ) {
+                            (true, _) => 3,
+                            (false, true) => 1,
+                            _ => 0,
+                        }
                     })
                     .sum();
                 (score > 0 || words.is_empty()).then_some((score, server, tool))
             })
             .collect();
         scored.sort_by_key(|(score, ..)| std::cmp::Reverse(*score));
-        scored.into_iter().take(MAX_FOUND).map(|(_, server, tool)| (server, tool)).collect()
+        scored
+            .into_iter()
+            .take(MAX_FOUND)
+            .map(|(_, server, tool)| (server, tool))
+            .collect()
     }
 
     fn find(&self, server: &str, tool: &str) -> Option<&Tool> {
@@ -139,7 +156,9 @@ fn name(name: &str) -> ToolName {
 }
 
 fn reading() -> ToolAnnotations {
-    ToolAnnotations::default().with_read_only(true).with_open_world(false)
+    ToolAnnotations::default()
+        .with_read_only(true)
+        .with_open_world(false)
 }
 
 fn invalid(error: impl Into<String>) -> ToolExecutionError {
@@ -155,7 +174,11 @@ pub fn tools(deferred: &Arc<Deferred>) -> Vec<DynamicTool> {
     if deferred.is_empty() {
         return Vec::new();
     }
-    let servers: Vec<&str> = deferred.servers.iter().map(|server| server.name.as_str()).collect();
+    let servers: Vec<&str> = deferred
+        .servers
+        .iter()
+        .map(|server| server.name.as_str())
+        .collect();
     let search = {
         let deferred = deferred.clone();
         DynamicTool::new(
@@ -214,13 +237,16 @@ pub fn tools(deferred: &Arc<Deferred>) -> Vec<DynamicTool> {
             move |context, args| {
                 let deferred = deferred.clone();
                 Box::pin(async move {
-                    let (Some(server), Some(tool)) = (text(&args, "server"), text(&args, "tool")) else {
+                    let (Some(server), Some(tool)) = (text(&args, "server"), text(&args, "tool"))
+                    else {
                         return Err(invalid("`server` and `tool` are required"));
                     };
                     let Some(found) = deferred.find(&server, &tool) else {
                         return Err(ToolExecutionError::new(
                             ToolErrorKind::NotFound,
-                            format!("`{server}` has no deferred tool `{tool}`; `{SEARCH}` finds them"),
+                            format!(
+                                "`{server}` has no deferred tool `{tool}`; `{SEARCH}` finds them"
+                            ),
                         ));
                     };
                     let arguments = args.get("arguments").cloned().unwrap_or_else(|| json!({}));
@@ -290,21 +316,27 @@ pub fn resource_tools(servers: &Arc<[(String, McpConnection)]>) -> Vec<DynamicTo
             move |args| {
                 let servers = servers.clone();
                 Box::pin(async move {
-                    let (Some(server), Some(uri)) = (text(&args, "server"), text(&args, "uri")) else {
+                    let (Some(server), Some(uri)) = (text(&args, "server"), text(&args, "uri"))
+                    else {
                         return Err(invalid("`server` and `uri` are required"));
                     };
-                    let Some((_, connection)) = servers.iter().find(|(name, _)| *name == server) else {
+                    let Some((_, connection)) = servers.iter().find(|(name, _)| *name == server)
+                    else {
                         return Err(invalid(format!("no server `{server}` with resources")));
                     };
-                    let contents = connection
-                        .read_resource(uri)
-                        .await
-                        .map_err(|error| ToolExecutionError::new(ToolErrorKind::Other, error.to_string()))?;
+                    let contents = connection.read_resource(uri).await.map_err(|error| {
+                        ToolExecutionError::new(ToolErrorKind::Other, error.to_string())
+                    })?;
                     let texts: Vec<String> = contents
                         .into_iter()
                         .map(|content| match content {
                             ResourceContents::TextResourceContents { text, .. } => text,
-                            ResourceContents::BlobResourceContents { uri, mime_type, blob, .. } => format!(
+                            ResourceContents::BlobResourceContents {
+                                uri,
+                                mime_type,
+                                blob,
+                                ..
+                            } => format!(
                                 "[{uri}: {} bytes of {}, not text]",
                                 blob.len() / 4 * 3,
                                 mime_type.as_deref().unwrap_or("binary data")
@@ -329,9 +361,12 @@ mod tests {
     fn tool(server: &str, tool: &str, description: &str) -> Tool {
         let name = model_name(server, tool);
         Tool {
-            tool: DynamicTool::new(ToolName::new(name.clone()).unwrap(), description, json!({ "type": "object" }), |args| {
-                Box::pin(async move { Ok(ToolOutput::json(args)) })
-            }),
+            tool: DynamicTool::new(
+                ToolName::new(name.clone()).unwrap(),
+                description,
+                json!({ "type": "object" }),
+                |args| Box::pin(async move { Ok(ToolOutput::json(args)) }),
+            ),
             origin: Origin::Mcp {
                 server: server.into(),
                 tool: tool.into(),
@@ -355,9 +390,18 @@ mod tests {
     async fn search_finds_tools_and_call_runs_them() {
         let deferred = deferred();
         let preamble = deferred.preamble().unwrap();
-        assert!(preamble.contains("`web`: Scrapes pages. Tools: scrape, crawl."), "{preamble}");
+        assert!(
+            preamble.contains("`web`: Scrapes pages. Tools: scrape, crawl."),
+            "{preamble}"
+        );
         let found = deferred.search("page markdown", None);
-        assert_eq!(found.iter().map(|(_, tool)| mcp_tool(tool)).collect::<Vec<_>>(), ["scrape", "crawl"]);
+        assert_eq!(
+            found
+                .iter()
+                .map(|(_, tool)| mcp_tool(tool))
+                .collect::<Vec<_>>(),
+            ["scrape", "crawl"]
+        );
         assert!(deferred.search("nothing", None).is_empty());
         assert!(deferred.search("", Some("other")).is_empty());
 
@@ -369,7 +413,11 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(output.as_json(), Some(&json!({ "url": "u" })));
-        assert!(call.run(json!({ "server": "web", "tool": "nope", "arguments": {} })).await.is_err());
+        assert!(
+            call.run(json!({ "server": "web", "tool": "nope", "arguments": {} }))
+                .await
+                .is_err()
+        );
     }
 
     #[test]

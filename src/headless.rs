@@ -44,7 +44,12 @@ impl Reply {
 
 /// Answers `request` in `thread`, printing as `options` say. Fails when the
 /// answer did.
-pub async fn run(backend: &Backend, thread: &SessionId, request: RunRequest, options: Options) -> Result<()> {
+pub async fn run(
+    backend: &Backend,
+    thread: &SessionId,
+    request: RunRequest,
+    options: Options,
+) -> Result<()> {
     let mut events = backend.start(thread, request).await?;
     let mut reply = Reply::default();
     let mut follower = None;
@@ -68,7 +73,9 @@ pub async fn run(backend: &Backend, thread: &SessionId, request: RunRequest, opt
         }
         reply.take(&event);
         match event {
-            Event::Began { follower: began, .. } => follower = began,
+            Event::Began {
+                follower: began, ..
+            } => follower = began,
             Event::Approval { id, ask } => {
                 let decision = decide(options.yes);
                 if !options.json && decision == Decision::Decline {
@@ -77,7 +84,9 @@ pub async fn run(backend: &Backend, thread: &SessionId, request: RunRequest, opt
                 backend.answer(thread, id, decision).await?;
             }
             Event::ClientCall { id, call } => {
-                if let Some(call) = follower.and_then(|follower| backend.lend(thread, follower, id, call)) {
+                if let Some(call) =
+                    follower.and_then(|follower| backend.lend(thread, follower, id, call))
+                {
                     lent.spawn(call);
                 }
             }
@@ -129,14 +138,18 @@ mod tests {
     fn the_final_reply_is_the_text_after_the_last_tool_call() {
         let mut reply = Reply::default();
         for event in [
-            Event::Text { text: "Let me look.".into() },
+            Event::Text {
+                text: "Let me look.".into(),
+            },
             Event::ToolCall {
                 name: "read".into(),
                 args: "{}".into(),
                 machine: None,
                 call: None,
             },
-            Event::Text { text: "It is ".into() },
+            Event::Text {
+                text: "It is ".into(),
+            },
             Event::Text { text: "42.".into() },
         ] {
             reply.take(&event);

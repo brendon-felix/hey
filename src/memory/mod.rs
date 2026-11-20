@@ -111,8 +111,9 @@ impl Memory {
         match fs::read_to_string(&self.file) {
             Ok(text) => Ok(parse(&text)),
             Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(Vec::new()),
-            Err(error) => Err(error)
-                .with_context(|| format!("cannot read memories {}", self.file.display())),
+            Err(error) => {
+                Err(error).with_context(|| format!("cannot read memories {}", self.file.display()))
+            }
         }
     }
 
@@ -221,7 +222,10 @@ pub fn preamble(memories: &[String]) -> Option<String> {
     if memories.is_empty() {
         return None;
     }
-    let list: String = memories.iter().map(|memory| format!("\n- {memory}")).collect();
+    let list: String = memories
+        .iter()
+        .map(|memory| format!("\n- {memory}"))
+        .collect();
     Some(format!(
         "\nMemories from earlier conversations, which may be outdated; what the user says now \
          takes precedence:{list}"
@@ -322,7 +326,9 @@ fn numbered(shown: &[String], arguments: &serde_json::Value) -> Result<String, S
 
 /// Saves `memory` unless it is empty or already saved, ignoring case.
 fn add(memories: &mut Vec<String>, memory: String) -> bool {
-    let known = memories.iter().any(|saved| saved.eq_ignore_ascii_case(&memory));
+    let known = memories
+        .iter()
+        .any(|saved| saved.eq_ignore_ascii_case(&memory));
     let added = !memory.is_empty() && !known;
     if added {
         memories.push(memory);
@@ -467,12 +473,25 @@ mod tests {
     #[test]
     fn rewording_keeps_one_memory_saying_the_new_words() {
         let mut memories = strings(&["Uses vim.", "Lives in Lisbon.", "Likes tea."]);
-        assert!(reword(&mut memories, "Lives in Lisbon.", "Lives in Berlin.".into()));
+        assert!(reword(
+            &mut memories,
+            "Lives in Lisbon.",
+            "Lives in Berlin.".into()
+        ));
         assert_eq!(memories, ["Uses vim.", "Lives in Berlin.", "Likes tea."]);
-        assert!(reword(&mut memories, "Uses vim.", "Uses Vim.".into()), "case alone");
-        assert!(reword(&mut memories, "Likes tea.", "uses vim.".into()), "merges");
+        assert!(
+            reword(&mut memories, "Uses vim.", "Uses Vim.".into()),
+            "case alone"
+        );
+        assert!(
+            reword(&mut memories, "Likes tea.", "uses vim.".into()),
+            "merges"
+        );
         assert_eq!(memories, ["Uses Vim.", "Lives in Berlin."]);
-        assert!(reword(&mut memories, "Gone.", "Likes coffee.".into()), "saves anew");
+        assert!(
+            reword(&mut memories, "Gone.", "Likes coffee.".into()),
+            "saves anew"
+        );
         assert!(!reword(&mut memories, "Gone.", "likes coffee.".into()));
         assert_eq!(memories, ["Uses Vim.", "Lives in Berlin.", "Likes coffee."]);
     }

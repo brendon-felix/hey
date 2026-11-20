@@ -19,18 +19,19 @@ use rig_tools::workspace::{Local, Workspace};
 use rig_tools::{Delete, Edit, List, Live, Move, Read, Search, Seen, Shell, Write};
 
 use crate::agent;
-use crate::lenient;
 use crate::config::Config;
+use crate::lenient;
 use crate::mcp::{self, deferred, deferred::Deferred};
-use rig_rmcp::McpConnection;
 use crate::permissions::Origin;
 use crate::processes::{ProcessKill, ProcessList, ProcessOutput, SpawnProcess};
 use crate::protocol::ServerReport;
 use crate::render;
+use crate::table::Table;
 use crate::web::Web;
+use rig_rmcp::McpConnection;
 
 /// The built-in tools every machine has, by name.
-pub const BUILTIN: [&str; 12] = [
+pub const BUILTIN: [&str; 13] = [
     Read::NAME,
     List::NAME,
     Search::NAME,
@@ -43,13 +44,17 @@ pub const BUILTIN: [&str; 12] = [
     ProcessOutput::NAME,
     ProcessList::NAME,
     ProcessKill::NAME,
+    Table::NAME,
 ];
 
 /// This machine's name: `HEY_MACHINE`, else its host name without the
 /// domain, as `hostname -s` prints it. Rules in a config shared between
 /// machines are kept apart by it.
 pub fn machine_name() -> String {
-    if let Some(name) = std::env::var("HEY_MACHINE").ok().filter(|name| !name.is_empty()) {
+    if let Some(name) = std::env::var("HEY_MACHINE")
+        .ok()
+        .filter(|name| !name.is_empty())
+    {
         return name;
     }
     let host = gethostname::gethostname().to_string_lossy().into_owned();
@@ -147,7 +152,11 @@ impl Toolbox {
         let stand_ins = [deferred::SEARCH, deferred::CALL]
             .into_iter()
             .filter(|_| !self.deferred.is_empty())
-            .chain([deferred::RESOURCES, deferred::READ_RESOURCE].into_iter().filter(|_| !self.resources.is_empty()))
+            .chain(
+                [deferred::RESOURCES, deferred::READ_RESOURCE]
+                    .into_iter()
+                    .filter(|_| !self.resources.is_empty()),
+            )
             .map(|name| (name, &Origin::Builtin));
         let mcp = self.mcp.iter().chain(self.deferred.tools());
         let mcp = mcp.map(|tool| (tool.name.as_str(), &tool.origin));
@@ -226,12 +235,20 @@ impl Toolbox {
             dynamic(ProcessOutput),
             dynamic(ProcessList),
             dynamic(ProcessKill),
+            dynamic(Table),
             dynamic(self.web.fetch()),
         ];
         let search = self.web.search().map(dynamic);
         let mcp = self.mcp.iter().map(|tool| tool.tool.clone());
-        let stand_ins = deferred::tools(&self.deferred).into_iter().chain(deferred::resource_tools(&self.resources));
-        builtin.into_iter().chain(search).chain(mcp).chain(stand_ins).collect()
+        let stand_ins = deferred::tools(&self.deferred)
+            .into_iter()
+            .chain(deferred::resource_tools(&self.resources));
+        builtin
+            .into_iter()
+            .chain(search)
+            .chain(mcp)
+            .chain(stand_ins)
+            .collect()
     }
 
     /// What each tool is, as an agent elsewhere is told of it.
@@ -279,7 +296,10 @@ async fn connect_mcp(config: &Config) -> McpConnected {
         .filter_map(|server| server.connected.as_ref().ok())
         .map(|server| server.tools.len())
         .sum();
-    let defer_all = config.tools.defer_mcp_above.is_some_and(|above| total > above);
+    let defer_all = config
+        .tools
+        .defer_mcp_above
+        .is_some_and(|above| total > above);
     for server in servers {
         let outcome = server.connected.map(|offered| {
             let count = offered.tools.len();
@@ -294,10 +314,14 @@ async fn connect_mcp(config: &Config) -> McpConnected {
                 connected.tools.extend(offered.tools);
             }
             if offered.resources {
-                connected.resources.push((server.name.clone(), offered.connection.clone()));
+                connected
+                    .resources
+                    .push((server.name.clone(), offered.connection.clone()));
             }
             connected.prompts.extend(offered.prompts);
-            connected.connections.push((server.name.clone(), offered.connection));
+            connected
+                .connections
+                .push((server.name.clone(), offered.connection));
             (count, deferred)
         });
         if let Err(error) = &outcome {
@@ -309,7 +333,9 @@ async fn connect_mcp(config: &Config) -> McpConnected {
         connected.reports.push(ServerReport {
             name: server.name,
             deferred: outcome.as_ref().is_ok_and(|(_, deferred)| *deferred),
-            tools: outcome.map(|(count, _)| count).map_err(|error| format!("{error:#}")),
+            tools: outcome
+                .map(|(count, _)| count)
+                .map_err(|error| format!("{error:#}")),
         });
     }
     connected

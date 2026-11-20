@@ -44,9 +44,9 @@ pub fn configured(source: &TokenSource) -> Result<Option<String>> {
         TokenSource::Value(token) => given(token, "`token`").map(Some),
         TokenSource::File(path) => {
             let path = config::expand_path(path)?;
-            read(&path)?
-                .map(Some)
-                .with_context(|| format!("no token in {}; put the host's token there", path.display()))
+            read(&path)?.map(Some).with_context(|| {
+                format!("no token in {}; put the host's token there", path.display())
+            })
         }
         TokenSource::Kept => Ok(None),
     }
@@ -92,7 +92,13 @@ fn keychain(remote: &str) -> keyring::Result<keyring::Entry> {
 fn kept_file(remote: &str) -> Result<PathBuf> {
     let name: String = remote
         .chars()
-        .map(|c| if c.is_ascii_alphanumeric() || c == '-' { c } else { '_' })
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' {
+                c
+            } else {
+                '_'
+            }
+        })
         .collect();
     Ok(config::data_dir()?.join("tokens").join(name))
 }
@@ -156,7 +162,10 @@ mod tests {
         }
 
         fs::write(&path, "  \n").unwrap();
-        assert!(host(&source).is_err(), "an empty token is a mistake, not a prompt to replace it");
+        assert!(
+            host(&source).is_err(),
+            "an empty token is a mistake, not a prompt to replace it"
+        );
         fs::remove_dir_all(dir).unwrap();
     }
 }

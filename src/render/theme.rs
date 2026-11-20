@@ -49,7 +49,10 @@ pub fn themes() -> Vec<String> {
 }
 
 pub fn current() -> Arc<Theme> {
-    CURRENT.read().unwrap_or_else(PoisonError::into_inner).clone()
+    CURRENT
+        .read()
+        .unwrap_or_else(PoisonError::into_inner)
+        .clone()
 }
 
 pub fn set(theme: Theme) {

@@ -13,7 +13,9 @@ use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow};
 use regex::Regex;
-use rig_agent::agent::{AgentHook, DispatchAction, DispatchEvent, HookContext, OutcomeAction, OutcomeEvent};
+use rig_agent::agent::{
+    AgentHook, DispatchAction, DispatchEvent, HookContext, OutcomeAction, OutcomeEvent,
+};
 use rig_core::effect::EffectId;
 use rig_core::message::ToolResultContent;
 use rig_core::tool::ToolOutput;
@@ -95,7 +97,9 @@ impl Hooks {
     }
 
     pub fn has(&self, event: HookEvent) -> bool {
-        self.0.get(&event).is_some_and(|entries| !entries.is_empty())
+        self.0
+            .get(&event)
+            .is_some_and(|entries| !entries.is_empty())
     }
 }
 
@@ -114,7 +118,9 @@ impl Verdict {
     /// Tells `run`'s clients why any hook failed.
     pub fn tell(&self, run: &Run) {
         for failure in &self.failures {
-            run.emit(Event::Notice { text: failure.clone() });
+            run.emit(Event::Notice {
+                text: failure.clone(),
+            });
         }
     }
 
@@ -165,8 +171,15 @@ impl Scope {
                     verdict.context.extend(context);
                 }
                 Err(error) => {
-                    tracing::warn!(?event, command = entry.command, error = format!("{error:#}"), "hook failed");
-                    verdict.failures.push(format!("`{event:?}` hook failed: {error:#}"));
+                    tracing::warn!(
+                        ?event,
+                        command = entry.command,
+                        error = format!("{error:#}"),
+                        "hook failed"
+                    );
+                    verdict
+                        .failures
+                        .push(format!("`{event:?}` hook failed: {error:#}"));
                 }
             }
         }
@@ -209,18 +222,33 @@ async fn execute(entry: &Entry, payload: &str) -> Result<Reply> {
     }
     let output = tokio::time::timeout(entry.timeout, child.wait_with_output())
         .await
-        .map_err(|_| anyhow!("`{}` timed out after {}s", entry.command, entry.timeout.as_secs()))??;
+        .map_err(|_| {
+            anyhow!(
+                "`{}` timed out after {}s",
+                entry.command,
+                entry.timeout.as_secs()
+            )
+        })??;
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
     match output.status.code() {
         Some(0) => Ok(read(stdout.trim())),
         Some(2) => Ok(Reply {
-            block: Some(Some(stderr.trim()).filter(|reason| !reason.is_empty()).unwrap_or(BLOCKED).to_owned()),
+            block: Some(
+                Some(stderr.trim())
+                    .filter(|reason| !reason.is_empty())
+                    .unwrap_or(BLOCKED)
+                    .to_owned(),
+            ),
             context: None,
         }),
         code => {
             let code = code.map_or("a signal".to_owned(), |code| code.to_string());
-            Err(anyhow!("`{}` exited with {code}: {}", entry.command, stderr.trim()))
+            Err(anyhow!(
+                "`{}` exited with {code}: {}",
+                entry.command,
+                stderr.trim()
+            ))
         }
     }
 }
@@ -233,12 +261,17 @@ fn read(stdout: &str) -> Reply {
         .then(|| serde_json::from_str::<Said>(stdout).ok())
         .flatten();
     let Some(said) = said else {
-        return Reply { block: None, context: None };
+        return Reply {
+            block: None,
+            context: None,
+        };
     };
     let blocks = said.decision.as_deref() == Some("block");
     Reply {
         block: blocks.then(|| said.reason.unwrap_or_else(|| BLOCKED.to_owned())),
-        context: said.additional_context.filter(|context| !context.trim().is_empty()),
+        context: said
+            .additional_context
+            .filter(|context| !context.trim().is_empty()),
     }
 }
 
@@ -264,15 +297,24 @@ impl ToolHooks {
 
 impl AgentHook for ToolHooks {
     async fn on_dispatch(&self, _ctx: &HookContext, event: DispatchEvent<'_>) -> DispatchAction {
-        let Some(name) = event.tool_name().filter(|_| self.scope.has(HookEvent::PreToolUse)) else {
+        let Some(name) = event
+            .tool_name()
+            .filter(|_| self.scope.has(HookEvent::PreToolUse))
+        else {
             return DispatchAction::proceed();
         };
         let fields = json!({ "tool_name": name, "tool_input": args(event.tool_args()) });
-        let verdict = self.scope.fire(HookEvent::PreToolUse, Some(name), fields).await;
+        let verdict = self
+            .scope
+            .fire(HookEvent::PreToolUse, Some(name), fields)
+            .await;
         verdict.tell(&self.run);
         match verdict.block {
             Some(reason) => {
-                self.blocked.lock().unwrap_or_else(PoisonError::into_inner).insert(event.id);
+                self.blocked
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .insert(event.id);
                 self.run.emit(Event::Notice {
                     text: format!("a hook blocked `{name}`: {reason}"),
                 });
@@ -286,25 +328,38 @@ impl AgentHook for ToolHooks {
         let (Some(name), Some(result)) = (event.tool_name(), event.tool_result()) else {
             return OutcomeAction::proceed();
         };
-        let blocked = self.blocked.lock().unwrap_or_else(PoisonError::into_inner).remove(&event.id);
+        let blocked = self
+            .blocked
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .remove(&event.id);
         if blocked || !self.scope.has(HookEvent::PostToolUse) {
             return OutcomeAction::proceed();
         }
         let blocks = result.output().as_content();
-        let response: Vec<&str> = blocks.iter().filter_map(ToolResultContent::as_text).collect();
+        let response: Vec<&str> = blocks
+            .iter()
+            .filter_map(ToolResultContent::as_text)
+            .collect();
         let fields = json!({
             "tool_name": name,
             "tool_input": args(event.tool_args()),
             "tool_response": response.join("\n"),
             "is_error": result.error().is_some(),
         });
-        let verdict = self.scope.fire(HookEvent::PostToolUse, Some(name), fields).await;
+        let verdict = self
+            .scope
+            .fire(HookEvent::PostToolUse, Some(name), fields)
+            .await;
         verdict.tell(&self.run);
         let added: Vec<String> = verdict.block.into_iter().chain(verdict.context).collect();
         if added.is_empty() {
             return OutcomeAction::proceed();
         }
-        let content = blocks.iter().cloned().chain(added.into_iter().map(ToolResultContent::text));
+        let content = blocks
+            .iter()
+            .cloned()
+            .chain(added.into_iter().map(ToolResultContent::text));
         match ToolOutput::content(content.collect()) {
             Ok(output) => OutcomeAction::rewrite_tool_output(&event, output),
             Err(_) => OutcomeAction::proceed(),
@@ -351,20 +406,43 @@ mod tests {
             timeout_secs = 1
             "#,
         );
-        let shell = scope.fire(HookEvent::PreToolUse, Some("shell"), json!({ "tool_name": "shell" })).await;
+        let shell = scope
+            .fire(
+                HookEvent::PreToolUse,
+                Some("shell"),
+                json!({ "tool_name": "shell" }),
+            )
+            .await;
         assert_eq!(shell.block.as_deref(), Some("no shells"));
         assert_eq!(shell.context, ["seen"]);
-        let read = scope.fire(HookEvent::PreToolUse, Some("read"), json!({ "tool_name": "read" })).await;
+        let read = scope
+            .fire(
+                HookEvent::PreToolUse,
+                Some("read"),
+                json!({ "tool_name": "read" }),
+            )
+            .await;
         assert_eq!(read.block, None, "the matcher matches whole names");
 
         let stop = scope.fire(HookEvent::Stop, None, json!({})).await;
         assert_eq!(stop.block.as_deref(), Some("tests fail"));
         let compact = scope.fire(HookEvent::PreCompact, None, json!({})).await;
         assert_eq!(compact.block, None);
-        assert!(compact.failures[0].contains("exited with 3"), "{:?}", compact.failures);
+        assert!(
+            compact.failures[0].contains("exited with 3"),
+            "{:?}",
+            compact.failures
+        );
         let start = scope.fire(HookEvent::SessionStart, None, json!({})).await;
-        assert!(start.failures[0].contains("timed out"), "{:?}", start.failures);
-        assert_eq!(scope.fire(HookEvent::SubagentStop, None, json!({})).await, Verdict::default());
+        assert!(
+            start.failures[0].contains("timed out"),
+            "{:?}",
+            start.failures
+        );
+        assert_eq!(
+            scope.fire(HookEvent::SubagentStop, None, json!({})).await,
+            Verdict::default()
+        );
     }
 
     #[tokio::test]
@@ -375,7 +453,9 @@ mod tests {
             command = "p=$(cat); echo \"$p\" | grep -q '\"event\":\"UserPromptSubmit\"' && echo \"$p\" | grep -q '\"conversation_id\":\"c1\"' && echo '{\"additional_context\": \"named\"}'"
             "#,
         );
-        let verdict = scope.fire(HookEvent::UserPromptSubmit, None, json!({ "prompt": "hi" })).await;
+        let verdict = scope
+            .fire(HookEvent::UserPromptSubmit, None, json!({ "prompt": "hi" }))
+            .await;
         assert_eq!(verdict.context, ["named"], "{verdict:?}");
     }
 
@@ -401,7 +481,9 @@ mod tests {
         ]);
         let run = Arc::new(Run::new("q".into(), "openai/mock".into(), 0, || {}));
         AgentBuilder::new(model.clone())
-            .tool(crate::skills::Load { skills: Arc::from([]) })
+            .tool(crate::skills::Load {
+                skills: Arc::from([]),
+            })
             .add_hook(ToolHooks::new(scope, run))
             .default_max_turns(4)
             .build()
@@ -410,13 +492,21 @@ mod tests {
             .await
             .unwrap();
         let sent = format!("{:?}", model.requests().last().unwrap());
-        assert!(sent.contains("A hook blocked this call: not that one"), "{sent}");
-        assert_eq!(sent.matches("checked by a hook").count(), 1, "only the call that ran: {sent}");
+        assert!(
+            sent.contains("A hook blocked this call: not that one"),
+            "{sent}"
+        );
+        assert_eq!(
+            sent.matches("checked by a hook").count(),
+            1,
+            "only the call that ran: {sent}"
+        );
     }
 
     #[test]
     fn a_bad_matcher_is_reported() {
-        let config: Config = toml::from_str("[[PreToolUse]]\ncommand = \"true\"\nmatcher = \"(\"").unwrap();
+        let config: Config =
+            toml::from_str("[[PreToolUse]]\ncommand = \"true\"\nmatcher = \"(\"").unwrap();
         assert!(Hooks::new(&config).is_err());
         assert!(toml::from_str::<Config>("[[OnBoot]]\ncommand = \"true\"").is_err());
     }

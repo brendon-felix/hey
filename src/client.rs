@@ -388,6 +388,28 @@ impl Client {
         .await
     }
 
+    /// What the host holds of the synced path `name` from this machine.
+    pub async fn sync_manifest(&self, name: &str) -> Result<crate::sync::Manifest> {
+        self.json(self.get(&format!("v1/sync/{name}"))?).await
+    }
+
+    pub async fn sync_put(&self, name: &str, path: &str, bytes: Vec<u8>) -> Result<()> {
+        let request = self
+            .http
+            .put(self.url(&format!("v1/sync/{name}/file"))?)
+            .query(&[("path", path)])
+            .body(bytes);
+        self.ok(request).await.map(drop)
+    }
+
+    pub async fn sync_remove(&self, name: &str, path: &str) -> Result<()> {
+        let request = self
+            .http
+            .delete(self.url(&format!("v1/sync/{name}/file"))?)
+            .query(&[("path", path)]);
+        self.ok(request).await.map(drop)
+    }
+
     pub async fn memories(&self) -> Result<Vec<String>> {
         self.json(self.get("v1/memories")?).await
     }
@@ -583,8 +605,10 @@ impl Resumable {
                                 .broke(anyhow!("the host ended the stream before the run ended"));
                         }
                         Err(_) => {
-                            return self
-                                .broke(anyhow!("the host said nothing for {}s", SILENCE.as_secs()));
+                            return self.broke(anyhow!(
+                                "the host said nothing for {}s",
+                                SILENCE.as_secs()
+                            ));
                         }
                     };
                     let logged = match serde_json::from_str::<Logged>(&line) {

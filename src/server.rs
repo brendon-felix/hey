@@ -37,6 +37,15 @@ pub async fn serve(host: Arc<Host>, config: &config::Server) -> Result<()> {
         .route("/v1/threads", get(threads))
         .route("/v1/activity", get(activity))
         .route("/v1/shared", get(shared))
+        .route("/v1/sync/{name}", get(sync_manifest))
+        .route(
+            "/v1/sync/{name}/file",
+            put(sync_put)
+                .delete(sync_remove)
+                .layer(axum::extract::DefaultBodyLimit::max(
+                    crate::sync::MAX_FILE as usize + 1024,
+                )),
+        )
         .route("/v1/skills", get(skills))
         .route("/v1/agents", get(agents))
         .route("/v1/prompts", get(prompts))
@@ -153,6 +162,68 @@ async fn shared(State(host): State<Arc<Host>>) -> impl IntoResponse {
     Json(host.shared())
 }
 
+/// The machine a sync request is from, which its copies are kept under.
+fn syncing(headers: &HeaderMap) -> Reply<String> {
+    machine(headers).ok_or_else(|| {
+        Failure(
+            StatusCode::BAD_REQUEST,
+            format!("`{MACHINE_HEADER}` is required to sync"),
+        )
+    })
+}
+
+fn refused(error: anyhow::Error) -> Failure {
+    Failure(StatusCode::BAD_REQUEST, format!("{error:#}"))
+}
+
+async fn sync_manifest(
+    State(host): State<Arc<Host>>,
+    Path(name): Path<String>,
+    headers: HeaderMap,
+) -> Reply<impl IntoResponse> {
+    let machine = syncing(&headers)?;
+    let store = host.sync().clone();
+    let manifest = tokio::task::spawn_blocking(move || store.manifest(&machine, &name))
+        .await
+        .map_err(|error| anyhow::Error::from(error))?
+        .map_err(refused)?;
+    Ok(Json(manifest))
+}
+
+#[derive(Deserialize)]
+struct SyncPath {
+    path: String,
+}
+
+async fn sync_put(
+    State(host): State<Arc<Host>>,
+    Path(name): Path<String>,
+    Query(SyncPath { path }): Query<SyncPath>,
+    headers: HeaderMap,
+    body: axum::body::Bytes,
+) -> Reply<StatusCode> {
+    let machine = syncing(&headers)?;
+    host.sync()
+        .put(&machine, &name, &path, &body)
+        .await
+        .map_err(refused)?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+async fn sync_remove(
+    State(host): State<Arc<Host>>,
+    Path(name): Path<String>,
+    Query(SyncPath { path }): Query<SyncPath>,
+    headers: HeaderMap,
+) -> Reply<StatusCode> {
+    let machine = syncing(&headers)?;
+    host.sync()
+        .remove(&machine, &name, &path)
+        .await
+        .map_err(refused)?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
 async fn skills(State(host): State<Arc<Host>>) -> impl IntoResponse {
     Json(host.skills())
 }
@@ -201,7 +272,12 @@ async fn follow(
 ) -> Reply<Response> {
     let events = host
         .follow(&id, RunId(run), after, machine(&headers))
-        .ok_or_else(|| Failure(StatusCode::NOT_FOUND, "the run is no longer on the host".into()))?;
+        .ok_or_else(|| {
+            Failure(
+                StatusCode::NOT_FOUND,
+                "the run is no longer on the host".into(),
+            )
+        })?;
     Ok(ndjson_response(ndjson(events)))
 }
 

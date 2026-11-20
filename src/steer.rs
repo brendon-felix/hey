@@ -118,8 +118,15 @@ impl AgentHook for Delivery {
         if waiting.is_empty() {
             return OutcomeAction::proceed();
         }
-        let added = waiting.into_iter().flat_map(|steering| steering.texts(|prompt: String| block(&prompt)));
-        let content = result.output().as_content().iter().cloned().chain(added.map(ToolResultContent::text));
+        let added = waiting
+            .into_iter()
+            .flat_map(|steering| steering.texts(|prompt: String| block(&prompt)));
+        let content = result
+            .output()
+            .as_content()
+            .iter()
+            .cloned()
+            .chain(added.map(ToolResultContent::text));
         match ToolOutput::content(content.collect()) {
             Ok(output) => OutcomeAction::rewrite_tool_output(&event, output),
             Err(_) => OutcomeAction::proceed(),
@@ -152,14 +159,17 @@ pub fn split(mut result: ToolResult) -> (ToolResult, Vec<String>) {
 
 /// The messages `result` carried to the model, as the user typed them.
 pub fn prompts(result: &ToolResult) -> impl Iterator<Item = &str> {
-    result.content.iter().filter_map(ToolResultContent::as_text).filter_map(prompt)
+    result
+        .content
+        .iter()
+        .filter_map(ToolResultContent::as_text)
+        .filter_map(prompt)
 }
 
 /// The message `text` carries, when it is one.
 fn prompt(text: &str) -> Option<&str> {
     text.strip_prefix(OPEN)?.strip_suffix(CLOSE)
 }
-
 
 #[cfg(test)]
 mod tests {
@@ -179,10 +189,13 @@ mod tests {
         let rig_core::message::Message::User { content } = context.message("use @notes.md") else {
             unreachable!()
         };
-        let context = content.into_iter().nth(1).and_then(|content| match content {
-            rig_core::message::UserContent::Text(text) => Some(text.text),
-            _ => None,
-        });
+        let context = content
+            .into_iter()
+            .nth(1)
+            .and_then(|content| match content {
+                rig_core::message::UserContent::Text(text) => Some(text.text),
+                _ => None,
+            });
         let result = ToolResult {
             call: CallId::from_wire("1"),
             name: ToolName::new("read").unwrap(),
@@ -196,7 +209,11 @@ mod tests {
         };
         let (given, prompts) = split(result);
         assert_eq!(prompts, ["use @notes.md", "and be quick"]);
-        let given: Vec<_> = given.content.iter().filter_map(ToolResultContent::as_text).collect();
+        let given: Vec<_> = given
+            .content
+            .iter()
+            .filter_map(ToolResultContent::as_text)
+            .collect();
         assert_eq!(given, ["file contents"]);
     }
 }

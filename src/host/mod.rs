@@ -71,7 +71,8 @@ const RESUMABLE: Duration = Duration::from_secs(300);
 
 /// What the model is asked once what it said before its connection failed
 /// is saved.
-const CONTINUE: &str = "The connection to you failed before you finished. Continue where you left off.";
+const CONTINUE: &str =
+    "The connection to you failed before you finished. Continue where you left off.";
 
 /// Runs the agent and keeps its threads: in-process for a local `hey`, or
 /// behind `hey --serve` for clients on other machines. Runs belong to the
@@ -92,6 +93,8 @@ pub struct Host {
     sessions: Sessions,
     /// The repository `@shared:` mentions attach from.
     shared: PathBuf,
+    /// What clients synced, for agents to go on with while they are away.
+    sync: crate::sync::Store,
     memory: Option<Memory>,
     /// The last time memory failed, until a client is told.
     memory_failure: Mutex<Option<String>>,
@@ -234,6 +237,7 @@ impl Host {
             providers: config.providers.clone(),
             sessions,
             shared: config.shared.dir()?,
+            sync: crate::sync::Store::new(config.sync.dir()?),
             memory: Memory::open(&config.memory, &config.providers)?,
             memory_failure: Mutex::default(),
             compaction: config.compaction.clone(),
@@ -422,11 +426,21 @@ impl Host {
 
     /// The events of run `run` of thread `id` after its first `after`, for
     /// a client that lost its stream of them; `None` once the run is gone.
-    pub fn follow(&self, id: &SessionId, run: RunId, after: usize, machine: Option<String>) -> Option<Events> {
+    pub fn follow(
+        &self,
+        id: &SessionId,
+        run: RunId,
+        after: usize,
+        machine: Option<String>,
+    ) -> Option<Events> {
         let threads = self.lock();
         let thread = threads.get(id)?;
         let ended = thread.ended.as_ref().map(|ended| &ended.run);
-        let found = thread.run.iter().chain(ended).find(|found| found.id() == run)?;
+        let found = thread
+            .run
+            .iter()
+            .chain(ended)
+            .find(|found| found.id() == run)?;
         Some(found.events(machine, after).boxed())
     }
 
@@ -590,6 +604,10 @@ impl Host {
 
     /// Shows `event` of a client's call as part of the run, under the
     /// subagent making it; false when the call is no longer waited for.
+    pub fn sync(&self) -> &crate::sync::Store {
+        &self.sync
+    }
+
     pub fn call_event(&self, id: &SessionId, call: CallId, event: Event) -> bool {
         let Some(run) = self.run(id) else {
             return false;
@@ -745,6 +763,7 @@ impl Host {
             thread: id,
             sessions: self.sessions.dir(),
             shared: &self.shared,
+            synced: self.sync.dir(),
             memories: self.memory.as_ref().map(Memory::file),
             skills: &skills.roots,
             spill: spill.as_deref(),
@@ -897,7 +916,11 @@ impl Host {
             if let Some(Err(error)) =
                 until_stopped(&run, self.compact_saved(&id, &run, live.compactor(), focus)).await
             {
-                tracing::warn!(thread = id.as_str(), error = format!("{error:#}"), "cannot compact");
+                tracing::warn!(
+                    thread = id.as_str(),
+                    error = format!("{error:#}"),
+                    "cannot compact"
+                );
                 run.emit(Event::Notice {
                     text: format!("not compacted: {error:#}"),
                 });
@@ -907,7 +930,11 @@ impl Host {
         if let Some(exchange) = exchange
             && let Err(error) = async { self.learn(&exchange?, &model).await }.await
         {
-            tracing::warn!(thread = id.as_str(), error = format!("{error:#}"), "memory not updated");
+            tracing::warn!(
+                thread = id.as_str(),
+                error = format!("{error:#}"),
+                "memory not updated"
+            );
             *self.lock_memory_failure() = Some(format!("memory not updated: {error:#}"));
         }
     }
@@ -991,7 +1018,9 @@ impl Host {
     /// Lets clients know `run` ended with `ending`, and the thread is free.
     fn end(&self, id: &SessionId, run: &Run, ending: Ending, context: Option<u64>) {
         match &ending {
-            Ending::Failed { error } => tracing::warn!(thread = id.as_str(), run = ?run.id(), error, "run failed"),
+            Ending::Failed { error } => {
+                tracing::warn!(thread = id.as_str(), run = ?run.id(), error, "run failed")
+            }
             Ending::Answered | Ending::Interrupted => {
                 tracing::info!(thread = id.as_str(), run = ?run.id(), ?ending, "run ended")
             }
@@ -1004,7 +1033,11 @@ impl Host {
         // and the thread is marked before any client hears it ended.
         let mut threads = self.lock();
         if let Err(error) = self.sessions.mark(id, |mark| mark.unseen = true) {
-            tracing::warn!(thread = id.as_str(), error = format!("{error:#}"), "cannot mark as new");
+            tracing::warn!(
+                thread = id.as_str(),
+                error = format!("{error:#}"),
+                "cannot mark as new"
+            );
             run.emit(Event::Notice {
                 text: format!("not marked as new: {error:#}"),
             });
@@ -1015,7 +1048,10 @@ impl Host {
         }
         if let Some(thread) = threads.get_mut(id) {
             let ended = thread.run.take();
-            thread.ended = ended.map(|run| Ended { run, at: Instant::now() });
+            thread.ended = ended.map(|run| Ended {
+                run,
+                at: Instant::now(),
+            });
             thread.context = context;
         }
         self.publish(&threads);
@@ -1269,12 +1305,17 @@ impl Host {
     ) -> Ending {
         let mut attempts = Attempts::new(Backoff::MODEL);
         loop {
-            let error = match self.attempt(id, run, agent, message.clone(), thinking, &mut attempts).await {
+            let error = match self
+                .attempt(id, run, agent, message.clone(), thinking, &mut attempts)
+                .await
+            {
                 Ok(()) => return Ending::Answered,
                 Err(error) => error,
             };
             let told = crate::log::chain(&error);
-            let Some(retry) = retry::transient(&error).and_then(|transient| attempts.next(transient.asked)) else {
+            let Some(retry) =
+                retry::transient(&error).and_then(|transient| attempts.next(transient.asked))
+            else {
                 return Ending::Failed { error: told };
             };
             let Some(resumed) = self.resume(id, run, &told, message) else {
@@ -1315,7 +1356,10 @@ impl Host {
             if matches!(item, MultiTurnStreamItem::ToolResult { .. }) {
                 attempts.reset();
             }
-            steps.events(item).into_iter().for_each(|event| run.emit(event));
+            steps
+                .events(item)
+                .into_iter()
+                .for_each(|event| run.emit(event));
         }
         Ok(())
     }
@@ -1333,7 +1377,11 @@ impl Host {
             Ok(false) => "the conversation changed meanwhile".to_owned(),
             Err(error) => format!("{error:#}"),
         };
-        tracing::warn!(thread = id.as_str(), failure, "cannot save a failed answer to go on from");
+        tracing::warn!(
+            thread = id.as_str(),
+            failure,
+            "cannot save a failed answer to go on from"
+        );
         None
     }
 

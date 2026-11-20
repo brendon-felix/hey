@@ -6,7 +6,9 @@ use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 
-use rig_agent::agent::{AgentHook, DispatchAction, DispatchEvent, HookContext, OutcomeAction, OutcomeEvent};
+use rig_agent::agent::{
+    AgentHook, DispatchAction, DispatchEvent, HookContext, OutcomeAction, OutcomeEvent,
+};
 use rig_core::message::CallId;
 use serde::{Deserialize, Serialize};
 
@@ -46,7 +48,9 @@ pub fn default_rules() -> BTreeMap<String, Permission> {
         crate::tools::EXIT_PLAN,
         crate::mcp::deferred::SEARCH,
     ];
-    tools.map(|tool| (tool.to_owned(), Permission::Allow)).into()
+    tools
+        .map(|tool| (tool.to_owned(), Permission::Allow))
+        .into()
 }
 
 /// The tools plan mode lets run: those that change nothing. Subagents
@@ -98,7 +102,9 @@ impl Origin {
     fn keys(&self, name: &str) -> Vec<String> {
         match self {
             Origin::Builtin => vec![name.to_owned()],
-            Origin::Mcp { server, tool } => vec![format!("mcp:{server}:{tool}"), format!("mcp:{server}")],
+            Origin::Mcp { server, tool } => {
+                vec![format!("mcp:{server}:{tool}"), format!("mcp:{server}")]
+            }
         }
     }
 }
@@ -143,7 +149,10 @@ impl Permissions {
     }
 
     pub fn get(&self, tool: &str) -> Permission {
-        self.lock().get(tool).copied().unwrap_or(Permission::Confirm)
+        self.lock()
+            .get(tool)
+            .copied()
+            .unwrap_or(Permission::Confirm)
     }
 
     pub fn snapshot(&self) -> BTreeMap<String, Permission> {
@@ -213,7 +222,12 @@ pub struct Approval<R> {
 }
 
 impl<R> Approval<R> {
-    pub fn new(permissions: Arc<Permissions>, reporter: Arc<R>, gate: Gate, routes: Arc<Routes>) -> Self {
+    pub fn new(
+        permissions: Arc<Permissions>,
+        reporter: Arc<R>,
+        gate: Gate,
+        routes: Arc<Routes>,
+    ) -> Self {
         Self {
             permissions,
             reporter,
@@ -232,7 +246,8 @@ impl<R: Reporter> AgentHook for Approval<R> {
         let admission = self.gate.admit(name).await;
         let action = {
             let _deciding = self.deciding.lock().await;
-            self.decide(name, event.tool_args().unwrap_or_default(), event.call_id).await
+            self.decide(name, event.tool_args().unwrap_or_default(), event.call_id)
+                .await
         };
         // Only a call that runs keeps its admission: rig reports no outcome
         // for one stopped here, whose admission would keep the calls behind
@@ -245,7 +260,10 @@ impl<R: Reporter> AgentHook for Approval<R> {
 
     async fn on_outcome(&self, _ctx: &HookContext, event: OutcomeEvent<'_>) -> OutcomeAction {
         self.gate.release(event.id);
-        if let (Some(tool), Some(error)) = (event.tool_name(), event.tool_result().and_then(|result| result.error())) {
+        if let (Some(tool), Some(error)) = (
+            event.tool_name(),
+            event.tool_result().and_then(|result| result.error()),
+        ) {
             tracing::warn!(tool, call = ?event.call_id, %error, "tool call failed");
         }
         OutcomeAction::proceed()
@@ -358,17 +376,35 @@ mod tests {
 
     #[test]
     fn plan_mode_lets_only_tools_that_change_nothing_run() {
-        for tool in ["read", "search", "fetch", "todo", "ask_user", "exit_plan", "spawn_agents"] {
+        for tool in [
+            "read",
+            "search",
+            "fetch",
+            "todo",
+            "ask_user",
+            "exit_plan",
+            "spawn_agents",
+        ] {
             assert!(plans_with(tool), "{tool}");
         }
-        for tool in ["write", "edit", "shell", "delete", "move", "mcp__web__search"] {
+        for tool in [
+            "write",
+            "edit",
+            "shell",
+            "delete",
+            "move",
+            "mcp__web__search",
+        ] {
             assert!(!plans_with(tool), "{tool}");
         }
         let permissions = resolve("");
         assert!(!permissions.planning());
         permissions.set_planning(true);
         assert!(permissions.planning());
-        assert!(!permissions.fork().planning(), "a fork starts out of plan mode");
+        assert!(
+            !permissions.fork().planning(),
+            "a fork starts out of plan mode"
+        );
     }
 
     #[test]

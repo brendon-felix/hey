@@ -12,13 +12,13 @@ use rig_core::tool::DynamicTool;
 use rig_rmcp::{McpConnection, McpTool};
 use rmcp::ServiceExt;
 use rmcp::model::{ClientConfig, ContentBlock, GetPromptRequestParams, ResourceContents};
-use serde::{Deserialize, Serialize};
-use serde_json::Value;
 use rmcp::service::ClientInitializeError;
 use rmcp::transport::streamable_http_client::{
     AuthRequiredError, StreamableHttpClientTransportConfig,
 };
 use rmcp::transport::{StreamableHttpClientTransport, TokioChildProcess};
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
 use crate::config::{McpServer, McpTransport, expand, expand_headers};
 use crate::permissions::Origin;
@@ -88,7 +88,11 @@ async fn connect(server: &str, config: &McpServer) -> Result<Connected> {
                 .stderr(Stdio::null())
                 .spawn()
                 .context("cannot start the server")?;
-            client.serve(transport).await.map_err(initialize_error)?.into()
+            client
+                .serve(transport)
+                .await
+                .map_err(initialize_error)?
+                .into()
         }
         McpTransport::Http { url, headers } => {
             let config = StreamableHttpClientTransportConfig::with_uri(expand(url)?)
@@ -127,7 +131,10 @@ async fn connect(server: &str, config: &McpServer) -> Result<Connected> {
         None => Vec::new(),
     };
     let summary = info.as_ref().and_then(|info| {
-        let described = info.server_info.as_ref().and_then(|server| server.description.clone());
+        let described = info
+            .server_info
+            .as_ref()
+            .and_then(|server| server.description.clone());
         described.or_else(|| info.instructions.clone())
     });
     Ok(Connected {
@@ -158,7 +165,10 @@ impl From<rmcp::model::Prompt> for Prompt {
             server: String::new(),
             name: prompt.name,
             description: prompt.description,
-            arguments: arguments.into_iter().map(|argument| argument.name).collect(),
+            arguments: arguments
+                .into_iter()
+                .map(|argument| argument.name)
+                .collect(),
         }
     }
 }
@@ -168,7 +178,9 @@ impl From<rmcp::model::Prompt> for Prompt {
 pub fn invoked<'a>(prompts: &'a [Prompt], word: &str) -> Option<&'a Prompt> {
     let word = word.strip_prefix("mcp:").unwrap_or(word);
     let (server, name) = word.split_once(':')?;
-    prompts.iter().find(|prompt| prompt.server == server && prompt.name == name)
+    prompts
+        .iter()
+        .find(|prompt| prompt.server == server && prompt.name == name)
 }
 
 impl Prompt {
@@ -331,7 +343,10 @@ mod tests {
 
     #[test]
     fn summaries_keep_the_first_line() {
-        assert_eq!(first_line("\nSearch docs.\nMore."), Some("Search docs.".into()));
+        assert_eq!(
+            first_line("\nSearch docs.\nMore."),
+            Some("Search docs.".into())
+        );
         assert_eq!(first_line("Search docs\nMore"), Some("Search docs…".into()));
         assert_eq!(first_line("  "), None);
     }
@@ -341,7 +356,13 @@ mod tests {
 pub fn model_name(server: &str, tool: &str) -> String {
     format!("{PREFIX}{server}__{tool}")
         .chars()
-        .map(|c| if c.is_ascii_alphanumeric() || c == '-' { c } else { '_' })
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' {
+                c
+            } else {
+                '_'
+            }
+        })
         .take(64)
         .collect()
 }

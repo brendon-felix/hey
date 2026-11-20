@@ -8,7 +8,9 @@
 use std::ops::ControlFlow;
 
 use anyhow::{Result, anyhow};
-use crossterm::event::{Event as Input, EventStream, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+use crossterm::event::{
+    Event as Input, EventStream, KeyCode, KeyEvent, KeyEventKind, KeyModifiers,
+};
 use futures::StreamExt;
 use tokio::time::{Instant, MissedTickBehavior, interval_at};
 use yansi::Paint;
@@ -117,7 +119,10 @@ impl Browser<'_> {
                 KeyCode::Backspace => self.filtering(|browser| _ = browser.filter.pop()),
                 KeyCode::Char(c) => self.filtering(|browser| {
                     browser.filter.push(c);
-                    browser.selected = browser.shown().first().map(|i| browser.memories[*i].clone());
+                    browser.selected = browser
+                        .shown()
+                        .first()
+                        .map(|i| browser.memories[*i].clone());
                 }),
                 _ => self.mode = Mode::Filter,
             },
@@ -192,7 +197,9 @@ impl Browser<'_> {
     fn step_off(&mut self) {
         let shown = self.shown();
         let at = self.position(&shown);
-        let next = shown.get(at + 1).or_else(|| at.checked_sub(1).and_then(|before| shown.get(before)));
+        let next = shown
+            .get(at + 1)
+            .or_else(|| at.checked_sub(1).and_then(|before| shown.get(before)));
         self.selected = next.map(|i| self.memories[*i].clone());
     }
 
@@ -276,9 +283,15 @@ impl Browser<'_> {
         let shown = self.shown();
         let rows = super::page();
         let filtering = matches!(self.mode, Mode::Filter);
-        let mut lines = vec![self.header(width), super::filter_line(filtering, &self.filter)];
+        let mut lines = vec![
+            self.header(width),
+            super::filter_line(filtering, &self.filter),
+        ];
         match &self.mode {
-            Mode::Edit(Draft { target: Target::New, field }) => {
+            Mode::Edit(Draft {
+                target: Target::New,
+                field,
+            }) => {
                 self.scroll = 0;
                 lines.push(editing(field, width));
                 let below = shown.iter().take(rows.saturating_sub(1));
@@ -305,7 +318,12 @@ impl Browser<'_> {
             1 => "1 memory".to_owned(),
             count => format!("{count} memories"),
         };
-        super::header(self.backend, "Memories", &[palette().muted.paint(&tally).to_string()], width)
+        super::header(
+            self.backend,
+            "Memories",
+            &[palette().muted.paint(&tally).to_string()],
+            width,
+        )
     }
 
     fn empty(&self) -> String {
@@ -341,5 +359,9 @@ fn row(memory: &str, selected: bool, width: usize) -> String {
 }
 
 fn editing(field: &Field, width: usize) -> String {
-    format!("{} {}", palette().accent.paint("›"), field.view(width.saturating_sub(3)))
+    format!(
+        "{} {}",
+        palette().accent.paint("›"),
+        field.view(width.saturating_sub(3))
+    )
 }

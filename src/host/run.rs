@@ -17,8 +17,8 @@ use tokio::sync::{Notify, oneshot, watch};
 use super::record::Record;
 use crate::compaction;
 use crate::protocol::{
-    AgentId, ApprovalId, Ask, Call, CallId, CallResult, Decision, Event, FollowerId, Logged,
-    RunId, Running,
+    AgentId, ApprovalId, Ask, Call, CallId, CallResult, Decision, Event, FollowerId, Logged, RunId,
+    Running,
 };
 use crate::steer::{self, Steering, Waiting};
 
@@ -246,7 +246,9 @@ impl Run {
             let mut calls = lock(&self.calls);
             let machine = calls.followers.get(&follower).cloned();
             match calls.pending.get_mut(&id) {
-                Some(pending) if pending.claimed.is_none() && machine.as_ref() == Some(&pending.machine) => {
+                Some(pending)
+                    if pending.claimed.is_none() && machine.as_ref() == Some(&pending.machine) =>
+                {
                     pending.claimed = Some(follower);
                     true
                 }
@@ -273,7 +275,11 @@ impl Run {
     /// Ends a claimed call with `result`; false when it was not waited for.
     pub fn finish(&self, id: CallId, result: CallResult) -> bool {
         let mut calls = lock(&self.calls);
-        if !calls.pending.get(&id).is_some_and(|pending| pending.claimed.is_some()) {
+        if !calls
+            .pending
+            .get(&id)
+            .is_some_and(|pending| pending.claimed.is_some())
+        {
             return false;
         }
         calls
@@ -333,7 +339,13 @@ impl Run {
                 };
                 read = len;
                 if !batch.is_empty() {
-                    let ended = matches!(batch.last(), Some(Logged { event: Event::End { .. }, .. }));
+                    let ended = matches!(
+                        batch.last(),
+                        Some(Logged {
+                            event: Event::End { .. },
+                            ..
+                        })
+                    );
                     return Some((batch, (!ended).then_some((log, read, following))));
                 }
                 log.changed().await.ok()?;
@@ -447,17 +459,22 @@ pub struct Steps {
 impl Steps {
     pub fn events(&mut self, item: MultiTurnStreamItem) -> Vec<Event> {
         match item {
-            MultiTurnStreamItem::StreamAssistantItem(Item::Event(event)) => {
-                self.thought_before(&event).into_iter().chain(self.part(event)).collect()
-            }
+            MultiTurnStreamItem::StreamAssistantItem(Item::Event(event)) => self
+                .thought_before(&event)
+                .into_iter()
+                .chain(self.part(event))
+                .collect(),
             MultiTurnStreamItem::ToolResult { tool_result } => {
                 let (result, prompts) = steer::split(tool_result);
                 let steered = prompts.into_iter().map(|prompt| Event::Steered { prompt });
-                std::iter::once(Event::ToolResult { result }).chain(steered).collect()
+                std::iter::once(Event::ToolResult { result })
+                    .chain(steered)
+                    .collect()
             }
-            MultiTurnStreamItem::CompletionCall(call) => {
-                tokens(&call.usage).map(|tokens| Event::Context { tokens }).into_iter().collect()
-            }
+            MultiTurnStreamItem::CompletionCall(call) => tokens(&call.usage)
+                .map(|tokens| Event::Context { tokens })
+                .into_iter()
+                .collect(),
             MultiTurnStreamItem::ModelTurnRetried { .. } => vec![Event::Notice {
                 text: "retrying…".into(),
             }],
@@ -603,13 +620,23 @@ mod tests {
                 machine: None,
             },
         };
-        for event in [Event::Text { text: "a".into() }, ask(0), Event::Decided { id: ApprovalId(0) }, ask(1)] {
+        for event in [
+            Event::Text { text: "a".into() },
+            ask(0),
+            Event::Decided { id: ApprovalId(0) },
+            ask(1),
+        ] {
             run.emit(event);
         }
         let positions = |logged: Vec<Logged>| -> Vec<(String, Option<usize>)> {
             logged
                 .into_iter()
-                .map(|logged| (names(std::slice::from_ref(&logged.event)).remove(0), logged.at))
+                .map(|logged| {
+                    (
+                        names(std::slice::from_ref(&logged.event)).remove(0),
+                        logged.at,
+                    )
+                })
                 .collect()
         };
         let first = positions(run.events(None, 0).take(4).collect().await);
@@ -627,7 +654,10 @@ mod tests {
         });
         let again = positions(run.events(None, 3).collect().await);
         let expected = [("began", 3), ("ask tool 1", 4), ("b", 5), ("end", 6)];
-        assert_eq!(again, expected.map(|(name, at)| (name.to_owned(), Some(at))));
+        assert_eq!(
+            again,
+            expected.map(|(name, at)| (name.to_owned(), Some(at)))
+        );
     }
 
     #[tokio::test]
@@ -648,19 +678,44 @@ mod tests {
 
         let (thinking, answer) = (Part::new(0), Part::new(1));
         let stream = [
-            StreamEvent::Start { part: thinking, kind: PartKind::Reasoning, name: None },
-            StreamEvent::Reasoning { part: thinking, text: "hm".into() },
-            StreamEvent::Start { part: answer, kind: PartKind::Text, name: None },
-            StreamEvent::Text { part: answer, text: "hi".into() },
-            StreamEvent::End { part: thinking, content: AssistantContent::Reasoning(Reasoning::new("hm")) },
-            StreamEvent::End { part: answer, content: AssistantContent::text("hi") },
+            StreamEvent::Start {
+                part: thinking,
+                kind: PartKind::Reasoning,
+                name: None,
+            },
+            StreamEvent::Reasoning {
+                part: thinking,
+                text: "hm".into(),
+            },
+            StreamEvent::Start {
+                part: answer,
+                kind: PartKind::Text,
+                name: None,
+            },
+            StreamEvent::Text {
+                part: answer,
+                text: "hi".into(),
+            },
+            StreamEvent::End {
+                part: thinking,
+                content: AssistantContent::Reasoning(Reasoning::new("hm")),
+            },
+            StreamEvent::End {
+                part: answer,
+                content: AssistantContent::text("hi"),
+            },
         ];
         let mut steps = Steps::default();
         let events: Vec<Event> = stream
             .into_iter()
-            .flat_map(|event| steps.events(MultiTurnStreamItem::StreamAssistantItem(Item::Event(event))))
+            .flat_map(|event| {
+                steps.events(MultiTurnStreamItem::StreamAssistantItem(Item::Event(event)))
+            })
             .collect();
-        assert_eq!(names(&events), ["Reasoning { text: \"hm\" }", "thought", "hi", "PartEnd"]);
+        assert_eq!(
+            names(&events),
+            ["Reasoning { text: \"hm\" }", "thought", "hi", "PartEnd"]
+        );
     }
 
     fn call(tool: &str) -> Call {
@@ -678,10 +733,16 @@ mod tests {
     }
 
     /// Follows `run` from `machine`, returning the stream and its follower.
-    async fn follow(run: &Arc<Run>, machine: &str) -> (impl Stream<Item = Event> + Unpin, FollowerId) {
+    async fn follow(
+        run: &Arc<Run>,
+        machine: &str,
+    ) -> (impl Stream<Item = Event> + Unpin, FollowerId) {
         let mut events = Box::pin(events(run, Some(machine.into())));
         match events.next().await {
-            Some(Event::Began { follower: Some(follower), .. }) => (events, follower),
+            Some(Event::Began {
+                follower: Some(follower),
+                ..
+            }) => (events, follower),
             other => panic!("{other:?}"),
         }
     }
@@ -702,7 +763,10 @@ mod tests {
 
         let (_desk, _) = follow(&run, "desk").await;
         let error = run.call(call("read"), None).await.unwrap_err();
-        assert!(error.contains("no terminal on `laptop`"), "another machine's terminal cannot run it");
+        assert!(
+            error.contains("no terminal on `laptop`"),
+            "another machine's terminal cannot run it"
+        );
     }
 
     #[tokio::test]
@@ -717,12 +781,22 @@ mod tests {
         });
         let id = next_call(&mut laptop).await;
         assert!(run.claimed(id).is_none());
-        assert!(!run.finish(id, Ok(Vec::new())), "only a claimed call finishes");
-        assert!(!run.claim(id, desk), "a terminal on another machine cannot take it");
+        assert!(
+            !run.finish(id, Ok(Vec::new())),
+            "only a claimed call finishes"
+        );
+        assert!(
+            !run.claim(id, desk),
+            "a terminal on another machine cannot take it"
+        );
         assert!(run.claim(id, follower));
         assert!(!run.claim(id, follower), "taken only once");
         let joined: Vec<Event> = events(&run, None).take(2).collect().await;
-        assert_eq!(names(&joined), ["began", "claimed"], "a late terminal is not offered it");
+        assert_eq!(
+            names(&joined),
+            ["began", "claimed"],
+            "a late terminal is not offered it"
+        );
         assert!(run.finish(id, Ok(Vec::new())));
         assert_eq!(called.await.unwrap(), Ok(Vec::new()));
 

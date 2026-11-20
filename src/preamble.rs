@@ -41,6 +41,8 @@ pub struct Setting<'a> {
     /// Where conversations are saved.
     pub sessions: &'a Path,
     pub shared: &'a Path,
+    /// Where the host keeps copies the user's clients synced.
+    pub synced: &'a Path,
     /// The memories file; `None` when memory is off.
     pub memories: Option<&'a Path>,
     /// Where skills are looked for, farthest first.
@@ -65,7 +67,10 @@ impl Setting<'_> {
                     started.format("%A %Y-%m-%d %H:%M")
                 )
             }),
-            self.host.config.as_deref().map(|config| self.config_line(config)),
+            self.host
+                .config
+                .as_deref()
+                .map(|config| self.config_line(config)),
             self.client
                 .and_then(|client| client.machine.config.as_deref())
                 .map(|config| {
@@ -84,8 +89,21 @@ impl Setting<'_> {
                  use.",
                 self.shared.display()
             )),
+            Some(format!(
+                "Files, folders and git repositories the user syncs from their machine are \
+                 copied to {}/<machine>/<name>, while their client is connected. Work there \
+                 when their machine is out of reach; the copies are one way, so tell the user \
+                 what you changed, and expect them to be a little behind their machine.",
+                self.synced.display()
+            )),
             Some(self.memories_line()),
             self.skills_line(),
+            Some(
+                "Your replies are printed to the terminal as raw Markdown, so Markdown tables \
+                 come out misaligned. To show a table, call the `table` tool and paste its \
+                 output verbatim in a code block; never write a Markdown table yourself."
+                    .into(),
+            ),
             self.spill.map(|dir| {
                 format!(
                     "Tool output too long to give you whole is kept whole in {}.",
@@ -93,7 +111,11 @@ impl Setting<'_> {
                 )
             }),
         ];
-        let bullets: String = lines.into_iter().flatten().map(|line| format!("\n- {line}")).collect();
+        let bullets: String = lines
+            .into_iter()
+            .flatten()
+            .map(|line| format!("\n- {line}"))
+            .collect();
         format!("\nSetting:{bullets}")
     }
 
@@ -155,7 +177,15 @@ impl Setting<'_> {
         let unreachable = "You cannot reach files on their machine; those they mention with `@` \
                            arrive attached to their message.";
         match (self.hosting, self.client) {
-            (_, Some(ClientInfo { machine, remote, url, lent })) => {
+            (
+                _,
+                Some(ClientInfo {
+                    machine,
+                    remote,
+                    url,
+                    lent,
+                }),
+            ) => {
                 let cwd = machine
                     .cwd
                     .as_deref()
@@ -171,6 +201,13 @@ impl Setting<'_> {
                     ),
                     None => unreachable.to_owned(),
                 };
+                let reach = format!(
+                    "{reach} Their client may drop out at any time (closed laptop, lost \
+                     connection) and return later; when a call to their machine fails because \
+                     it is gone, do not stop or wait on them: carry on with what the host can \
+                     do, use what is already synced to the host, and say what remains for when \
+                     they reconnect."
+                );
                 Some(format!(
                     "The user is on {}{cwd} and reaches the host as remote `{remote}` at {url}. \
                      {reach}",

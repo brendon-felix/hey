@@ -111,7 +111,9 @@ pub fn editing(repaint: RepaintSignal) {
                 wake: None,
             };
         }
-        Mode::Editing { repaint: current, .. } => *current = repaint,
+        Mode::Editing {
+            repaint: current, ..
+        } => *current = repaint,
     }
 }
 
@@ -119,8 +121,15 @@ pub fn editing(repaint: RepaintSignal) {
 /// prompt, printing what it had yet to.
 pub fn direct() {
     let mut screen = lock();
-    if let Mode::Editing { lines, .. } = std::mem::replace(&mut screen.mode, Mode::Direct { drawn: 0 }) {
-        show(lines.iter().map(|line| format!("{line}\n")).collect::<String>());
+    if let Mode::Editing { lines, .. } =
+        std::mem::replace(&mut screen.mode, Mode::Direct { drawn: 0 })
+    {
+        show(
+            lines
+                .iter()
+                .map(|line| format!("{line}\n"))
+                .collect::<String>(),
+        );
     }
 }
 
@@ -128,7 +137,11 @@ pub fn direct() {
 /// led up to the reason for waking shows first.
 pub fn wake_when_printed(wake: Arc<AtomicBool>) {
     match &mut lock().mode {
-        Mode::Editing { lines, wake: waiting, .. } if !lines.is_empty() => *waiting = Some(wake),
+        Mode::Editing {
+            lines,
+            wake: waiting,
+            ..
+        } if !lines.is_empty() => *waiting = Some(wake),
         Mode::Editing { .. } | Mode::Direct { .. } => wake.store(true, Ordering::Relaxed),
     }
 }
@@ -158,7 +171,11 @@ fn erase(rows: usize) -> String {
     match rows {
         0 => String::new(),
         1 => format!("\r{}", Clear(ClearType::FromCursorDown)),
-        rows => format!("\r{}{}", MoveUp(rows as u16 - 1), Clear(ClearType::FromCursorDown)),
+        rows => format!(
+            "\r{}{}",
+            MoveUp(rows as u16 - 1),
+            Clear(ClearType::FromCursorDown)
+        ),
     }
 }
 

@@ -77,10 +77,20 @@ impl Tool for WebSearch {
         ToolAnnotations::default().with_read_only(true)
     }
 
-    async fn call(&self, _context: &mut ToolContext, args: WebSearchArgs) -> Result<String, ToolExecutionError> {
+    async fn call(
+        &self,
+        _context: &mut ToolContext,
+        args: WebSearchArgs,
+    ) -> Result<String, ToolExecutionError> {
         let tokens = self.token_budget().to_string();
-        let mut query = vec![("q", args.query.as_str()), ("maximum_number_of_tokens", &tokens)];
-        query.extend(args.freshness.map(|freshness| ("freshness", freshness.code())));
+        let mut query = vec![
+            ("q", args.query.as_str()),
+            ("maximum_number_of_tokens", &tokens),
+        ];
+        query.extend(
+            args.freshness
+                .map(|freshness| ("freshness", freshness.code())),
+        );
         let what = "Brave Search";
         let response = self
             .http
@@ -92,12 +102,16 @@ impl Tool for WebSearch {
             .await
             .map_err(|error| network_error(what, error))?;
         let status = response.status();
-        let body = response.text().await.map_err(|error| network_error(what, error))?;
+        let body = response
+            .text()
+            .await
+            .map_err(|error| network_error(what, error))?;
         if !status.is_success() {
             return Err(status_error(what, status, &body));
         }
-        let context: Context = serde_json::from_str(&body)
-            .map_err(|error| ToolExecutionError::provider(format!("{what} answered unexpectedly: {error}")))?;
+        let context: Context = serde_json::from_str(&body).map_err(|error| {
+            ToolExecutionError::provider(format!("{what} answered unexpectedly: {error}"))
+        })?;
         Ok(context.render(&args.query))
     }
 }

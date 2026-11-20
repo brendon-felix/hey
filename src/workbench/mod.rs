@@ -61,7 +61,11 @@ impl Workbench {
     /// This machine's tools as `config` gives them, its MCP servers connected.
     pub async fn new(config: &Config) -> Result<Self> {
         let machine = machine_name();
-        let access = Access::new(machine.clone(), config.machines.get(&machine), config.file.clone())?;
+        let access = Access::new(
+            machine.clone(),
+            config.machines.get(&machine),
+            config.file.clone(),
+        )?;
         let toolbox = Toolbox::new(config).await?;
         let permissions = Permissions::resolve(toolbox.origins(), &config.tools);
         let cwd = agent::working_directory();
@@ -88,7 +92,12 @@ impl Workbench {
     /// Runs `call` for conversation `thread` once its permission and the
     /// directories it works in allow it, showing its output and asking its
     /// questions through `reporter`.
-    pub async fn run(&self, thread: &SessionId, call: &Call, reporter: &impl Reporter) -> CallResult {
+    pub async fn run(
+        &self,
+        thread: &SessionId,
+        call: &Call,
+        reporter: &impl Reporter,
+    ) -> CallResult {
         tracing::info!(thread = thread.as_str(), tool = %call.tool, agent = ?call.agent, "running a call for the host");
         let result = self.attempt(thread, call, reporter).await;
         if let Err(error) = &result {
@@ -97,7 +106,12 @@ impl Workbench {
         result
     }
 
-    async fn attempt(&self, thread: &SessionId, call: &Call, reporter: &impl Reporter) -> CallResult {
+    async fn attempt(
+        &self,
+        thread: &SessionId,
+        call: &Call,
+        reporter: &impl Reporter,
+    ) -> CallResult {
         let lending = self.lending(thread);
         self.permit(&lending, call, reporter).await?;
         let args: Value = serde_json::from_str(&call.args)
@@ -108,7 +122,9 @@ impl Workbench {
         let (output, live) = mpsc::unbounded_channel::<String>();
         let place = Place::on(
             Arc::new(Fenced::new(self.access.excluded())),
-            Some(Live::new(move |text: &str| _ = output.send(text.to_owned()))),
+            Some(Live::new(move |text: &str| {
+                _ = output.send(text.to_owned())
+            })),
         );
         let tool = self
             .toolbox
@@ -124,7 +140,12 @@ impl Workbench {
             .map_err(|error| error.to_string())
     }
 
-    async fn permit(&self, lending: &Lending, call: &Call, reporter: &impl Reporter) -> Result<(), String> {
+    async fn permit(
+        &self,
+        lending: &Lending,
+        call: &Call,
+        reporter: &impl Reporter,
+    ) -> Result<(), String> {
         let machine = self.machine();
         let called = crate::mcp::deferred::called(&call.tool, &call.args);
         let tool = called.as_deref().unwrap_or(&call.tool);
@@ -145,7 +166,9 @@ impl Workbench {
                         lending.permissions.allow(tool);
                         Ok(())
                     }
-                    Decision::Decline | Decision::Answer(_) => Err("The user declined this tool call.".into()),
+                    Decision::Decline | Decision::Answer(_) => {
+                        Err("The user declined this tool call.".into())
+                    }
                     Decision::Stop => {
                         reporter.stop().await;
                         Err("The user stopped the run.".into())
@@ -157,7 +180,12 @@ impl Workbench {
 
     /// Lets a call work in `dir`, a canonical directory, once its rules or
     /// the user allow it.
-    async fn admit(&self, lending: &Lending, dir: PathBuf, reporter: &impl Reporter) -> Result<(), String> {
+    async fn admit(
+        &self,
+        lending: &Lending,
+        dir: PathBuf,
+        reporter: &impl Reporter,
+    ) -> Result<(), String> {
         let machine = self.machine();
         let _admitting = lending.admitting.lock().await;
         let granted = lock(&lending.granted).clone();
@@ -182,7 +210,10 @@ impl Workbench {
             Decision::Always => {
                 if let Err(error) = self.access.allow_always(&dir) {
                     tracing::warn!(dir = %dir.display(), error = format!("{error:#}"), "cannot allow a directory always");
-                    let text = format!("{} allowed for this conversation only: {error:#}", dir.display());
+                    let text = format!(
+                        "{} allowed for this conversation only: {error:#}",
+                        dir.display()
+                    );
                     reporter.emit(Event::Notice { text }).await;
                 }
             }
@@ -311,7 +342,9 @@ fn directory(path: &str, cwd: &Path) -> PathBuf {
     }
     match path.is_dir() {
         true => path,
-        false => path.parent().map_or_else(|| path.clone(), Path::to_path_buf),
+        false => path
+            .parent()
+            .map_or_else(|| path.clone(), Path::to_path_buf),
     }
 }
 
@@ -336,12 +369,25 @@ mod tests {
 
         let here = std::slice::from_ref(&cwd);
         assert_eq!(dirs("read", json!({ "path": "src/main.rs" })), here);
-        assert_eq!(dirs("list", json!({})), here, "no path lists the working directory");
-        assert_eq!(dirs("shell", json!({ "command": "ls /" })), here);
-        assert_eq!(dirs("write", json!({ "path": "../elsewhere/new/file.txt" })), [root.join("elsewhere/new")]);
-        assert_eq!(dirs("list", json!({ "path": "../elsewhere" })), [root.join("elsewhere")]);
         assert_eq!(
-            dirs("move", json!({ "from": "src/a.rs", "to": "../elsewhere/a.rs" })),
+            dirs("list", json!({})),
+            here,
+            "no path lists the working directory"
+        );
+        assert_eq!(dirs("shell", json!({ "command": "ls /" })), here);
+        assert_eq!(
+            dirs("write", json!({ "path": "../elsewhere/new/file.txt" })),
+            [root.join("elsewhere/new")]
+        );
+        assert_eq!(
+            dirs("list", json!({ "path": "../elsewhere" })),
+            [root.join("elsewhere")]
+        );
+        assert_eq!(
+            dirs(
+                "move",
+                json!({ "from": "src/a.rs", "to": "../elsewhere/a.rs" })
+            ),
             [cwd.clone(), root.join("elsewhere")]
         );
         assert!(dirs("fetch", json!({ "url": "https://example.com" })).is_empty());

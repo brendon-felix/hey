@@ -107,7 +107,8 @@ impl Checkpoints {
             return Ok(None);
         };
         let entries: Vec<Entry> = serde_json::from_slice(
-            &fs::read(dir.join(MANIFEST)).with_context(|| format!("cannot read {}", dir.display()))?,
+            &fs::read(dir.join(MANIFEST))
+                .with_context(|| format!("cannot read {}", dir.display()))?,
         )
         .with_context(|| format!("unreadable checkpoint {}", dir.display()))?;
         let mut undone = Undone {
@@ -212,7 +213,9 @@ impl Turn {
             Ok(None) => Was::Absent,
             Ok(Some(bytes)) => {
                 let blob = kept.entries.len().to_string();
-                match fs::create_dir_all(&self.dir).and_then(|()| fs::write(self.dir.join(&blob), bytes)) {
+                match fs::create_dir_all(&self.dir)
+                    .and_then(|()| fs::write(self.dir.join(&blob), bytes))
+                {
                     Ok(()) => Was::Kept(blob),
                     Err(error) => Was::Lost(format!("not kept: {error}")),
                 }
@@ -260,7 +263,11 @@ impl Turn {
             if !turn.scannable() {
                 return Ok(None);
             }
-            let earlier = turn.newest.lock().unwrap_or_else(PoisonError::into_inner).clone();
+            let earlier = turn
+                .newest
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .clone();
             let taking = Taking {
                 keep: Some(turn.keep.clone()),
                 ..Taking::default()
@@ -353,7 +360,8 @@ pub fn shell(tool: DynamicTool, turn: Arc<Turn>) -> DynamicTool {
     })
 }
 
-type Future<'a> = futures::future::BoxFuture<'a, Result<rig_core::tool::ToolOutput, ToolExecutionError>>;
+type Future<'a> =
+    futures::future::BoxFuture<'a, Result<rig_core::tool::ToolOutput, ToolExecutionError>>;
 
 /// `tool` with the same definition, its calls going through `call`.
 fn wrap<F>(tool: DynamicTool, call: F) -> DynamicTool
@@ -412,7 +420,11 @@ mod tests {
         assert_eq!(fs::read_to_string(root.join("a.txt")).unwrap(), "two");
         assert!(!root.join("new.txt").exists());
         assert_eq!(undone.restored.len(), 1, "{undone:?}");
-        assert_eq!(undone.removed.len(), 1, "ignored and outside files are not kept");
+        assert_eq!(
+            undone.removed.len(),
+            1,
+            "ignored and outside files are not kept"
+        );
         assert_eq!(undone.left, 1);
 
         checkpoints.undo(&id).unwrap().unwrap();
@@ -448,7 +460,10 @@ mod tests {
         let mut context = ToolContext::new();
         let args = serde_json::json!({ "command": "printf new > a.txt; printf b > b.txt" });
         tool.run_with(&mut context, args).await.unwrap();
-        let changed = context.result::<FilesChanged>().unwrap().unwrap_or_default();
+        let changed = context
+            .result::<FilesChanged>()
+            .unwrap()
+            .unwrap_or_default();
         assert_eq!(changed.0.len(), 2, "{changed:?}");
         drop(turn);
 

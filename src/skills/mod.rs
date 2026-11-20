@@ -58,7 +58,10 @@ impl TryFrom<String> for Name {
     fn try_from(name: String) -> Result<Self, String> {
         let flaw = if name.is_empty() || name.len() > MAX_NAME {
             Some("must be 1 to 64 characters")
-        } else if !name.bytes().all(|b| matches!(b, b'a'..=b'z' | b'0'..=b'9' | b'-')) {
+        } else if !name
+            .bytes()
+            .all(|b| matches!(b, b'a'..=b'z' | b'0'..=b'9' | b'-'))
+        {
             Some("may hold only lowercase letters, digits and hyphens")
         } else if name.starts_with('-') || name.ends_with('-') {
             Some("must not start or end with a hyphen")
@@ -159,7 +162,9 @@ impl Skill {
         }
         let description = front.description.trim().to_owned();
         if description.is_empty() || description.chars().count() > MAX_DESCRIPTION {
-            return Err(format!("description must be 1 to {MAX_DESCRIPTION} characters"));
+            return Err(format!(
+                "description must be 1 to {MAX_DESCRIPTION} characters"
+            ));
         }
         Ok(Self {
             name,
@@ -182,8 +187,8 @@ impl Skill {
     /// in them can pass for the end of the skill.
     pub fn content(&self) -> Result<String> {
         let file = self.file();
-        let text = fs::read_to_string(&file)
-            .with_context(|| format!("cannot read {}", file.display()))?;
+        let text =
+            fs::read_to_string(&file).with_context(|| format!("cannot read {}", file.display()))?;
         let (_, body) = split(&text).context("its frontmatter is gone")?;
         let body = body
             .trim()
@@ -247,9 +252,9 @@ impl Found {
         if auto.is_empty() {
             return builder;
         }
-        builder
-            .append_preamble(&catalog(&auto))
-            .tool(Load { skills: auto.into() })
+        builder.append_preamble(&catalog(&auto)).tool(Load {
+            skills: auto.into(),
+        })
     }
 }
 
@@ -384,7 +389,9 @@ mod tests {
         assert!(problem(&skill("pdf--x"), "pdf--x").contains("in a row"));
         assert!(problem(&skill(&"a".repeat(65)), "a").contains("1 to 64"));
         assert!(problem(&skill("pdf"), "docs").contains("directory"));
-        assert!(problem("---\nname: pdf\ndescription: \" \"\n---\n", "pdf").contains("description"));
+        assert!(
+            problem("---\nname: pdf\ndescription: \" \"\n---\n", "pdf").contains("description")
+        );
         assert!(problem("---\nname: pdf\n---\n", "pdf").contains("description"));
         assert!(problem("# no frontmatter", "pdf").contains("frontmatter"));
         assert!(serde_json::from_str::<Name>("\"Bad\"").is_err());
@@ -408,14 +415,30 @@ mod tests {
         write(&repo, "lint", "the repository's");
         write(&inner, "review", "the crate's");
         fs::create_dir_all(inner.join(ROOT).join("Broken")).unwrap();
-        fs::write(inner.join(ROOT).join("Broken").join(FILE), "---\nname: Broken\n---").unwrap();
+        fs::write(
+            inner.join(ROOT).join("Broken").join(FILE),
+            "---\nname: Broken\n---",
+        )
+        .unwrap();
 
         let found = find(&inner);
-        let names: Vec<&str> = found.skills.iter().map(|skill| skill.name.as_str()).collect();
+        let names: Vec<&str> = found
+            .skills
+            .iter()
+            .map(|skill| skill.name.as_str())
+            .collect();
         assert!(names.contains(&"lint") && names.contains(&"review"));
-        assert!(!names.contains(&"outside"), "only up to the repository root");
+        assert!(
+            !names.contains(&"outside"),
+            "only up to the repository root"
+        );
         assert_eq!(found.get("review").unwrap().description, "the crate's");
-        assert!(found.problems.iter().any(|problem| problem.contains("Broken")));
+        assert!(
+            found
+                .problems
+                .iter()
+                .any(|problem| problem.contains("Broken"))
+        );
         let content = found.get("lint").unwrap().content().unwrap();
         assert!(content.starts_with("<skill_content name=\"lint\">\n<source>project</source>"));
         assert!(content.ends_with("Do it.\n</skill_content>"));

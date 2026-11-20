@@ -77,8 +77,16 @@ impl Tool for Todos {
         ToolAnnotations::default().with_open_world(false)
     }
 
-    async fn call(&self, _context: &mut ToolContext, args: TodoArgs) -> Result<String, ToolExecutionError> {
-        let done = args.todos.iter().filter(|todo| todo.status == TodoStatus::Done).count();
+    async fn call(
+        &self,
+        _context: &mut ToolContext,
+        args: TodoArgs,
+    ) -> Result<String, ToolExecutionError> {
+        let done = args
+            .todos
+            .iter()
+            .filter(|todo| todo.status == TodoStatus::Done)
+            .count();
         let total = args.todos.len();
         self.notes.set_todos(args.todos);
         Ok(format!("{done} of {total} done"))
@@ -115,10 +123,16 @@ impl Tool for AskUser {
     }
 
     fn annotations(&self) -> ToolAnnotations {
-        ToolAnnotations::default().with_read_only(true).with_open_world(false)
+        ToolAnnotations::default()
+            .with_read_only(true)
+            .with_open_world(false)
     }
 
-    async fn call(&self, _context: &mut ToolContext, args: AskArgs) -> Result<String, ToolExecutionError> {
+    async fn call(
+        &self,
+        _context: &mut ToolContext,
+        args: AskArgs,
+    ) -> Result<String, ToolExecutionError> {
         let ask = Ask::Question {
             question: args.question,
             choices: args.choices,
@@ -166,7 +180,11 @@ impl Tool for ExitPlan {
         ToolAnnotations::default().with_open_world(false)
     }
 
-    async fn call(&self, _context: &mut ToolContext, args: PlanArgs) -> Result<String, ToolExecutionError> {
+    async fn call(
+        &self,
+        _context: &mut ToolContext,
+        args: PlanArgs,
+    ) -> Result<String, ToolExecutionError> {
         if !self.notes.planning() {
             return Err(ToolExecutionError::new(
                 ToolErrorKind::Other,
@@ -182,9 +200,11 @@ impl Tool for ExitPlan {
             Decision::Answer(feedback) => Ok(format!(
                 "The user did not approve the plan yet; still in plan mode. Their feedback: {feedback}"
             )),
-            Decision::Decline => Ok("The user did not approve the plan; still in plan mode. Ask \
+            Decision::Decline => Ok(
+                "The user did not approve the plan; still in plan mode. Ask \
                 what they want changed, or revise it."
-                .into()),
+                    .into(),
+            ),
             Decision::Stop => Err(stopped(&self.run)),
         }
     }
@@ -213,7 +233,9 @@ mod tests {
             run: run.clone(),
             notes: notes.clone(),
         });
-        let args = || PlanArgs { plan: "1. edit".into() };
+        let args = || PlanArgs {
+            plan: "1. edit".into(),
+        };
 
         let asked = tokio::spawn({
             let tool = tool.clone();
@@ -222,7 +244,10 @@ mod tests {
         while !run.asking() {
             tokio::task::yield_now().await;
         }
-        assert!(run.answer(crate::protocol::ApprovalId(0), Decision::Answer("smaller".into())));
+        assert!(run.answer(
+            crate::protocol::ApprovalId(0),
+            Decision::Answer("smaller".into())
+        ));
         let told = asked.await.unwrap().unwrap();
         assert!(told.contains("smaller") && notes.planning(), "{told}");
 

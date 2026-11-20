@@ -249,9 +249,7 @@ pub fn builder<R: Reporter>(
         Some(hooks) => builder.add_hook(hooks),
         None => builder,
     };
-    builder
-        .add_hook(approval)
-        .dynamic_tools(tools)
+    builder.add_hook(approval).dynamic_tools(tools)
 }
 
 /// Where tools keep whole the output they cut.
@@ -268,7 +266,10 @@ pub fn spill_dir() -> Option<PathBuf> {
 pub async fn summarize(model: &Model, transcript: &str) -> Result<String> {
     let summarizer = AgentBuilder::new(model.inner.clone()).build();
     let request = format!("<conversation>\n{transcript}\n</conversation>\n\n{SUMMARY_PROMPT}");
-    let summary = crate::retry::model("summarizing", || async { summarizer.prompt(request.clone()).await }).await?;
+    let summary = crate::retry::model("summarizing", || async {
+        summarizer.prompt(request.clone()).await
+    })
+    .await?;
     Ok(summary.output())
 }
 

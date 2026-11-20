@@ -97,7 +97,12 @@ impl Vectors {
             }
         };
         let documents = memories.iter().enumerate().filter_map(|(i, memory)| {
-            let vec = embedded.get(memory)?.iter().copied().map(f64::from).collect();
+            let vec = embedded
+                .get(memory)?
+                .iter()
+                .copied()
+                .map(f64::from)
+                .collect();
             let embedding = Embedding {
                 document: memory.clone(),
                 vec,
@@ -124,7 +129,12 @@ impl Vectors {
         let _writing = self.writing.lock().unwrap_or_else(PoisonError::into_inner);
         let mut embedded = self.load();
         embedded.extend(fresh.into_iter().filter_map(|(memory, mut embeddings)| {
-            let vec = embeddings.pop()?.vec.into_iter().map(|x| x as f32).collect();
+            let vec = embeddings
+                .pop()?
+                .vec
+                .into_iter()
+                .map(|x| x as f32)
+                .collect();
             Some((memory, vec))
         }));
         let kept: HashSet<&String> = memories.iter().collect();

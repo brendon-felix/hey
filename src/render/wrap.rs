@@ -55,7 +55,10 @@ mod tests {
     #[test]
     fn breaks_after_words_and_inside_long_ones() {
         assert_eq!(texts("the quick brown fox", 10), ["the quick", "brown fox"]);
-        assert_eq!(texts("a abcdefghijkl b", 5), ["a", "abcde", "fghij", "kl b"]);
+        assert_eq!(
+            texts("a abcdefghijkl b", 5),
+            ["a", "abcde", "fghij", "kl b"]
+        );
         assert_eq!(texts("日本語の文章", 5), ["日本", "語の", "文章"]);
         assert_eq!(texts("", 5), [""]);
     }
@@ -68,7 +71,11 @@ mod tests {
             for end in (0..=line.len()).filter(|&end| line.is_char_boundary(end)) {
                 let partial = rows(&line[..end], width);
                 let settled = &partial[..partial.len() - 1];
-                assert_eq!(settled, &full[..settled.len()], "width {width}, prefix {end}");
+                assert_eq!(
+                    settled,
+                    &full[..settled.len()],
+                    "width {width}, prefix {end}"
+                );
             }
         }
     }

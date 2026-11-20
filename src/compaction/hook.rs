@@ -5,7 +5,8 @@
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use rig_agent::agent::{
-    AgentHook, CompletionCallAction, CompletionCallEvent, HookContext, ModelTurnAction, ModelTurnFinished,
+    AgentHook, CompletionCallAction, CompletionCallEvent, HookContext, ModelTurnAction,
+    ModelTurnFinished,
 };
 use rig_agent::run::RequestPatch;
 use rig_core::message::Message;
@@ -61,14 +62,24 @@ impl Live {
     /// For a run on a saved conversation of `history` messages, whose first
     /// `from` are summarized in `state`, and whose last model call took in
     /// and gave back `context` tokens, when that is known.
-    pub fn new(compactor: Compactor, run: Arc<Run>, history: usize, from: usize, state: SummaryState, context: Option<u64>) -> Self {
+    pub fn new(
+        compactor: Compactor,
+        run: Arc<Run>,
+        history: usize,
+        from: usize,
+        state: SummaryState,
+        context: Option<u64>,
+    ) -> Self {
         Self {
             compactor,
             run,
             state: Mutex::new(State {
                 saved: (from, state),
                 applied: None,
-                anchor: context.map(|tokens| Anchor { tokens, through: history }),
+                anchor: context.map(|tokens| Anchor {
+                    tokens,
+                    through: history,
+                }),
                 sent: 0,
                 stalled: false,
             }),
@@ -97,7 +108,10 @@ impl Live {
             let mut state = self.lock();
             state.sent = conversation.len();
             let view = state.view(conversation);
-            let asked = self.run.take_compaction().map(|focus| CompactReason::Asked { focus });
+            let asked = self
+                .run
+                .take_compaction()
+                .map(|focus| CompactReason::Asked { focus });
             let due = !state.stalled && self.compactor.due(state.estimate(conversation, &view));
             match asked.or(due.then_some(CompactReason::Threshold)) {
                 None => return state.history(view),
@@ -110,7 +124,10 @@ impl Live {
         self.run.emit(Event::Notice {
             text: "compacting the conversation…".into(),
         });
-        let made = self.compactor.summarize(&view, from, &summarized, &reason).await;
+        let made = self
+            .compactor
+            .summarize(&view, from, &summarized, &reason)
+            .await;
         let mut state = self.lock();
         match made {
             Ok(Some(summary)) => {
@@ -169,7 +186,13 @@ impl State {
     fn view(&self, conversation: &[Arc<Message>]) -> Vec<Arc<Message>> {
         match &self.applied {
             Some(applied) => std::iter::once(applied.message.clone())
-                .chain(conversation.get(applied.at..).unwrap_or_default().iter().cloned())
+                .chain(
+                    conversation
+                        .get(applied.at..)
+                        .unwrap_or_default()
+                        .iter()
+                        .cloned(),
+                )
                 .collect(),
             None => conversation.to_vec(),
         }
@@ -206,7 +229,11 @@ impl State {
 pub struct Hook(pub Arc<Live>);
 
 impl AgentHook for Hook {
-    async fn on_completion_call(&self, _ctx: &HookContext, event: CompletionCallEvent<'_>) -> CompletionCallAction {
+    async fn on_completion_call(
+        &self,
+        _ctx: &HookContext,
+        event: CompletionCallEvent<'_>,
+    ) -> CompletionCallAction {
         let conversation: Vec<Arc<Message>> = event
             .history
             .iter()
@@ -222,7 +249,11 @@ impl AgentHook for Hook {
         }
     }
 
-    async fn on_model_turn_finished(&self, _ctx: &HookContext, event: ModelTurnFinished<'_>) -> ModelTurnAction {
+    async fn on_model_turn_finished(
+        &self,
+        _ctx: &HookContext,
+        event: ModelTurnFinished<'_>,
+    ) -> ModelTurnAction {
         self.0.reported(event.usage.context_tokens());
         ModelTurnAction::continue_run()
     }
@@ -242,16 +273,19 @@ mod tests {
     use crate::skills::Load;
 
     fn texts(request: &CompletionRequest) -> Vec<String> {
-        let texts = request.chat_history.iter().flat_map(|message| match &**message {
-            Message::User { content } => content
-                .iter()
-                .filter_map(|content| match content {
-                    UserContent::Text(text) => Some(text.text.clone()),
-                    _ => None,
-                })
-                .collect(),
-            _ => Vec::new(),
-        });
+        let texts = request
+            .chat_history
+            .iter()
+            .flat_map(|message| match &**message {
+                Message::User { content } => content
+                    .iter()
+                    .filter_map(|content| match content {
+                        UserContent::Text(text) => Some(text.text.clone()),
+                        _ => None,
+                    })
+                    .collect(),
+                _ => Vec::new(),
+            });
         texts.collect()
     }
 
@@ -260,7 +294,8 @@ mod tests {
         let mut usage = Usage::default();
         usage.total_tokens = Some(50_000);
         let answering = MockCompletionModel::from_turns([
-            MockTurn::tool_call("1", "skill", serde_json::json!({ "name": "none" })).with_usage(usage),
+            MockTurn::tool_call("1", "skill", serde_json::json!({ "name": "none" }))
+                .with_usage(usage),
             MockTurn::text("done"),
         ]);
         let summarizing = MockCompletionModel::text("Asked about the parser.");
@@ -272,7 +307,14 @@ mod tests {
         let summarizer = Model::scripted("openai/mock", summarizing.clone());
         let compactor = Compactor::new(&config, &summarizer, &Providers::default()).unwrap();
         let run = Arc::new(Run::new("q3".into(), "openai/mock".into(), 4, || {}));
-        let live = Arc::new(Live::new(compactor, run, 4, 0, SummaryState::default(), None));
+        let live = Arc::new(Live::new(
+            compactor,
+            run,
+            4,
+            0,
+            SummaryState::default(),
+            None,
+        ));
         let history = [
             Message::user("q1"),
             Message::assistant("a1"),
@@ -281,7 +323,9 @@ mod tests {
         ];
 
         AgentBuilder::new(answering.clone())
-            .tool(Load { skills: Arc::from([]) })
+            .tool(Load {
+                skills: Arc::from([]),
+            })
             .add_hook(Hook(live.clone()))
             .default_max_turns(3)
             .build()
@@ -293,11 +337,22 @@ mod tests {
 
         let sent = answering.requests();
         assert_eq!(sent.len(), 2);
-        assert_eq!(texts(&sent[0]).first().map(String::as_str), Some("q1"), "not due before the first call");
+        assert_eq!(
+            texts(&sent[0]).first().map(String::as_str),
+            Some("q1"),
+            "not due before the first call"
+        );
         let after = texts(&sent[1]);
         assert_eq!(summary_in(&after[0]), Some("Asked about the parser."));
-        assert!(!after.iter().any(|text| text == "q1" || text == "q2"), "{after:?}");
+        assert!(
+            !after.iter().any(|text| text == "q1" || text == "q2"),
+            "{after:?}"
+        );
         assert_eq!(summarizing.request_count(), 1);
-        assert_eq!(live.applied().map(|applied| applied.at), Some(3), "kept from the long answer");
+        assert_eq!(
+            live.applied().map(|applied| applied.at),
+            Some(3),
+            "kept from the long answer"
+        );
     }
 }

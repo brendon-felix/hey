@@ -65,7 +65,10 @@ pub async fn confirm(ask: &Ask, style: &render::Style) -> Decision {
             agent,
             machine,
         } => {
-            let on = machine.as_ref().map(|machine| format!(" on {machine}")).unwrap_or_default();
+            let on = machine
+                .as_ref()
+                .map(|machine| format!(" on {machine}"))
+                .unwrap_or_default();
             let question = match agent {
                 Some(agent) => format!("Run `{name}`{on} for agent “{agent}”?"),
                 None => format!("Run `{name}`{on}?"),
@@ -126,11 +129,17 @@ async fn approve_plan(plan: &str, style: &render::Style) -> Decision {
         "Tell it what to change…".to_owned(),
     ];
     let picked = async {
-        let mut menu = Menu::open("Approve this plan and leave plan mode?".to_owned(), options.into())?;
+        let mut menu = Menu::open(
+            "Approve this plan and leave plan mode?".to_owned(),
+            options.into(),
+        )?;
         match menu.answer().await? {
             Answer::Picked(0) => io::Result::Ok(Decision::Once),
             Answer::Picked(1) | Answer::Dismissed => Ok(Decision::Decline),
-            Answer::Picked(_) => Ok(menu.typed().await?.map_or(Decision::Decline, Decision::Answer)),
+            Answer::Picked(_) => Ok(menu
+                .typed()
+                .await?
+                .map_or(Decision::Decline, Decision::Answer)),
             Answer::Interrupted => Ok(Decision::Stop),
         }
     };
@@ -186,7 +195,11 @@ impl Menu {
                     self.selected = self.selected.checked_sub(1).unwrap_or(last);
                 }
                 KeyCode::Down | KeyCode::Tab | KeyCode::Char('j') => {
-                    self.selected = if self.selected == last { 0 } else { self.selected + 1 };
+                    self.selected = if self.selected == last {
+                        0
+                    } else {
+                        self.selected + 1
+                    };
                 }
                 _ => {}
             }
@@ -214,7 +227,9 @@ impl Menu {
                 KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                     return Err(ErrorKind::Interrupted.into());
                 }
-                KeyCode::Enter => return Ok(Some(typed.trim().to_owned()).filter(|typed| !typed.is_empty())),
+                KeyCode::Enter => {
+                    return Ok(Some(typed.trim().to_owned()).filter(|typed| !typed.is_empty()));
+                }
                 KeyCode::Esc => return Ok(None),
                 KeyCode::Backspace => {
                     typed.pop();
@@ -245,7 +260,11 @@ impl Menu {
         for (index, option) in self.options.iter().enumerate() {
             let option = render::clip(option, width);
             let row = match index == self.selected {
-                true => format!("{} {}", palette.accent.paint("❯"), palette.name.paint(&option)),
+                true => format!(
+                    "{} {}",
+                    palette.accent.paint("❯"),
+                    palette.name.paint(&option)
+                ),
                 false => format!("  {option}"),
             };
             queue!(out, Print("\r\n"), Print(row))?;

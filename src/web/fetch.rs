@@ -65,12 +65,19 @@ impl Tool for Fetch {
         ToolAnnotations::default().with_read_only(true)
     }
 
-    async fn call(&self, _context: &mut ToolContext, args: FetchArgs) -> Result<String, ToolExecutionError> {
+    async fn call(
+        &self,
+        _context: &mut ToolContext,
+        args: FetchArgs,
+    ) -> Result<String, ToolExecutionError> {
         let url = Url::parse(&args.url)
             .ok()
             .filter(|url| matches!(url.scheme(), "http" | "https"))
             .ok_or_else(|| {
-                ToolExecutionError::invalid_args(format!("`{}` is not an http or https URL", args.url))
+                ToolExecutionError::invalid_args(format!(
+                    "`{}` is not an http or https URL",
+                    args.url
+                ))
             })?;
         let page = self.download(url).await?;
         tokio::task::spawn_blocking(move || page.into_markdown(args.whole))
@@ -107,7 +114,11 @@ impl Fetch {
         })?;
         let url = response.url().clone();
         let mut body = Vec::new();
-        while let Some(chunk) = response.chunk().await.map_err(|error| network_error(&what, error))? {
+        while let Some(chunk) = response
+            .chunk()
+            .await
+            .map_err(|error| network_error(&what, error))?
+        {
             if body.len() + chunk.len() > MAX_PAGE_BYTES {
                 return Err(ToolExecutionError::other(format!(
                     "{what} is larger than {} MiB",
@@ -145,7 +156,11 @@ enum Kind {
 impl Kind {
     fn of(content_type: &Mime) -> Option<Self> {
         let suffix = content_type.suffix().map(|suffix| suffix.as_str());
-        match (content_type.type_().as_str(), content_type.subtype().as_str(), suffix) {
+        match (
+            content_type.type_().as_str(),
+            content_type.subtype().as_str(),
+            suffix,
+        ) {
             ("text", "html", _) | ("application", "xhtml", _) => Some(Kind::Html),
             ("text", ..)
             | ("application", "json" | "xml" | "javascript" | "yaml" | "toml", _)

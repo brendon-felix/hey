@@ -9,8 +9,8 @@
 use std::sync::{Arc, Mutex, PoisonError};
 
 use rig_agent::agent::{
-    AgentHook, CompletionCallAction, CompletionCallEvent, HookContext, ModelTurnAction, ModelTurnFinished,
-    ObservationAction, RunStart, RunStartAction, TextDelta,
+    AgentHook, CompletionCallAction, CompletionCallEvent, HookContext, ModelTurnAction,
+    ModelTurnFinished, ObservationAction, RunStart, RunStartAction, TextDelta,
 };
 use rig_core::conversation::pairing;
 use rig_core::message::{AssistantContent, AssistantMessage, Message};
@@ -49,7 +49,11 @@ impl Record {
         let reply = match &said.reply {
             Reply::Waiting => None,
             Reply::Streaming(text) if text.trim().is_empty() => None,
-            Reply::Streaming(text) => Some(AssistantMessage::aborted(None, vec![AssistantContent::text(text)], reason)),
+            Reply::Streaming(text) => Some(AssistantMessage::aborted(
+                None,
+                vec![AssistantContent::text(text)],
+                reason,
+            )),
             Reply::Finished(content) => Some(AssistantMessage::new(content.clone())),
         };
         let messages = said
@@ -82,7 +86,11 @@ impl AgentHook for Record {
         RunStartAction::Continue
     }
 
-    async fn on_completion_call(&self, _ctx: &HookContext, event: CompletionCallEvent<'_>) -> CompletionCallAction {
+    async fn on_completion_call(
+        &self,
+        _ctx: &HookContext,
+        event: CompletionCallEvent<'_>,
+    ) -> CompletionCallAction {
         let mut said = self.lock();
         said.sent = sent(event.history, event.prompt);
         said.reply = Reply::Waiting;
@@ -98,7 +106,11 @@ impl AgentHook for Record {
         ObservationAction::Continue
     }
 
-    async fn on_model_turn_finished(&self, _ctx: &HookContext, event: ModelTurnFinished<'_>) -> ModelTurnAction {
+    async fn on_model_turn_finished(
+        &self,
+        _ctx: &HookContext,
+        event: ModelTurnFinished<'_>,
+    ) -> ModelTurnAction {
         self.lock().reply = Reply::Finished(event.content.clone());
         ModelTurnAction::Continue
     }
@@ -132,11 +144,17 @@ mod tests {
                 MockStreamEvent::tool_call("1", "note", json!({})),
                 MockStreamEvent::final_response(Usage::default()),
             ],
-            vec![MockStreamEvent::text("Now 08 and 09:"), MockStreamEvent::error("connection reset")],
+            vec![
+                MockStreamEvent::text("Now 08 and 09:"),
+                MockStreamEvent::error("connection reset"),
+            ],
         ]);
-        let note = DynamicTool::new(ToolName::new("note").unwrap(), "", json!({ "type": "object" }), |_| {
-            Box::pin(async { Ok(ToolOutput::text("noted")) })
-        });
+        let note = DynamicTool::new(
+            ToolName::new("note").unwrap(),
+            "",
+            json!({ "type": "object" }),
+            |_| Box::pin(async { Ok(ToolOutput::text("noted")) }),
+        );
         let record = Record::default();
         let agent = AgentBuilder::new(model)
             .dynamic_tools(vec![note])
@@ -148,12 +166,20 @@ mod tests {
 
         let said = record.said("connection reset");
         assert!(pairing::validate(&said).is_ok());
-        assert_eq!(said.len(), 4, "the prompt, the first turn, its result and the reply cut short");
+        assert_eq!(
+            said.len(),
+            4,
+            "the prompt, the first turn, its result and the reply cut short"
+        );
         assert!(matches!(&said[0], Message::User { .. }));
         let Message::Assistant(cut) = &said[3] else {
             panic!("{:?}", said[3]);
         };
-        assert!(matches!(&cut.stop, Some(StopReason::Aborted(reason)) if reason == "connection reset"));
-        assert!(matches!(&cut.content[..], [AssistantContent::Text(text)] if text.text == "Now 08 and 09:"));
+        assert!(
+            matches!(&cut.stop, Some(StopReason::Aborted(reason)) if reason == "connection reset")
+        );
+        assert!(
+            matches!(&cut.content[..], [AssistantContent::Text(text)] if text.text == "Now 08 and 09:")
+        );
     }
 }

@@ -63,7 +63,10 @@ impl Workspace for Fenced {
             .iter()
             .map(|path| {
                 self.check(path).ok()?;
-                Local.read_files(std::slice::from_ref(path), limit).pop().flatten()
+                Local
+                    .read_files(std::slice::from_ref(path), limit)
+                    .pop()
+                    .flatten()
             })
             .collect()
     }
@@ -83,7 +86,12 @@ impl Workspace for Fenced {
         Local.replace(path, bytes, limit)
     }
 
-    fn write_if(&self, path: &Path, bytes: &[u8], held: &ContentHash) -> io::Result<Option<Contents>> {
+    fn write_if(
+        &self,
+        path: &Path,
+        bytes: &[u8],
+        held: &ContentHash,
+    ) -> io::Result<Option<Contents>> {
         self.check(path)?;
         Local.write_if(path, bytes, held)
     }
@@ -149,7 +157,9 @@ mod tests {
         let fenced = Fenced::new(vec![canonical.join("secret")]);
 
         assert!(fenced.read(&root.join("open.txt"), 100).is_ok());
-        let refused = fenced.read(&root.join("secret/../secret/key.txt"), 100).unwrap_err();
+        let refused = fenced
+            .read(&root.join("secret/../secret/key.txt"), 100)
+            .unwrap_err();
         assert_eq!(refused.kind(), ErrorKind::PermissionDenied);
         assert!(fenced.write(&root.join("secret/new.txt"), b"x").is_err());
         assert!(!root.join("secret/new.txt").exists());

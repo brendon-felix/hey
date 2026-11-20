@@ -105,7 +105,9 @@ impl Watch {
     async fn listen(self, backend: Backend) {
         loop {
             if let Ok(mut activity) = backend.activity().await {
-                while let Ok(Some(Ok(activities))) = tokio::time::timeout(SILENCE, activity.next()).await {
+                while let Ok(Some(Ok(activities))) =
+                    tokio::time::timeout(SILENCE, activity.next()).await
+                {
                     self.update(activities);
                 }
             }
@@ -120,8 +122,13 @@ impl Watch {
     /// still leaves its id.
     fn update(&self, activities: Activities) {
         let mut state = self.lock();
-        let was = state.activities.get(&state.current).and_then(|activity| activity.run);
-        let now = activities.get(&state.current).and_then(|activity| activity.run);
+        let was = state
+            .activities
+            .get(&state.current)
+            .and_then(|activity| activity.run);
+        let now = activities
+            .get(&state.current)
+            .and_then(|activity| activity.run);
         if now.is_some() && now != was && !state.following {
             state.wake.store(true, Ordering::Relaxed);
         }
@@ -181,18 +188,34 @@ mod tests {
                 (id("mine"), activity(Some(2), ThreadStatus::Running)),
                 (id("other"), activity(Some(1), ThreadStatus::Unseen)),
                 (id("older"), activity(None, ThreadStatus::Unseen)),
-                (id("shelved"), Activity { archived: true, ..activity(None, ThreadStatus::Unseen) }),
+                (
+                    id("shelved"),
+                    Activity {
+                        archived: true,
+                        ..activity(None, ThreadStatus::Unseen)
+                    },
+                ),
             ]
             .into(),
         );
         assert!(wake.load(Ordering::Relaxed));
-        assert_eq!(watch.elsewhere(), Elsewhere { running: 0, unseen: 2 }, "archived left out");
+        assert_eq!(
+            watch.elsewhere(),
+            Elsewhere {
+                running: 0,
+                unseen: 2
+            },
+            "archived left out"
+        );
 
         watch.rest();
         watch.update([(id("mine"), activity(Some(2), ThreadStatus::Idle))].into());
         assert!(!wake.load(Ordering::Relaxed), "the same run, ended");
 
         watch.update([(id("mine"), activity(Some(3), ThreadStatus::Idle))].into());
-        assert!(wake.load(Ordering::Relaxed), "a run that started and ended unseen by the watch");
+        assert!(
+            wake.load(Ordering::Relaxed),
+            "a run that started and ended unseen by the watch"
+        );
     }
 }

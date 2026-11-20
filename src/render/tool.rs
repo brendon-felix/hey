@@ -23,7 +23,11 @@ pub(super) fn changes(name: &str, args: &str) -> Option<Vec<(Mark, String)>> {
     let lines = match name {
         "write" => {
             let write = serde_json::from_value::<WriteArgs>(args).ok()?;
-            write.content.lines().map(|line| (Mark::Added, line.to_owned())).collect()
+            write
+                .content
+                .lines()
+                .map(|line| (Mark::Added, line.to_owned()))
+                .collect()
         }
         "edit" => {
             let edit = serde_json::from_value::<EditArgs>(args).ok()?;
@@ -49,8 +53,13 @@ pub(super) fn todos(name: &str, args: &str) -> Option<Vec<String>> {
     let lines = todos.iter().map(|todo| {
         let mark = todo.status.mark();
         match todo.status {
-            crate::notes::TodoStatus::Done => format!("  {}", palette.muted.paint(&format!("{mark} {}", todo.text))),
-            crate::notes::TodoStatus::InProgress => format!("  {} {}", palette.accent.paint(mark), todo.text.bold()),
+            crate::notes::TodoStatus::Done => format!(
+                "  {}",
+                palette.muted.paint(&format!("{mark} {}", todo.text))
+            ),
+            crate::notes::TodoStatus::InProgress => {
+                format!("  {} {}", palette.accent.paint(mark), todo.text.bold())
+            }
             crate::notes::TodoStatus::Pending => format!("  {mark} {}", todo.text),
         }
     });
@@ -59,7 +68,11 @@ pub(super) fn todos(name: &str, args: &str) -> Option<Vec<String>> {
 
 /// A result's text, whatever else it holds left out.
 pub(super) fn text(result: &ToolResult) -> String {
-    let text: Vec<_> = result.content.iter().filter_map(|content| content.as_text()).collect();
+    let text: Vec<_> = result
+        .content
+        .iter()
+        .filter_map(|content| content.as_text())
+        .collect();
     text.join("\n")
 }
 
@@ -97,9 +110,18 @@ fn diff<'a>(old: &'a str, new: &'a str) -> Vec<(Mark, &'a str)> {
     let same = |(a, b): (&&str, &&str)| a == b;
     let prefix = old.iter().zip(&new).take_while(|&pair| same(pair)).count();
     let (old, new) = (&old[prefix..], &new[prefix..]);
-    let suffix = old.iter().rev().zip(new.iter().rev()).take_while(|&pair| same(pair)).count();
-    let removed = old[..old.len() - suffix].iter().map(|line| (Mark::Removed, *line));
-    let added = new[..new.len() - suffix].iter().map(|line| (Mark::Added, *line));
+    let suffix = old
+        .iter()
+        .rev()
+        .zip(new.iter().rev())
+        .take_while(|&pair| same(pair))
+        .count();
+    let removed = old[..old.len() - suffix]
+        .iter()
+        .map(|line| (Mark::Removed, *line));
+    let added = new[..new.len() - suffix]
+        .iter()
+        .map(|line| (Mark::Added, *line));
     removed.chain(added).collect()
 }
 
@@ -123,7 +145,10 @@ mod tests {
     fn diffs_leave_out_the_lines_an_edit_keeps() {
         use Mark::{Added, Removed};
         assert_eq!(diff("a\nb\nc", "a\nB\nc"), [(Removed, "b"), (Added, "B")]);
-        assert_eq!(diff("fn f() {\n}", "fn f() {\n    x\n}"), [(Added, "    x")]);
+        assert_eq!(
+            diff("fn f() {\n}", "fn f() {\n    x\n}"),
+            [(Added, "    x")]
+        );
         assert_eq!(diff("a\na", "a"), [(Removed, "a")]);
         assert_eq!(diff("same", "same"), []);
     }
@@ -131,6 +156,9 @@ mod tests {
     #[test]
     fn changes_show_for_calls_routed_to_a_machine() {
         let args = r#"{"path": "a.md", "content": "hi\n", "machine": "turing"}"#;
-        assert_eq!(changes("write", args), Some(vec![(Mark::Added, "hi".to_owned())]));
+        assert_eq!(
+            changes("write", args),
+            Some(vec![(Mark::Added, "hi".to_owned())])
+        );
     }
 }

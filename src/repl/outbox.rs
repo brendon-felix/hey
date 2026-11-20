@@ -67,15 +67,24 @@ impl Outbox {
     pub fn take(&self) -> Vec<String> {
         let mut messages = self.lock();
         let queued = std::mem::take(&mut messages.queued);
-        std::mem::take(&mut messages.steering).into_iter().chain(queued).collect()
+        std::mem::take(&mut messages.steering)
+            .into_iter()
+            .chain(queued)
+            .collect()
     }
 
     /// A row for each message, its first line cut to `width` columns.
     pub fn rows(&self, width: usize) -> Vec<String> {
         let palette = palette();
         let messages = self.lock();
-        let steering = messages.steering.iter().map(|message| ("↳ steering", message));
-        let queued = messages.queued.iter().map(|message| ("+ queued  ", message));
+        let steering = messages
+            .steering
+            .iter()
+            .map(|message| ("↳ steering", message));
+        let queued = messages
+            .queued
+            .iter()
+            .map(|message| ("+ queued  ", message));
         steering
             .chain(queued)
             .map(|(label, message)| {

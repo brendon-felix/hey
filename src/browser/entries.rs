@@ -720,7 +720,7 @@ impl Entry {
                     .map(|row| gutter(&palette.muted.paint(row).italic().to_string()))
                     .collect()
             }
-            Kind::Tool(tool) if self.expanded => tool.body(inner(width)),
+            Kind::Tool(tool) if self.expanded => tool.body(inner(width), style),
             Kind::Agent(agent) if self.expanded => agent.body(inner(width), style),
             Kind::Compacted { summary, .. } if self.expanded => {
                 markdown(summary, inner(width), style)
@@ -785,8 +785,9 @@ impl Tool {
         )
     }
 
-    fn body(&self, width: usize) -> Vec<String> {
+    fn body(&self, width: usize, style: &Style) -> Vec<String> {
         let palette = palette();
+        let path = render::call_path(&self.args);
         let muted = |text: &str| {
             render::wrapped(text, width)
                 .iter()
@@ -808,7 +809,25 @@ impl Tool {
             render::todo_rows(&self.name, &self.args),
         ) {
             (Some(lines), _) => {
+                let mut added = render::Code::new(path.as_deref(), style.highlight);
+                let mut removed = render::Code::new(path.as_deref(), style.highlight);
                 for (mark, line) in lines {
+                    let code = if mark == '-' {
+                        &mut removed
+                    } else {
+                        &mut added
+                    };
+                    if code.is_on() {
+                        let sign = match mark {
+                            '-' => "- ".red().to_string(),
+                            _ => "+ ".green().to_string(),
+                        };
+                        rows.push(gutter(&format!(
+                            "{sign}{}",
+                            code.row(&line, width.saturating_sub(2))
+                        )));
+                        continue;
+                    }
                     let row = render::clip(&format!("{mark} {line}"), width);
                     rows.push(gutter(&match mark {
                         '-' => row.red().to_string(),
@@ -840,7 +859,19 @@ impl Tool {
             rows.push(gutter(
                 &palette.muted.paint(&"─".repeat(width.min(40))).to_string(),
             ));
-            rows.extend(plain(given.trim_end()));
+            let mut code = render::Code::new(path.as_deref(), style.highlight);
+            if self.name == "read" && code.is_on() {
+                let lines = render::read_lines(given).trim_end();
+                for line in lines.lines() {
+                    rows.push(gutter(&code.row(line, width)));
+                }
+                let notes = given[lines.len()..].trim();
+                if !notes.is_empty() {
+                    rows.extend(muted(notes));
+                }
+            } else {
+                rows.extend(plain(given.trim_end()));
+            }
         }
         rows
     }

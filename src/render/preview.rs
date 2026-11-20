@@ -79,7 +79,10 @@ impl Preview {
             }
             // Reasoning spaces its paragraphs, which would waste a preview's rows.
             if self.source == Source::Reasoning
-                && self.lines.back().is_some_and(|line| line.ends_with('\n') && blank(line))
+                && self
+                    .lines
+                    .back()
+                    .is_some_and(|line| line.ends_with('\n') && blank(line))
             {
                 self.lines.pop_back();
                 self.total -= 1;
@@ -125,12 +128,15 @@ impl Preview {
 
     /// At most [`PREVIEW_LINES`] rows, none wider than `width` columns.
     fn rows(&self, width: usize) -> Vec<Row> {
-        let lines = self.lines.iter().map(|line| line.strip_suffix('\n').unwrap_or(line));
+        let lines = self
+            .lines
+            .iter()
+            .map(|line| line.strip_suffix('\n').unwrap_or(line));
         let lines = lines.map(|line| line.replace('\t', "    "));
         let mut rows: Vec<Row> = match self.source {
-            Source::Command | Source::Returned => {
-                lines.map(|line| Row::new(&[(&clip(&line, width), Style::new())])).collect()
-            }
+            Source::Command | Source::Returned => lines
+                .map(|line| Row::new(&[(&clip(&line, width), Style::new())]))
+                .collect(),
             Source::Changes => lines.map(|line| change(&line, width)).collect(),
             Source::Agents => lines.map(|line| step(&line, width)).collect(),
             Source::Reasoning => lines
@@ -183,7 +189,10 @@ pub struct Row {
 impl Row {
     fn new(parts: &[(&str, Style)]) -> Self {
         Self {
-            painted: parts.iter().map(|(text, style)| text.paint(*style).to_string()).collect(),
+            painted: parts
+                .iter()
+                .map(|(text, style)| text.paint(*style).to_string())
+                .collect(),
             width: parts.iter().map(|(text, _)| display_width(text)).sum(),
         }
     }
@@ -197,7 +206,12 @@ fn inner(width: usize) -> usize {
 
 /// `rows` in a box `width` columns wide, its borders muted, with `top` and
 /// `bottom` set in them.
-pub fn framed(top: &str, rows: impl IntoIterator<Item = Row>, bottom: &str, width: usize) -> Vec<String> {
+pub fn framed(
+    top: &str,
+    rows: impl IntoIterator<Item = Row>,
+    bottom: &str,
+    width: usize,
+) -> Vec<String> {
     let inner = inner(width);
     let muted = palette().muted;
     let border = |left: &str, label: &str, right: &str| {
@@ -263,7 +277,10 @@ impl Call {
             false => summarize(&args),
         };
         let machine = machine.as_ref().and_then(serde_json::Value::as_str);
-        let mut rows = vec![String::new(), call_line(&self.name, machine, &summary, width)];
+        let mut rows = vec![
+            String::new(),
+            call_line(&self.name, machine, &summary, width),
+        ];
         if let Some(text) = writing(&self.args).filter(|text| text.contains('\n')) {
             let room = height.saturating_sub(rows.len() + 2);
             rows.extend(boxed(&text, width, room.min(ROWS)));
@@ -292,7 +309,9 @@ fn boxed(text: &str, width: usize, height: usize) -> Vec<String> {
         1 => "1 more line".to_owned(),
         lines => format!("{lines} more lines"),
     };
-    let shown = shown.iter().map(|(_, row)| Row::new(&[(row, Style::new())]));
+    let shown = shown
+        .iter()
+        .map(|(_, row)| Row::new(&[(row, Style::new())]));
     framed("", shown, &left_out, width)
 }
 
@@ -340,7 +359,10 @@ fn writing(json: &str) -> Option<String> {
         .rev()
         .filter_map(|&(start, end)| serde_json::from_str(&json[start..end]).ok())
         .collect();
-    let multiline = texts.iter().position(|text| text.contains('\n')).unwrap_or(0);
+    let multiline = texts
+        .iter()
+        .position(|text| text.contains('\n'))
+        .unwrap_or(0);
     texts.into_iter().nth(multiline)
 }
 
@@ -363,11 +385,17 @@ mod tests {
     #[test]
     fn shows_the_value_being_written_or_written_last() {
         let cases = [
-            (r#"{"path": "a.rs", "content": "fn main() {\n    pri"#, Some("fn main() {\n    pri")),
+            (
+                r#"{"path": "a.rs", "content": "fn main() {\n    pri"#,
+                Some("fn main() {\n    pri"),
+            ),
             (r#"{"path": "a.rs", "cont"#, Some("a.rs")),
             (r#"{"content": "say \"hi\"\"#, Some("say \"hi\"")),
             (r#"{"content": "caf\u00e9 \u00"#, Some("café ")),
-            (r#"{"edits": [{"old_text": "a", "new_text": "b\nc"}]}"#, Some("b\nc")),
+            (
+                r#"{"edits": [{"old_text": "a", "new_text": "b\nc"}]}"#,
+                Some("b\nc"),
+            ),
             (r#"{"content": "b\nc", "machine": "turing"}"#, Some("b\nc")),
             (r#"{"path""#, None),
         ];
@@ -380,7 +408,12 @@ mod tests {
     fn previews_the_latest_reasoning_wrapped_without_its_gaps() {
         yansi::disable();
         let mut preview = Preview::new(Source::Reasoning);
-        for piece in ["one\n\ntwo\n", "\nthree four five six", " seven\n  \n", "eight\nnine\nten"] {
+        for piece in [
+            "one\n\ntwo\n",
+            "\nthree four five six",
+            " seven\n  \n",
+            "eight\nnine\nten",
+        ] {
             preview.push(piece);
         }
         assert_eq!(
@@ -438,6 +471,10 @@ mod tests {
             ]
         );
         assert!(rows.iter().all(|row| display_width(row) == 20));
-        assert!(boxed("a\nb\nc", 8, 1).iter().all(|row| display_width(row) == 8));
+        assert!(
+            boxed("a\nb\nc", 8, 1)
+                .iter()
+                .all(|row| display_width(row) == 8)
+        );
     }
 }

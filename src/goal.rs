@@ -26,11 +26,16 @@ pub struct Judgement {
 
 /// Whether `reply` shows `condition` met, as `model` judges it.
 pub async fn judge(model: &Model, condition: &str, reply: &str) -> Result<Judgement> {
-    let judge = AgentBuilder::new(model.completion()).preamble(PROMPT).build();
-    let request = format!("<goal>\n{condition}\n</goal>\n\n<latest_reply>\n{reply}\n</latest_reply>");
-    let answer = crate::retry::model("judging a goal", || async { judge.prompt(request.clone()).await })
-        .await?
-        .output();
+    let judge = AgentBuilder::new(model.completion())
+        .preamble(PROMPT)
+        .build();
+    let request =
+        format!("<goal>\n{condition}\n</goal>\n\n<latest_reply>\n{reply}\n</latest_reply>");
+    let answer = crate::retry::model("judging a goal", || async {
+        judge.prompt(request.clone()).await
+    })
+    .await?
+    .output();
     read(&answer)
 }
 
@@ -57,8 +62,15 @@ mod tests {
 
     #[test]
     fn reads_json_wrapped_in_prose() {
-        let judged = read("Sure:\n```json\n{\"met\": false, \"reason\": \"tests fail\"}\n```").unwrap();
-        assert_eq!(judged, Judgement { met: false, reason: "tests fail".into() });
+        let judged =
+            read("Sure:\n```json\n{\"met\": false, \"reason\": \"tests fail\"}\n```").unwrap();
+        assert_eq!(
+            judged,
+            Judgement {
+                met: false,
+                reason: "tests fail".into()
+            }
+        );
         assert!(read("yes").is_err());
     }
 
@@ -66,7 +78,9 @@ mod tests {
     async fn the_judge_reads_the_goal_and_reply() {
         let mock = MockCompletionModel::text("{\"met\": true}");
         let model = Model::scripted("openai/mock", mock.clone());
-        let judged = judge(&model, "all tests pass", "All 40 tests pass.").await.unwrap();
+        let judged = judge(&model, "all tests pass", "All 40 tests pass.")
+            .await
+            .unwrap();
         assert!(judged.met);
         assert_eq!(mock.request_count(), 1);
     }

@@ -39,7 +39,10 @@ impl Field {
             KeyCode::Char('w') if control => self.erase_back(self.word_start()),
             KeyCode::Char('u') if control => self.erase_back(0),
             KeyCode::Delete => _ = self.text.drain(self.cursor..self.next()),
-            KeyCode::Char(_) if key.modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) => {}
+            KeyCode::Char(_)
+                if key
+                    .modifiers
+                    .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) => {}
             KeyCode::Char(c) => {
                 self.text.insert(self.cursor, c);
                 self.cursor += c.len_utf8();
@@ -63,8 +66,15 @@ impl Field {
         let at = self.text[..self.cursor].graphemes(true).count();
         let start = (at + 1).saturating_sub(width);
         let end = graphemes.len().min(start + width);
-        let after = graphemes.get(at + 1..end).map(<[&str]>::concat).unwrap_or_default();
-        (graphemes[start..at].concat(), graphemes.get(at).copied().unwrap_or(" "), after)
+        let after = graphemes
+            .get(at + 1..end)
+            .map(<[&str]>::concat)
+            .unwrap_or_default();
+        (
+            graphemes[start..at].concat(),
+            graphemes.get(at).copied().unwrap_or(" "),
+            after,
+        )
     }
 
     fn erase_back(&mut self, to: usize) {
@@ -115,7 +125,10 @@ mod tests {
         assert_eq!(field.text(), "café crème🇵🇹!");
         field.key(KeyEvent::new(KeyCode::Char('w'), KeyModifiers::CONTROL));
         assert_eq!(field.text(), "café ");
-        typed(&mut field, &[KeyCode::Home, KeyCode::Delete, KeyCode::Char('C')]);
+        typed(
+            &mut field,
+            &[KeyCode::Home, KeyCode::Delete, KeyCode::Char('C')],
+        );
         assert_eq!(field.text(), "Café ");
     }
 

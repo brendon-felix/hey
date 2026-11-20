@@ -52,9 +52,15 @@ impl Tool for Compact {
             .with_open_world(false)
     }
 
-    async fn call(&self, _context: &mut ToolContext, args: CompactArgs) -> Result<String, ToolExecutionError> {
+    async fn call(
+        &self,
+        _context: &mut ToolContext,
+        args: CompactArgs,
+    ) -> Result<String, ToolExecutionError> {
         match self.run.compact(args.focus.as_deref().unwrap_or_default()) {
-            true => Ok("The conversation is compacted before your next step; go on with the work.".into()),
+            true => Ok(
+                "The conversation is compacted before your next step; go on with the work.".into(),
+            ),
             false => Err(ToolExecutionError::new(
                 ToolErrorKind::Other,
                 "this answer is ending, so there is no next step to compact before",

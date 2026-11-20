@@ -41,7 +41,9 @@ pub fn init(config: &config::Log) -> Result<WorkerGuard> {
         .with_context(|| format!("cannot log to {}", dir.display()))?;
     let (writer, guard) = tracing_appender::non_blocking(file);
     let filter = match std::env::var(ENV) {
-        Ok(directives) => EnvFilter::try_new(&directives).with_context(|| format!("invalid `{ENV}`"))?,
+        Ok(directives) => {
+            EnvFilter::try_new(&directives).with_context(|| format!("invalid `{ENV}`"))?
+        }
         Err(_) => EnvFilter::try_new(&config.filter).context("invalid `log.filter`")?,
     };
     tracing_subscriber::fmt()

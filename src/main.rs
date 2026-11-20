@@ -39,6 +39,8 @@ mod sessions;
 mod skills;
 mod steer;
 mod subagents;
+mod sync;
+mod table;
 mod terminal;
 mod token;
 mod toolbox;
@@ -359,6 +361,10 @@ async fn connect(args: &Args, config: &Config) -> Result<Backend> {
             let workbench = Workbench::new(config).await?;
             let machine = Machine::here(config.file.as_deref());
             let client = Client::connect(name, remote, machine, workbench.lent()).await?;
+            if !config.sync.paths.is_empty() {
+                let entries = sync::entries(&config.sync.paths)?;
+                sync::spawn(client.clone(), entries, config.sync.interval());
+            }
             Ok(Backend::Remote(client, Arc::new(workbench)))
         }
         None => Ok(Backend::Local(Arc::new(

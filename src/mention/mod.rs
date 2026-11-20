@@ -80,7 +80,10 @@ impl<'a> Mention<'a> {
     /// What `name` finds this refers to, and the span referring to it:
     /// punctuation ending an unquoted mention is left out unless the whole of
     /// it names something.
-    pub fn resolve<T>(&self, name: impl Fn(Reference<'a>) -> Option<T>) -> Option<(T, Range<usize>)> {
+    pub fn resolve<T>(
+        &self,
+        name: impl Fn(Reference<'a>) -> Option<T>,
+    ) -> Option<(T, Range<usize>)> {
         let trimmed = match self.quoted {
             true => self.text,
             false => self.text.trim_end_matches(PUNCTUATION),
@@ -204,7 +207,8 @@ impl Item {
         match self {
             Self::File(path) if rig_tools::attach::is_image_path(path) => {
                 use rig_core::message::{DocumentSourceKind, UserContent};
-                let read = rig_tools::attach::read_image(&rig_tools::workspace::Local, path).map_err(|why| anyhow!(why))?;
+                let read = rig_tools::attach::read_image(&rig_tools::workspace::Local, path)
+                    .map_err(|why| anyhow!(why))?;
                 match read {
                     UserContent::Image(image) => match image.data {
                         DocumentSourceKind::Base64(data) => Ok(Attachment::Image {
@@ -308,9 +312,9 @@ mod tests {
             .filter_map(|mention| {
                 mention.resolve(|reference| match reference {
                     Reference::Local(path) => Item::local(path).map(|_| reference),
-                    Reference::Shared("guide.md") | Reference::Thread("x") | Reference::Skill("pdf") => {
-                        Some(reference)
-                    }
+                    Reference::Shared("guide.md")
+                    | Reference::Thread("x")
+                    | Reference::Skill("pdf") => Some(reference),
                     Reference::Shared(_) | Reference::Thread(_) | Reference::Skill(_) => None,
                 })
             })

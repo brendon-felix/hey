@@ -46,14 +46,21 @@ pub struct Tag {
 impl Kit {
     /// The tools of one agent, sharing what it has `seen` and showing a
     /// running command's output through `live`; `tag` names a subagent.
-    pub fn tools(&self, seen: &Seen, live: Option<Live>, tag: Option<Tag>) -> (Vec<DynamicTool>, Arc<Routes>) {
+    pub fn tools(
+        &self,
+        seen: &Seen,
+        live: Option<Live>,
+        tag: Option<Tag>,
+    ) -> (Vec<DynamicTool>, Arc<Routes>) {
         let own = self.toolbox.tools(seen, Place::here(live));
         let own: Vec<DynamicTool> = match &self.turn {
             None => own,
             Some(turn) => own
                 .into_iter()
                 .map(|tool| match tool.name().as_str() {
-                    "write" | "edit" | "move" | "delete" => checkpoint::files(tool, turn.clone(), None),
+                    "write" | "edit" | "move" | "delete" => {
+                        checkpoint::files(tool, turn.clone(), None)
+                    }
                     "shell" => checkpoint::shell(tool, turn.clone()),
                     _ => tool,
                 })
@@ -90,29 +97,56 @@ impl Kit {
         let parameters = with_machine(definition.parameters, host, client);
         let (run, routes) = (self.run.clone(), routes.clone());
         let name = definition.name.clone();
-        DynamicTool::new_with_context(definition.name, description, parameters, move |context, mut args| {
-            let (tool, run, routes, name, tag) = (tool.clone(), run.clone(), routes.clone(), name.clone(), tag.clone());
-            Box::pin(async move {
-                let machine = take_machine(&mut args);
-                match routes.target(name.as_str(), machine.as_deref()) {
-                    Ok(Target::Host) => tool.run_with(context, args).await,
-                    Ok(Target::Client(machine)) => call(&run, machine, name.as_str(), args, tag).await,
-                    Err(error) => Err(ToolExecutionError::invalid_args(error)),
-                }
-            })
-        })
+        DynamicTool::new_with_context(
+            definition.name,
+            description,
+            parameters,
+            move |context, mut args| {
+                let (tool, run, routes, name, tag) = (
+                    tool.clone(),
+                    run.clone(),
+                    routes.clone(),
+                    name.clone(),
+                    tag.clone(),
+                );
+                Box::pin(async move {
+                    let machine = take_machine(&mut args);
+                    match routes.target(name.as_str(), machine.as_deref()) {
+                        Ok(Target::Host) => tool.run_with(context, args).await,
+                        Ok(Target::Client(machine)) => {
+                            call(&run, machine, name.as_str(), args, tag).await
+                        }
+                        Err(error) => Err(ToolExecutionError::invalid_args(error)),
+                    }
+                })
+            },
+        )
         .with_annotations(definition.annotations)
     }
 
     /// A tool only the client has, run there.
-    fn client_only(&self, definition: ToolDefinition, machine: &str, tag: Option<Tag>) -> DynamicTool {
-        let description = format!("{}\n\nRuns on `{machine}`, the user's machine.", definition.description);
+    fn client_only(
+        &self,
+        definition: ToolDefinition,
+        machine: &str,
+        tag: Option<Tag>,
+    ) -> DynamicTool {
+        let description = format!(
+            "{}\n\nRuns on `{machine}`, the user's machine.",
+            definition.description
+        );
         let (run, machine) = (self.run.clone(), machine.to_owned());
         let name = definition.name.clone();
-        DynamicTool::new_with_context(definition.name, description, definition.parameters, move |_context, args| {
-            let (run, machine, name, tag) = (run.clone(), machine.clone(), name.clone(), tag.clone());
-            Box::pin(async move { call(&run, machine, name.as_str(), args, tag).await })
-        })
+        DynamicTool::new_with_context(
+            definition.name,
+            description,
+            definition.parameters,
+            move |_context, args| {
+                let (run, machine, name, tag) =
+                    (run.clone(), machine.clone(), name.clone(), tag.clone());
+                Box::pin(async move { call(&run, machine, name.as_str(), args, tag).await })
+            },
+        )
         .with_annotations(definition.annotations)
     }
 }
@@ -174,7 +208,9 @@ impl Routes {
                 let on = match shared {
                     None => On::Client,
                     // A tool with an argument of the same name stays the host's.
-                    Some(own) if own.definition().parameters["properties"].get(ARG).is_some() => return None,
+                    Some(own) if own.definition().parameters["properties"].get(ARG).is_some() => {
+                        return None;
+                    }
                     Some(_) => On::Either,
                 };
                 Some((tool.name.as_str().to_owned(), on))
@@ -264,9 +300,15 @@ mod tests {
 
     fn routes() -> Routes {
         let own = [
-            tool("read", json!({ "type": "object", "properties": { "path": {} } })),
+            tool(
+                "read",
+                json!({ "type": "object", "properties": { "path": {} } }),
+            ),
             tool("skill", json!({ "type": "object" })),
-            tool("mcp__x__y", json!({ "type": "object", "properties": { "machine": {} } })),
+            tool(
+                "mcp__x__y",
+                json!({ "type": "object", "properties": { "machine": {} } }),
+            ),
         ];
         let lent = Lent {
             machine: "laptop".into(),
@@ -281,12 +323,36 @@ mod tests {
     fn calls_to_a_tool_both_have_name_the_machine_and_others_run_where_the_tool_is() {
         let routes = routes();
         let laptop = || Ok(Target::Client("laptop".into()));
-        assert!(routes.target_of("read", r#"{"path": "a"}"#).unwrap_err().contains("`machine` is required"));
-        assert_eq!(routes.target_of("read", r#"{"machine": "fermi"}"#), Ok(Target::Host));
-        assert_eq!(routes.target_of("read", r#"{"machine": "laptop"}"#), laptop());
-        assert!(routes.target_of("read", r#"{"machine": "desk"}"#).unwrap_err().contains("no machine `desk`"));
-        assert_eq!(routes.target_of("skill", r#"{"machine": "laptop"}"#), Ok(Target::Host), "the host's own");
-        assert_eq!(routes.target_of("mcp__nu__run", "{}"), laptop(), "the client's own");
+        assert!(
+            routes
+                .target_of("read", r#"{"path": "a"}"#)
+                .unwrap_err()
+                .contains("`machine` is required")
+        );
+        assert_eq!(
+            routes.target_of("read", r#"{"machine": "fermi"}"#),
+            Ok(Target::Host)
+        );
+        assert_eq!(
+            routes.target_of("read", r#"{"machine": "laptop"}"#),
+            laptop()
+        );
+        assert!(
+            routes
+                .target_of("read", r#"{"machine": "desk"}"#)
+                .unwrap_err()
+                .contains("no machine `desk`")
+        );
+        assert_eq!(
+            routes.target_of("skill", r#"{"machine": "laptop"}"#),
+            Ok(Target::Host),
+            "the host's own"
+        );
+        assert_eq!(
+            routes.target_of("mcp__nu__run", "{}"),
+            laptop(),
+            "the client's own"
+        );
         assert_eq!(
             routes.target_of("mcp__x__y", r#"{"machine": "laptop"}"#),
             Ok(Target::Host),
@@ -296,8 +362,15 @@ mod tests {
 
     #[test]
     fn the_machine_argument_is_required_and_taken_out_before_the_tool_sees_it() {
-        let parameters = with_machine(json!({ "type": "object", "required": ["path"] }), "fermi", "laptop");
-        assert_eq!(parameters["properties"]["machine"]["enum"], json!(["fermi", "laptop"]));
+        let parameters = with_machine(
+            json!({ "type": "object", "required": ["path"] }),
+            "fermi",
+            "laptop",
+        );
+        assert_eq!(
+            parameters["properties"]["machine"]["enum"],
+            json!(["fermi", "laptop"])
+        );
         assert_eq!(parameters["required"], json!(["path", "machine"]));
 
         let mut args = json!({ "path": "a", "machine": "laptop" });
