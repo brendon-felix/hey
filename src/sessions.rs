@@ -27,6 +27,9 @@ const ID_FORMAT: &str = "%Y%m%d-%H%M%S%3f";
 /// the store reads only its own folders, so it leaves the file alone.
 const MARKS: &str = "threads.json";
 
+/// Where the names models gave conversations are kept.
+const NAMES: &str = "names.json";
+
 /// A conversation's log name: when it started, so names sort by age. Names
 /// arrive from clients, so they hold only characters safe in a file name.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -228,13 +231,58 @@ impl Sessions {
             .filter_map(|log| log.parse().ok())
             .collect();
         ids.sort_unstable_by(|a, b| b.cmp(a));
+        // A names file that cannot be read must not hide the threads.
+        let mut names = self.names().unwrap_or_else(|error| {
+            tracing::warn!(error = format!("{error:#}"), "thread names not read");
+            BTreeMap::new()
+        });
         Ok(ids
             .into_iter()
             .filter_map(|id| {
-                let title = self.title(&id)?;
+                let title = match names.remove(&id) {
+                    Some(name) => name,
+                    None => self.title(&id)?,
+                };
                 Some(Summary { id, title })
             })
             .collect())
+    }
+
+    /// The names a model gave conversations; one without has no name yet.
+    pub fn names(&self) -> Result<BTreeMap<SessionId, String>> {
+        let path = self.dir.join(NAMES);
+        match fs::read(&path) {
+            Ok(bytes) => Ok(serde_json::from_slice(&bytes).unwrap_or_else(|error| {
+                tracing::warn!(file = %path.display(), %error, "unreadable names file ignored");
+                BTreeMap::new()
+            })),
+            Err(error) if error.kind() == ErrorKind::NotFound => Ok(BTreeMap::new()),
+            Err(error) => Err(error).with_context(|| format!("cannot read {}", path.display())),
+        }
+    }
+
+    fn forget_name(&self, id: &SessionId) -> Result<()> {
+        let _marking = self.marking.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut names = self.names()?;
+        if names.remove(id).is_none() {
+            return Ok(());
+        }
+        let path = self.dir.join(NAMES);
+        crate::fsio::write_atomic(&path, serde_json::to_vec_pretty(&names)?)
+            .with_context(|| format!("cannot write {}", path.display()))
+    }
+
+    /// Gives `id` the name `name`.
+    pub fn set_name(&self, id: &SessionId, name: &str) -> Result<()> {
+        let _marking = self.marking.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut names = self.names()?;
+        if names.get(id).is_some_and(|old| old == name) {
+            return Ok(());
+        }
+        names.insert(id.clone(), name.to_owned());
+        let path = self.dir.join(NAMES);
+        crate::fsio::write_atomic(&path, serde_json::to_vec_pretty(&names)?)
+            .with_context(|| format!("cannot write {}", path.display()))
     }
 
     /// The start of the first thing the user typed in `id`, which a
@@ -275,6 +323,9 @@ impl Sessions {
         let mut conversation = Conversation::from_messages(messages);
         rig_memory::save(&self.store, copy.as_str(), &mut conversation)
             .with_context(|| format!("cannot save the copy of {id}"))?;
+        if let Some(name) = self.names()?.get(id) {
+            self.set_name(&copy, name)?;
+        }
         Ok(copy)
     }
 
@@ -296,6 +347,7 @@ impl Sessions {
             tracing::warn!(thread = id.as_str(), %error, "cannot remove a thread's Markdown");
         }
         self.mark(id, |mark| *mark = Mark::default())?;
+        self.forget_name(id)?;
         Ok(removed)
     }
 

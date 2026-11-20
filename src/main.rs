@@ -24,6 +24,7 @@ mod mcp;
 mod memory;
 mod mention;
 mod models;
+mod naming;
 mod notes;
 mod notify;
 mod permissions;

@@ -28,6 +28,7 @@ use tokio_util::task::TaskTracker;
 use crate::agent::{self, Model};
 use crate::checkpoint::{Checkpoints, Turn};
 use crate::compaction::{self, Applied, Compactor};
+use crate::naming;
 use crate::config::{self, Config, Providers, Thinking};
 use crate::gate;
 use crate::goal;
@@ -196,6 +197,9 @@ impl fmt::Display for ThreadError {
 }
 
 impl std::error::Error for ThreadError {}
+
+/// How long a model may take to name a thread.
+const NAMING_TIMEOUT: Duration = Duration::from_secs(60);
 
 impl Host {
     /// Opens the sessions store and connects every MCP server.
@@ -941,6 +945,45 @@ impl Host {
                 "memory not updated"
             );
             *self.lock_memory_failure() = Some(format!("memory not updated: {error:#}"));
+        }
+        if answered {
+            self.rename(&id, &model).await;
+        }
+    }
+
+    /// Has a model name the thread from what it holds now, keeping the
+    /// name it has unless the topic shifted enough.
+    async fn rename(&self, id: &SessionId, model: &Model) {
+        let result = async {
+            let namer = self
+                .compaction
+                .model
+                .as_ref()
+                .map(|reference| Model::connect(reference, &self.providers))
+                .transpose()?;
+            let messages = self.sessions.messages(id)?;
+            let current = self.sessions.names()?.remove(id);
+            let naming = naming::name(namer.as_ref().unwrap_or(model), current.as_deref(), &messages);
+            let named = tokio::time::timeout(NAMING_TIMEOUT, naming)
+                .await
+                .context("naming took too long")??;
+            match named {
+                Some(name) if current.as_deref() != Some(&name) => {
+                    self.sessions.set_name(id, &name)?;
+                    anyhow::Ok(true)
+                }
+                _ => Ok(false),
+            }
+        }
+        .await;
+        match result {
+            Ok(true) => self.publish(&self.lock()),
+            Ok(false) => {}
+            Err(error) => tracing::warn!(
+                thread = id.as_str(),
+                error = format!("{error:#}"),
+                "thread not named"
+            ),
         }
     }
 
