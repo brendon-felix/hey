@@ -41,8 +41,8 @@ use crate::permissions::{Origin, Permissions};
 use crate::preamble::{Hosting, Setting};
 use crate::protocol::{
     Activities, Activity, AgentId, AgentInfo, AgentSnapshot, ApprovalId, Ask, CallId, CallResult,
-    Decision, Defaults, Ending, Event, FollowerId, Logged, Machine, ModelInfo, Models, Revision,
-    RunId, RunRequest, Snapshot, Task, ThreadInfo, ThreadStatus, Tools, Undone,
+    ClientInfo, Decision, Defaults, Ending, Event, FollowerId, Logged, Machine, ModelInfo, Models,
+    Revision, RunId, RunRequest, Snapshot, Task, ThreadInfo, ThreadStatus, Tools, Undone,
 };
 use crate::render;
 use crate::results::ResultLimit;
@@ -791,6 +791,11 @@ impl Host {
                 .client
                 .as_ref()
                 .and_then(|client| client.lent.clone()),
+            client_skills: request
+                .client
+                .as_ref()
+                .map(|client| client.skills.clone())
+                .unwrap_or_default(),
             run: run.clone(),
             turn: self.turn(id),
         };
@@ -808,8 +813,19 @@ impl Host {
         .name("hey")
         .preamble(system_prompt)
         .append_preamble(&setting.render());
-        let mut builder = skills
-            .equip(builder)
+        let builder = skills.equip(builder);
+        let builder = match request.client.as_ref() {
+            Some(ClientInfo {
+                skills,
+                lent: Some(lent),
+                ..
+            }) => match skills::client_catalog(&lent.machine, skills) {
+                Some(catalog) => builder.append_preamble(&catalog),
+                None => builder,
+            },
+            _ => builder,
+        };
+        let mut builder = builder
             .default_max_turns(self.max_turns)
             .memory(self.sessions.store())
             .add_hook(ResultLimit {

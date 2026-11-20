@@ -198,6 +198,7 @@ impl Setting<'_> {
                     remote,
                     url,
                     lent,
+                    ..
                 }),
             ) => {
                 let cwd = machine

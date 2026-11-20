@@ -82,6 +82,7 @@ impl Client {
                 remote: name.to_owned(),
                 url: base.to_string(),
                 lent: Some(lent),
+                skills: Vec::new(),
             }),
             base,
         };
@@ -243,8 +244,10 @@ impl Client {
     }
 
     pub async fn start(&self, id: &SessionId, request: RunRequest) -> Result<Events> {
+        let mut info = ClientInfo::clone(&self.info);
+        info.skills = crate::skills::find(&crate::agent::working_directory()).skills;
         let request = RunRequest {
-            client: Some(ClientInfo::clone(&self.info)),
+            client: Some(info),
             ..request
         };
         let path = format!("v1/threads/{}/run", id.as_str());
@@ -801,6 +804,7 @@ mod tests {
                 remote: "test".into(),
                 url: base.to_string(),
                 lent: None,
+                skills: Vec::new(),
             }),
         };
         let request = RunRequest {

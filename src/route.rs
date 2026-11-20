@@ -30,6 +30,8 @@ pub struct Kit {
     /// This host's name.
     pub host: String,
     pub lent: Option<Lent>,
+    /// The skills on the client's machine, which its agents read there.
+    pub client_skills: Vec<crate::skills::Skill>,
     pub run: Arc<Run>,
     /// Where the answer keeps the files its calls on the host change, for
     /// `/undo`; `None` when checkpoints are off.

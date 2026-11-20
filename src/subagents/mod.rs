@@ -194,6 +194,16 @@ impl Crew {
             true => skills::find(&cwd).equip(builder),
             false => builder,
         };
+        let on_client = kit
+            .lent
+            .as_ref()
+            .filter(|_| turn.kind.is_none_or(|kind| kind.allows("read")));
+        let builder = match on_client
+            .and_then(|lent| skills::client_catalog(&lent.machine, &kit.client_skills))
+        {
+            Some(catalog) => builder.append_preamble(&catalog),
+            None => builder,
+        };
         let mut builder = builder
             .default_max_turns(self.max_turns)
             .memory(team.store.clone())

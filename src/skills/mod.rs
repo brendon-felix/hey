@@ -277,6 +277,29 @@ fn catalog(skills: &[Skill]) -> String {
     format!("\n{CATALOG}\n<available_skills>{listed}\n</available_skills>")
 }
 
+/// What the model is told of the model-invocable `skills` on the user's
+/// machine `machine`, which the `skill` tool cannot load: it reads their
+/// files there, with the `machine` argument of its tools. `None` when
+/// there are none.
+pub fn client_catalog(machine: &str, skills: &[Skill]) -> Option<String> {
+    let auto: Vec<Skill> = skills
+        .iter()
+        .filter(|skill| skill.invocation == Invocation::Auto)
+        .cloned()
+        .collect();
+    if auto.is_empty() {
+        return None;
+    }
+    let listed = catalog(&auto);
+    let listed = listed.trim_start().strip_prefix(CATALOG)?.trim_start();
+    Some(format!(
+        "\nThe user's machine `{machine}` has skills of its own, which the `skill` tool does not \
+         load. When a task matches one's description, read its SKILL.md with the `read` tool on \
+         machine `{machine}`, then follow it. Paths in it are relative to its directory, on that \
+         machine; use the same machine for the files it refers to.\n{listed}"
+    ))
+}
+
 fn escape(text: &str) -> String {
     text.replace('&', "&amp;")
         .replace('<', "&lt;")

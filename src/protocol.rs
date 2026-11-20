@@ -369,6 +369,9 @@ pub struct ClientInfo {
     /// The tools the client runs for the host's agents, when it lends any.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub lent: Option<Lent>,
+    /// The skills found on the client's machine, as of this run.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub skills: Vec<crate::skills::Skill>,
 }
 
 /// A file or directory a mention attaches, as read where it was found, by
