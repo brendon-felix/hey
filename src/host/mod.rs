@@ -1314,7 +1314,11 @@ impl Host {
         None
     }
 
-    /// Learns from what a run said: the `exchange` its answer added.
+    /// Learns from what a run said: the `exchange` its answer added. Typed
+    /// extraction forces a tool call, which some providers (such as GitHub
+    /// Copilot, for some models) reject outright; when the model tried
+    /// first fails this way, retries once against this host's default
+    /// model, which is expected to support it.
     async fn learn(&self, exchange: &[Message], model: &Model) -> Result<()> {
         let Some(memory) = &self.memory else {
             return Ok(());
@@ -1323,9 +1327,20 @@ impl Host {
             .model()
             .map(|reference| Model::connect(reference, &self.providers))
             .transpose()?;
-        memory
-            .learn(configured.as_ref().unwrap_or(model), exchange)
-            .await
+        let primary = configured.as_ref().unwrap_or(model);
+        match memory.learn(primary, exchange).await {
+            Ok(()) => Ok(()),
+            Err(error) if primary.reference() != self.defaults.model => {
+                tracing::warn!(
+                    model = primary.reference(),
+                    error = format!("{error:#}"),
+                    "memory not updated with this model; falling back to the default model"
+                );
+                let fallback = Model::connect(&self.defaults.model, &self.providers)?;
+                memory.learn(&fallback, exchange).await
+            }
+            Err(error) => Err(error),
+        }
     }
 
     /// The memories a thread opening with `prompt` starts with. A failure is

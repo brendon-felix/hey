@@ -70,6 +70,11 @@ impl Model {
         self.inner.clone()
     }
 
+    /// This model's catalog reference, `vendor/model`.
+    pub fn reference(&self) -> &str {
+        &self.reference
+    }
+
     /// A model that answers as `inner` says, for tests.
     #[cfg(test)]
     pub fn scripted(reference: &str, inner: impl Into<DynModel<Completion>>) -> Self {

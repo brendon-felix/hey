@@ -219,7 +219,9 @@ impl Run {
                 return Err(format!(
                     "no terminal on `{0}` is following this conversation, so the call could not \
                      run there; tools run on `{0}` only while the user has this conversation \
-                     open in hey there",
+                     open in hey there. If this call matters, use `ask_user` to ask the user to \
+                     open the conversation on `{0}` (or tell you how else to proceed) instead of \
+                     retrying the same call",
                     call.machine
                 ));
             }
@@ -367,7 +369,11 @@ impl Run {
 }
 
 fn went_away(machine: &str) -> String {
-    format!("the terminal on `{machine}` running the call stopped following the conversation")
+    format!(
+        "the terminal on `{machine}` running the call stopped following the conversation; if \
+         this call matters, use `ask_user` to ask the user to reopen the conversation on \
+         `{machine}` instead of retrying the same call"
+    )
 }
 
 /// A client's following of the run, ended when dropped.
