@@ -23,6 +23,7 @@ mod log;
 mod mcp;
 mod memory;
 mod mention;
+mod mirror;
 mod models;
 mod naming;
 mod notes;
@@ -35,7 +36,6 @@ mod render;
 mod repl;
 mod results;
 mod retry;
-mod mirror;
 mod route;
 mod server;
 mod sessions;
@@ -206,6 +206,23 @@ async fn run(args: Args) -> Result<ExitCode> {
         .inspect_err(|error| tracing::error!(error = format!("{error:#}"), "hey failed"))
 }
 
+/// Resolves on Ctrl+C, or on Unix also on the SIGTERM service managers send.
+async fn shutdown() -> Result<()> {
+    #[cfg(unix)]
+    {
+        use tokio::signal::unix::{SignalKind, signal};
+        let mut terminate = signal(SignalKind::terminate())?;
+        tokio::select! {
+            _ = tokio::signal::ctrl_c() => {}
+            _ = terminate.recv() => {}
+        }
+    }
+    #[cfg(not(unix))]
+    tokio::signal::ctrl_c()
+           .await?;
+    Ok(())
+}
+
 async fn dispatch(args: Args, config: Config) -> Result<ExitCode> {
     if let Some(login) = args.login {
         match login {
@@ -218,11 +235,9 @@ async fn dispatch(args: Args, config: Config) -> Result<ExitCode> {
             listen: config.server.listen,
         };
         let host = Arc::new(Host::new(&config, hosting).await?);
-        let mut terminate = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
         tokio::select! {
             served = server::serve(host.clone(), &config.server) => served?,
-            _ = tokio::signal::ctrl_c() => {}
-            _ = terminate.recv() => {}
+            stopped = shutdown() => stopped?,
         }
         // A restart must not lose the turns in progress.
         host.wind_down(std::time::Duration::from_secs(20)).await;

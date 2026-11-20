@@ -483,6 +483,7 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(unix)]
     use rig_tools::workspace::Local;
 
     use super::*;

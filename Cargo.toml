@@ -65,6 +65,7 @@ tracing = "0.1"
 tracing-appender = "0.2"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 unicode-segmentation = "1"
+url = "2"
 yansi = "1"
 
 [dev-dependencies]

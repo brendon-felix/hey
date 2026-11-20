@@ -2,19 +2,20 @@
 //! hyperlinks (`ESC ] 8 ; ; URI ST text ESC ] 8 ; ; ST`), the sequence
 //! nushell's `ansi link` writes. Terminals without support ignore it.
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::LazyLock;
 
 use regex::Regex;
+use url::Url;
 
 static TOKEN: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(
-        r"https?://[^\s\x1b<>\x22'`]+|[~.\w@+\-]*(?:/[\w.@+\-]+)+/?|[\w@+\-][\w.@+\-]*\.\w+",
-    )
-    .expect("valid pattern")
+    Regex::new(r"https?://[^\s\x1b<>\x22'`]+|[~.\w@+\-]*(?:/[\w.@+\-]+)+/?|[\w@+\-][\w.@+\-]*\.\w+")
+        .expect("valid pattern")
 });
-static ESCAPE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"\x1b(?:\[[0-9;:?]*[ -/]*[@-~]|\][^\x07\x1b]*(?:\x07|\x1b\\))").expect("valid pattern"));
+static ESCAPE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"\x1b(?:\[[0-9;:?]*[ -/]*[@-~]|\][^\x07\x1b]*(?:\x07|\x1b\\))")
+        .expect("valid pattern")
+});
 
 /// `text` with its URLs and existing paths made clickable. Existing
 /// hyperlinks and styling are left as they are.
@@ -59,20 +60,11 @@ fn plain(text: &str, out: &mut String) {
 /// The `file://` URI of `token` when it names something that exists.
 fn file_uri(token: &str) -> Option<String> {
     let path: PathBuf = match token.strip_prefix('~') {
-        Some(rest) => PathBuf::from(std::env::var_os("HOME")?).join(rest.trim_start_matches('/')),
+        Some(rest) => dirs::home_dir()?.join(rest.trim_start_matches('/')),
         None => std::env::current_dir().ok()?.join(token),
     };
-    let path = std::fs::canonicalize(&path).ok().filter(|_| Path::new(&path).exists())?;
-    let mut uri = String::from("file://");
-    for byte in path.to_string_lossy().bytes() {
-        match byte {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'/' | b'-' | b'.' | b'_' | b'~' => {
-                uri.push(byte as char)
-            }
-            _ => uri.push_str(&format!("%{byte:02X}")),
-        }
-    }
-    Some(uri)
+    let path = std::fs::canonicalize(path).ok()?;
+    Url::from_file_path(path).ok().map(String::from)
 }
 
 #[cfg(test)]
@@ -90,7 +82,12 @@ mod tests {
 
     #[test]
     fn links_existing_paths_only() {
-        assert!(linkify("/tmp").contains("]8;;file:///tmp"));
+        let linked = linkify("src/main.rs");
+        assert!(linked.starts_with("\x1b]8;;file:///"), "{linked:?}");
+        assert!(
+            linked.ends_with("/src/main.rs\x1b\\src/main.rs\x1b]8;;\x1b\\"),
+            "{linked:?}"
+        );
         assert_eq!(linkify("/no/such/path"), "/no/such/path");
     }
 }
