@@ -9,6 +9,7 @@ mod run;
 use std::collections::HashMap;
 use std::fmt;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 
@@ -110,6 +111,8 @@ pub struct Host {
     activity: watch::Sender<Activities>,
     /// Runs and what they leave to do once answered, such as learning.
     tasks: TaskTracker,
+    /// Set once the host is going down, so the runs it stops say why.
+    closing: AtomicBool,
 }
 
 /// What a thread keeps on the host between runs.
@@ -250,6 +253,7 @@ impl Host {
             threads: Mutex::default(),
             activity: watch::Sender::default(),
             tasks: TaskTracker::new(),
+            closing: AtomicBool::new(false),
         })
     }
 
@@ -675,6 +679,22 @@ impl Host {
         self.memory()?.revise(&revision.old, &revision.new)
     }
 
+    /// Stops every run, so what each said so far is saved to its thread,
+    /// and waits for that, for as long as `within`. A host about to go down
+    /// does this first, or the turn in progress is lost with the process.
+    pub async fn wind_down(&self, within: Duration) {
+        self.closing.store(true, Ordering::SeqCst);
+        let runs: Vec<_> = self.lock().values().filter_map(|thread| thread.run.clone()).collect();
+        if !runs.is_empty() {
+            tracing::info!(runs = runs.len(), "stopping runs to save what they said");
+        }
+        runs.iter().for_each(|run| run.stop());
+        self.tasks.close();
+        if tokio::time::timeout(within, self.tasks.wait()).await.is_err() {
+            tracing::warn!("runs did not finish saving in time");
+        }
+    }
+
     /// Waits for runs to finish learning, which a host in a process that is
     /// about to exit must, and reports a failure no run reported. Starts no
     /// more runs.
@@ -1007,6 +1027,9 @@ impl Host {
     fn keep(&self, id: &SessionId, run: &Run, ending: &Ending) {
         let reason = match ending {
             Ending::Answered => return,
+            Ending::Interrupted if self.closing.load(Ordering::SeqCst) => {
+                "the host restarted; go on from here"
+            }
             Ending::Interrupted => "the user stopped the reply",
             Ending::Failed { error } => error,
         };

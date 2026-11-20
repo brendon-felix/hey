@@ -202,10 +202,14 @@ async fn dispatch(args: Args, config: Config) -> Result<ExitCode> {
             listen: config.server.listen,
         };
         let host = Arc::new(Host::new(&config, hosting).await?);
+        let mut terminate = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
         tokio::select! {
-            served = server::serve(host, &config.server) => served?,
+            served = server::serve(host.clone(), &config.server) => served?,
             _ = tokio::signal::ctrl_c() => {}
+            _ = terminate.recv() => {}
         }
+        // A restart must not lose the turns in progress.
+        host.wind_down(std::time::Duration::from_secs(20)).await;
         return Ok(ExitCode::SUCCESS);
     }
 

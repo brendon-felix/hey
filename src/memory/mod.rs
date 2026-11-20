@@ -12,10 +12,12 @@ use std::sync::{Mutex, PoisonError};
 use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow, bail};
-use rig_agent::extractor::ExtractorBuilder;
+use rig_agent::agent::AgentBuilder;
+use rig_core::message::ToolName;
+use rig_core::tool::{DynamicTool, ToolOutput};
+use serde_json::json;
 use rig_core::message::{AssistantContent, Message, UserContent};
-use schemars::JsonSchema;
-use serde::{Deserialize, Serialize};
+use std::sync::Arc;
 
 use crate::agent::{self, Model};
 use crate::config::{self, Providers};
@@ -27,14 +29,16 @@ the lines that start with `- ` and rewrites the file as it learns.\n\n";
 
 const LEARNING_PROMPT: &str = "\
 You keep the long-term memory of hey, a terminal assistant: the few things it should know about \
-its user in later, unrelated conversations. Read the exchange, then submit:
-- `remember`: facts about the user that will still hold months from now and help in many \
-conversations, not just ones like this: who they are, their background and work, lasting \
+its user in later, unrelated conversations. Read the exchange, then call these tools as needed:
+- `remember(text)`: save a fact about the user that will still hold months from now and helps in \
+many conversations, not just ones like this: who they are, their background and work, lasting \
 preferences and how they like to be answered, the machines they use and what each is for, and \
-the ongoing projects they work on, what each is and where it lives. Write each as one short, \
-self-contained sentence about the user.
-- `forget`: the numbers of saved memories the exchange shows to be wrong or outdated. To correct \
-a memory, forget it and remember the corrected version.
+the ongoing projects they work on, what each is and where it lives. One short, self-contained \
+sentence about the user per call.
+- `revise(number, text)`: reword the saved memory with that number, when it needs correcting or \
+updating.
+- `forget(number)`: delete the saved memory with that number, when the exchange shows it to be \
+wrong or outdated.
 Do not remember:
 - hey itself: its configuration, models, tools, MCP servers, limits or behavior.
 - The state of a machine, directory, repository or codebase: what is installed, configured, \
@@ -44,7 +48,7 @@ defined. These change, and the assistant can look them up when it needs them.
 - What is already saved, general knowledge, the assistant's suggestions the user did not adopt, \
 or secrets such as passwords, keys and tokens.
 When unsure whether a fact is lasting and broadly useful, leave it out. Most exchanges teach \
-nothing lasting: then submit two empty lists.";
+nothing lasting: then call no tool and reply `nothing to save`.";
 
 /// Most saved memories the model sees when deciding what an exchange changes.
 const LEARNING_VIEW: usize = 50;
@@ -177,15 +181,21 @@ impl Memory {
             .vectors
             .closest(&saved, &transcript, LEARNING_VIEW)
             .await?;
-        let update = ExtractorBuilder::<Update>::new(model.completion())
-            .append_preamble(LEARNING_PROMPT)
-            .retries(1)
-            .build()
-            .extract(learning_request(&shown, &transcript))
-            .await
-            .context("cannot learn from the answer")?
-            .output;
-        self.change(|memories| update.apply(&shown, memories))?;
+        let ops: Arc<Mutex<Vec<Op>>> = Arc::default();
+        let agent = AgentBuilder::new(model.completion())
+            .preamble(LEARNING_PROMPT)
+            .dynamic_tools(tools(&shown, &ops))
+            .default_max_turns(4)
+            .build();
+        let request = learning_request(&shown, &transcript);
+        crate::retry::model("learning", || async {
+            ops.lock().unwrap_or_else(PoisonError::into_inner).clear();
+            agent.prompt(request.clone()).await
+        })
+        .await
+        .context("cannot learn from the answer")?;
+        let ops = std::mem::take(&mut *ops.lock().unwrap_or_else(PoisonError::into_inner));
+        self.change(|memories| apply(ops, memories))?;
         Ok(())
     }
 
@@ -218,34 +228,96 @@ pub fn preamble(memories: &[String]) -> Option<String> {
     ))
 }
 
-/// What an exchange changes in memory.
-#[derive(Debug, Deserialize, Serialize, JsonSchema)]
-struct Update {
-    /// New lasting, broadly useful facts about the user, each one short,
-    /// self-contained sentence.
-    remember: Vec<String>,
-    /// Numbers of saved memories the exchange shows to be wrong or outdated.
-    forget: Vec<u32>,
+/// One change the model learning from an exchange asked for.
+#[derive(Debug, PartialEq)]
+enum Op {
+    Remember(String),
+    Revise { old: String, new: String },
+    Forget(String),
 }
 
-impl Update {
-    /// Forgets the memories of `shown` that `forget` numbers from 1, then
-    /// adds the new ones. False when nothing changed.
-    fn apply(self, shown: &[&String], memories: &mut Vec<String>) -> bool {
-        let forgotten: Vec<&String> = self
-            .forget
-            .iter()
-            .filter_map(|&number| shown.get(usize::try_from(number).ok()?.checked_sub(1)?))
-            .copied()
-            .collect();
-        let count = memories.len();
-        memories.retain(|memory| !forgotten.contains(&memory));
-        let mut changed = memories.len() != count;
-        for memory in &self.remember {
-            changed |= add(memories, one_line(memory));
-        }
-        changed
+/// Makes `ops` to `memories`, in order. False when nothing changed.
+fn apply(ops: Vec<Op>, memories: &mut Vec<String>) -> bool {
+    let mut changed = false;
+    for op in ops {
+        changed |= match op {
+            Op::Remember(text) => add(memories, one_line(&text)),
+            Op::Revise { old, new } => reword(memories, &old, one_line(&new)),
+            Op::Forget(old) => {
+                let count = memories.len();
+                memories.retain(|saved| *saved != old);
+                memories.len() != count
+            }
+        };
     }
+    changed
+}
+
+/// The tools the model learning from an exchange changes memory with; each
+/// tells it what it did, or what was wrong, so it can correct itself. The
+/// changes are collected in `ops`, to be saved once it is done.
+fn tools(shown: &[&String], ops: &Arc<Mutex<Vec<Op>>>) -> Vec<DynamicTool> {
+    let shown: Arc<Vec<String>> = Arc::new(shown.iter().map(|memory| (*memory).clone()).collect());
+    let tool = |name: &str, description: &str, parameters: serde_json::Value, run: fn(&[String], &serde_json::Value) -> Result<Op, String>| {
+        let (shown, ops) = (shown.clone(), ops.clone());
+        DynamicTool::new(ToolName::new(name).expect("a valid tool name"), description, parameters, move |arguments| {
+            let reply = match run(&shown, &arguments) {
+                Ok(op) => {
+                    ops.lock().unwrap_or_else(PoisonError::into_inner).push(op);
+                    "ok".to_owned()
+                }
+                Err(problem) => problem,
+            };
+            Box::pin(async move { Ok(ToolOutput::text(reply)) })
+        })
+    };
+    let text = json!({ "type": "string", "description": "One short, self-contained sentence about the user." });
+    let number = json!({ "type": "integer", "description": "The number of a saved memory, as listed." });
+    vec![
+        tool(
+            "remember",
+            "Save a new lasting fact about the user.",
+            json!({ "type": "object", "properties": { "text": text }, "required": ["text"] }),
+            |_, arguments| match argument(arguments, "text") {
+                Some(text) => Ok(Op::Remember(text)),
+                None => Err("`text` is required".to_owned()),
+            },
+        ),
+        tool(
+            "revise",
+            "Reword the saved memory with this number.",
+            json!({ "type": "object", "properties": { "number": number, "text": text }, "required": ["number", "text"] }),
+            |shown, arguments| {
+                let old = numbered(shown, arguments)?;
+                match argument(arguments, "text") {
+                    Some(new) => Ok(Op::Revise { old, new }),
+                    None => Err("`text` is required".to_owned()),
+                }
+            },
+        ),
+        tool(
+            "forget",
+            "Delete the saved memory with this number.",
+            json!({ "type": "object", "properties": { "number": number }, "required": ["number"] }),
+            |shown, arguments| numbered(shown, arguments).map(Op::Forget),
+        ),
+    ]
+}
+
+fn argument(arguments: &serde_json::Value, name: &str) -> Option<String> {
+    let text = one_line(arguments.get(name)?.as_str()?);
+    (!text.is_empty()).then_some(text)
+}
+
+/// The saved memory that `arguments` number, or why there is none.
+fn numbered(shown: &[String], arguments: &serde_json::Value) -> Result<String, String> {
+    let number = arguments.get("number").and_then(|number| {
+        number.as_u64().or_else(|| number.as_str()?.trim().parse().ok())
+    });
+    number
+        .and_then(|number| shown.get(usize::try_from(number).ok()?.checked_sub(1)?))
+        .cloned()
+        .ok_or_else(|| format!("no saved memory has that number; the numbers are 1 to {}", shown.len()))
 }
 
 /// Saves `memory` unless it is empty or already saved, ignoring case.
@@ -367,24 +439,29 @@ mod tests {
     }
 
     #[test]
-    fn updates_forget_by_shown_number_and_skip_known_memories() {
+    fn changes_apply_in_order_and_skip_known_memories() {
         let mut memories = parse(&format!(
             "{HEADER}- The user lives in Lisbon.\n- The user  uses\tVim.\nnot a memory\n"
         ));
         assert_eq!(memories, ["The user lives in Lisbon.", "The user uses Vim."]);
-        let lisbon = memories[0].clone();
-        let update = Update {
-            remember: strings(&["the user uses vim.", "The user lives in\nBerlin."]),
-            forget: vec![1, 0, 7],
-        };
-        assert!(update.apply(&[&lisbon], &mut memories));
-        assert_eq!(memories, ["The user uses Vim.", "The user lives in Berlin."]);
+        let ops = vec![
+            Op::Forget("The user lives in Lisbon.".into()),
+            Op::Remember("the user uses vim.".into()),
+            Op::Remember("The user lives in\nBerlin.".into()),
+            Op::Revise { old: "The user uses Vim.".into(), new: "The user uses Neovim.".into() },
+        ];
+        assert!(apply(ops, &mut memories));
+        assert_eq!(memories, ["The user uses Neovim.", "The user lives in Berlin."]);
+        assert!(!apply(vec![Op::Remember(" ".into())], &mut memories));
+    }
 
-        let nothing = Update {
-            remember: strings(&[" "]),
-            forget: vec![],
-        };
-        assert!(!nothing.apply(&[], &mut memories));
+    #[test]
+    fn tools_name_memories_by_their_listed_number() {
+        let shown = strings(&["Uses vim.", "Likes tea."]);
+        assert_eq!(numbered(&shown, &json!({ "number": 2 })).unwrap(), "Likes tea.");
+        assert_eq!(numbered(&shown, &json!({ "number": "1" })).unwrap(), "Uses vim.");
+        assert!(numbered(&shown, &json!({ "number": 3 })).is_err());
+        assert!(numbered(&shown, &json!({ "number": 0 })).is_err());
     }
 
     #[test]
