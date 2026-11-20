@@ -634,21 +634,55 @@ struct InputCompleter {
 impl Completer for InputCompleter {
     fn complete(&mut self, line: &str, pos: usize) -> CompletionResult {
         let before = line.get(..pos).unwrap_or(line);
-        let suggestions = match before.starts_with('/') {
-            true => self
+        let suggestions = match slash_start(before) {
+            Some(0) => self
                 .choices
                 .suggestions(before, &host::lock(&self.index), &self.matcher),
-            false => self.mentions.suggestions(before),
+            Some(start) => {
+                // Past the first word only skills and prompts apply, not commands.
+                let token = &before[start..];
+                self.choices
+                    .suggestions(token, &host::lock(&self.index), &self.matcher)
+                    .into_iter()
+                    .filter(|suggestion| {
+                        !COMMANDS
+                            .iter()
+                            .any(|spec| suggestion.value == format!("/{}", spec.name))
+                    })
+                    .map(|mut suggestion| {
+                        suggestion.span =
+                            Span::new(suggestion.span.start + start, suggestion.span.end + start);
+                        suggestion
+                    })
+                    .collect()
+            }
+            None => self.mentions.suggestions(before),
         };
         CompletionResult::fresh(suggestions)
     }
+}
+
+/// Where the slash command being typed starts: a `/` at the start of the line,
+/// or, past the first word, one after whitespace that runs to the end of
+/// `before` without a space.
+fn slash_start(before: &str) -> Option<usize> {
+    if before.starts_with('/') {
+        return Some(0);
+    }
+    let start = before.rfind('/')?;
+    let after = &before[start + 1..];
+    let boundary = before[..start]
+        .chars()
+        .next_back()
+        .is_some_and(char::is_whitespace);
+    (boundary && !after.contains(char::is_whitespace)).then_some(start)
 }
 
 /// Messages in the input colour with the mentions that name something picked
 /// out; commands and their arguments as their roles.
 struct InputHighlighter(Index, Arc<AtomicBool>);
 
-/// Lets `/` open the completion menu only at the start of the line.
+/// Lets `/` open the completion menu only at the start of a word, as in Zed.
 struct SlashGuard {
     inner: Box<dyn EditMode>,
     at_start: Arc<AtomicBool>,
@@ -684,7 +718,11 @@ impl EditMode for SlashGuard {
 
 impl Highlighter for InputHighlighter {
     fn highlight(&self, line: &str, cursor: usize) -> StyledText {
-        self.1.store(cursor == 0, Ordering::Relaxed);
+        self.1.store(
+            line.get(..cursor)
+                .is_some_and(|before| before.chars().next_back().is_none_or(char::is_whitespace)),
+            Ordering::Relaxed,
+        );
         let palette = palette();
         let mut styled = StyledText::new();
         match line.strip_prefix('/') {
