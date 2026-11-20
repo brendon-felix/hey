@@ -279,7 +279,7 @@ impl Default for Display {
             colors: true,
             animations: true,
             thinking_output: Output::Preview,
-            tool_output: Output::Preview,
+            tool_output: Output::Hidden,
             subagent_output: Output::Preview,
             notify_after_secs: 30,
         }

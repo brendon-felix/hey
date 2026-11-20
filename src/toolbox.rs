@@ -19,6 +19,7 @@ use rig_tools::workspace::{Local, Workspace};
 use rig_tools::{Delete, Edit, List, Live, Move, Read, Search, Seen, Shell, Write};
 
 use crate::agent;
+use crate::lenient;
 use crate::config::Config;
 use crate::mcp::{self, deferred, deferred::Deferred};
 use rig_rmcp::McpConnection;
@@ -251,6 +252,7 @@ pub fn dynamic<T: Tool + 'static>(tool: T) -> DynamicTool {
     let tool = Arc::new(ToolAdapter::new(tool));
     DynamicTool::new_with_context(name, description, parameters, move |context, args| {
         let tool = tool.clone();
+        let args = lenient::normalize(T::NAME, args);
         Box::pin(async move { tool.run_with(context, args).await })
     })
     .with_annotations(annotations)

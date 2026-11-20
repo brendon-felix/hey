@@ -17,6 +17,7 @@ mod headless;
 mod hooks;
 mod host;
 mod instructions;
+mod lenient;
 mod log;
 mod mcp;
 mod memory;

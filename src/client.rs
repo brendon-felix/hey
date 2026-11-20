@@ -62,6 +62,13 @@ impl Client {
         headers.insert(MACHINE_HEADER, machine_name);
         let http = reqwest::Client::builder()
             .connect_timeout(Duration::from_secs(10))
+            // Probe idle connections, so a path that died quietly (sleep, a
+            // changed network, a proxy dropping state) is found out in
+            // seconds rather than when the next read fails mid-body.
+            .tcp_keepalive(Duration::from_secs(20))
+            .http2_keep_alive_interval(Duration::from_secs(15))
+            .http2_keep_alive_timeout(Duration::from_secs(10))
+            .http2_keep_alive_while_idle(true)
             .default_headers(headers)
             // A host never redirects, so a redirect comes from a proxy's sign-in.
             .redirect(redirect::Policy::none())
@@ -507,7 +514,7 @@ fn unreached(method: &Method, status: StatusCode) -> bool {
 fn lines(response: Response) -> impl Stream<Item = Result<String>> + Send + Unpin + 'static {
     let bytes = response.bytes_stream().map_err(io::Error::other);
     FramedRead::new(StreamReader::new(bytes), LinesCodec::new())
-        .map(|line| line.context("lost the connection to the host"))
+        .map(|line| line.map_err(|error| anyhow!("lost the connection to the host: {error:#?}")))
         .try_filter(|line| future::ready(!line.is_empty()))
 }
 
