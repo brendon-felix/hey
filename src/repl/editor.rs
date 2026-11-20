@@ -4,7 +4,7 @@
 
 use std::borrow::Cow;
 use std::cell::Cell;
-use std::sync::atomic::AtomicBool;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
@@ -168,11 +168,15 @@ impl Editor {
             index: index.clone(),
             matcher: SkimMatcherV2::default(),
         };
+        let at_start = Arc::new(AtomicBool::new(true));
         let mut line_editor = Reedline::create()
-            .with_edit_mode(edit_mode(config.mode))
+            .with_edit_mode(Box::new(SlashGuard {
+                inner: edit_mode(config.mode),
+                at_start: at_start.clone(),
+            }))
             .with_completer(Box::new(completer))
             .with_transient_prompt(Box::new(HeyPrompt::Submitted))
-            .with_highlighter(Box::new(InputHighlighter(index.clone())))
+            .with_highlighter(Box::new(InputHighlighter(index.clone(), at_start)))
             .with_status_line(Box::new(InputHelp(index.clone())))
             .with_buffer_editor(buffer_editor(), std::env::temp_dir().join("hey-prompt.md"))
             .with_history_exclusion_prefix(Some(" ".into()))
@@ -642,10 +646,45 @@ impl Completer for InputCompleter {
 
 /// Messages in the input colour with the mentions that name something picked
 /// out; commands and their arguments as their roles.
-struct InputHighlighter(Index);
+struct InputHighlighter(Index, Arc<AtomicBool>);
+
+/// Lets `/` open the completion menu only at the start of the line.
+struct SlashGuard {
+    inner: Box<dyn EditMode>,
+    at_start: Arc<AtomicBool>,
+}
+
+impl EditMode for SlashGuard {
+    fn parse_event(&mut self, event: reedline::ReedlineRawEvent) -> ReedlineEvent {
+        let parsed = self.inner.parse_event(event);
+        match parsed {
+            ReedlineEvent::Multiple(ref events)
+                if !self.at_start.load(Ordering::Relaxed)
+                    && matches!(events.first(), Some(ReedlineEvent::Edit(edits))
+                        if matches!(edits.as_slice(), [EditCommand::InsertChar('/')])) =>
+            {
+                ReedlineEvent::Edit(vec![EditCommand::InsertChar('/')])
+            }
+            ReedlineEvent::Enter | ReedlineEvent::Submit => {
+                self.at_start.store(true, Ordering::Relaxed);
+                parsed
+            }
+            other => other,
+        }
+    }
+
+    fn edit_mode(&self) -> PromptEditMode {
+        self.inner.edit_mode()
+    }
+
+    fn handle_mode_specific_event(&mut self, event: ReedlineEvent) -> reedline::EventStatus {
+        self.inner.handle_mode_specific_event(event)
+    }
+}
 
 impl Highlighter for InputHighlighter {
-    fn highlight(&self, line: &str, _cursor: usize) -> StyledText {
+    fn highlight(&self, line: &str, cursor: usize) -> StyledText {
+        self.1.store(cursor == 0, Ordering::Relaxed);
         let palette = palette();
         let mut styled = StyledText::new();
         match line.strip_prefix('/') {
