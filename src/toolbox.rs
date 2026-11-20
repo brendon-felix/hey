@@ -302,8 +302,9 @@ fn briefly(tool: &str, error: ToolExecutionError) -> ToolExecutionError {
     let cut = if end < message.len() { "…" } else { "" };
     let hint = match tool {
         "edit" => {
-            " `edits` must be a JSON array of {\"old_text\", \"new_text\"} objects, not a \
-             string; or send `old_text` and `new_text` themselves for one change. For a large \
+            " `edits` must be a JSON array of {\"old_text\", \"new_text\"} objects (a \
+             string holding that JSON works only if it is valid JSON); or send `path`, \
+             `old_text` and `new_text` as top-level fields for one change. For a large \
              change, make several smaller edits, or use `write`."
         }
         _ => " Send the arguments as one JSON object that matches the tool's schema.",

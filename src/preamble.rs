@@ -100,8 +100,9 @@ impl Setting<'_> {
             self.skills_line(),
             Some(
                 "Tool arguments are one JSON object each. `edit` takes `path` and either `old_text` \
-                 and `new_text` for one change, or `edits`, an array of such pairs, never a \
-                 string; keep each edit small, and use `write` to replace a whole file."
+                 and `new_text` for one change (prefer this), or `edits`, a real JSON array of \
+                 such pairs, not a string of JSON; keep each edit small, and use `write` to \
+                 replace a whole file."
                     .into(),
             ),
             Some(

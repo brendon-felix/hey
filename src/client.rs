@@ -599,16 +599,26 @@ impl Resumable {
                 Link::Open(mut lines) => {
                     let line = match tokio::time::timeout(SILENCE, lines.next()).await {
                         Ok(Some(Ok(line))) => line,
-                        Ok(Some(Err(error))) => return self.broke(error),
+                        Ok(Some(Err(error))) => {
+                            if let Some(error) = self.broke(error) {
+                                return Some((Err(error), self));
+                            }
+                            continue;
+                        }
                         Ok(None) => {
-                            return self
-                                .broke(anyhow!("the host ended the stream before the run ended"));
+                            let error = anyhow!("the host ended the stream before the run ended");
+                            if let Some(error) = self.broke(error) {
+                                return Some((Err(error), self));
+                            }
+                            continue;
                         }
                         Err(_) => {
-                            return self.broke(anyhow!(
-                                "the host said nothing for {}s",
-                                SILENCE.as_secs()
-                            ));
+                            let error =
+                                anyhow!("the host said nothing for {}s", SILENCE.as_secs());
+                            if let Some(error) = self.broke(error) {
+                                return Some((Err(error), self));
+                            }
+                            continue;
                         }
                     };
                     let logged = match serde_json::from_str::<Logged>(&line) {
@@ -650,20 +660,19 @@ impl Resumable {
 
     /// Tells of the stream breaking with `error`, before following the run
     /// again; fails at once when the host gave no position to resume from.
-    fn broke(mut self, error: anyhow::Error) -> Option<(Result<Event>, Self)> {
+    /// Resuming is routine (proxies and tunnels reset idle streams), so it is
+    /// only logged, not shown; returns the error when it cannot be resumed.
+    fn broke(&mut self, error: anyhow::Error) -> Option<anyhow::Error> {
         if self.position.is_none() {
-            return Some((Err(error), self));
+            return Some(error);
         }
         tracing::warn!(
             thread = self.thread.as_str(),
             error = format!("{error:#}"),
             "lost a run's stream"
         );
-        let notice = Event::Notice {
-            text: format!("{error:#}; following the run again…"),
-        };
         self.link = Link::Broken(error);
-        Some((Ok(notice), self))
+        None
     }
 }
 
@@ -825,12 +834,7 @@ mod tests {
                 other => format!("{other:?}"),
             })
             .collect();
-        assert_eq!(told.len(), 6, "{told:?}");
-        assert_eq!(
-            [&told[..2], &told[3..]].concat(),
-            ["began", "a", "began", "b", "end"]
-        );
-        assert!(told[2].contains("following the run again"), "{told:?}");
+        assert_eq!(told, ["began", "a", "began", "b", "end"]);
     }
 }
 
