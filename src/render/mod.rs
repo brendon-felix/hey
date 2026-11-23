@@ -3,6 +3,7 @@
 /* -------------------------------------------------------------------------- */
 
 mod code;
+mod group;
 mod highlight;
 mod link;
 mod preview;

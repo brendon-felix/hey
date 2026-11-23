@@ -11,6 +11,7 @@ use rig_core::message::{CallId, ToolResult};
 use rig_tools::split_status;
 use yansi::Paint;
 
+use super::group::{Group, Kind};
 use super::preview::{Call, Preview, Source};
 use super::reply::{Part, Reply};
 use super::tool::{self, Mark, line};
@@ -73,6 +74,8 @@ struct CallEntry {
     argument: String,
     /// The file it names, if any.
     path: Option<String>,
+    /// What it counts as in the summary of hidden activity, when hidden.
+    kind: Option<Kind>,
     state: CallState,
 }
 
@@ -98,6 +101,21 @@ impl CallEntry {
     }
 }
 
+impl CallEntry {
+    /// Shows the entry as it ends: in the summary when it is hidden, else
+    /// as its line over its `body`.
+    fn emit(&self, line: String, body: Vec<String>, group: &mut Group) {
+        match self.kind {
+            Some(kind) => group.add(kind),
+            None => {
+                group.close();
+                screen::line(format_args!("\n{line}"));
+                body.into_iter().for_each(screen::line);
+            }
+        }
+    }
+}
+
 impl Calls {
     fn push(&mut self, entry: CallEntry) {
         self.entries.push_back(entry);
@@ -115,47 +133,39 @@ impl Calls {
 
     /// Prints every finished or already-printed call at the front of the
     /// batch, stopping at the first call still running.
-    fn drain_ready(&mut self) {
+    fn drain_ready(&mut self, group: &mut Group) {
         while let Some(front) = self.entries.front() {
-            match &front.state {
-                CallState::Running => break,
-                CallState::Printed => {
-                    self.entries.pop_front();
-                }
-                CallState::Finished { .. } => {
-                    if let Some(CallEntry {
-                        state: CallState::Finished { line, body },
-                        ..
-                    }) = self.entries.pop_front()
-                    {
-                        screen::line(format_args!("\n{line}"));
-                        body.into_iter().for_each(screen::line);
-                    }
-                }
+            if matches!(front.state, CallState::Running) {
+                break;
+            }
+            let Some(mut entry) = self.entries.pop_front() else {
+                break;
+            };
+            if let CallState::Finished { line, body } =
+                std::mem::replace(&mut entry.state, CallState::Printed)
+            {
+                entry.emit(line, body, group);
             }
         }
     }
 
     /// Prints every remaining call in the batch so other output can follow.
-    fn flush_all(&mut self, width: usize) {
-        while let Some(entry) = self.entries.pop_front() {
-            match entry.state {
+    fn flush_all(&mut self, width: usize, group: &mut Group) {
+        while let Some(mut entry) = self.entries.pop_front() {
+            match std::mem::replace(&mut entry.state, CallState::Printed) {
                 CallState::Printed => {}
                 CallState::Running => {
                     let line = entry.line(CallStatus::Running, width);
-                    screen::line(format_args!("\n{line}"));
+                    entry.emit(line, Vec::new(), group);
                 }
-                CallState::Finished { line, body } => {
-                    screen::line(format_args!("\n{line}"));
-                    body.into_iter().for_each(screen::line);
-                }
+                CallState::Finished { line, body } => entry.emit(line, body, group),
             }
         }
     }
 
     /// Prints the latest call's line if it is still waiting in the live
     /// region, so its live output or preview can show right under it.
-    fn print_latest(&mut self, width: usize) {
+    fn print_latest(&mut self, width: usize, group: &mut Group) {
         if matches!(
             self.entries.back(),
             Some(CallEntry {
@@ -168,12 +178,9 @@ impl Calls {
                     CallState::Printed => {}
                     CallState::Running => {
                         let line = entry.line(CallStatus::Running, width);
-                        screen::line(format_args!("\n{line}"));
+                        entry.emit(line, Vec::new(), group);
                     }
-                    CallState::Finished { line, body } => {
-                        screen::line(format_args!("\n{line}"));
-                        body.into_iter().for_each(screen::line);
-                    }
+                    CallState::Finished { line, body } => entry.emit(line, body, group),
                 }
             }
         }
@@ -190,6 +197,7 @@ impl Calls {
                     rows.push(String::new());
                     rows.push(link::linkify(&entry.line(CallStatus::Running, width)));
                 }
+                CallState::Finished { .. } if entry.kind.is_some() => {}
                 CallState::Finished { line, body } => {
                     rows.push(String::new());
                     rows.push(link::linkify(line));
@@ -238,6 +246,8 @@ pub struct Stream {
     /// on. Output that is not a terminal gets it once it ends.
     preview: Option<Preview>,
     calls: Calls,
+    /// Hidden activity so far, which one summary line stands for.
+    group: Group,
     /// The calls the model has written, or is writing, that have yet to
     /// run, in order.
     writing: Vec<Call>,
@@ -275,6 +285,7 @@ impl Stream {
             activity: Activity::Waiting,
             preview: None,
             calls: Calls::default(),
+            group: Group::default(),
             writing: Vec::new(),
             ran_live: false,
             backlog: VecDeque::new(),
@@ -305,7 +316,9 @@ impl Stream {
     pub fn reasoning(&mut self, text: String) {
         match self.style.thinking_output {
             Output::Full => self.receive(Part::Reasoning, text),
-            Output::Preview if !text.is_empty() => {
+            // Hidden reasoning still previews while it goes on; it
+            // collapses to its summary line once it ends.
+            Output::Preview | Output::Hidden if !text.is_empty() => {
                 self.think();
                 self.preview(Source::Reasoning, &text);
             }
@@ -326,6 +339,16 @@ impl Stream {
     /// which shows where its reasoning does not, or only in preview.
     pub fn thought(&mut self, duration: Option<Duration>) {
         self.end_part();
+        if self.style.thinking_output == Output::Hidden
+            && self
+                .preview
+                .as_ref()
+                .is_some_and(|preview| preview.source() == Source::Reasoning)
+        {
+            // Counted once, as it ends.
+            self.end_preview(Ending::Interrupted);
+            return;
+        }
         match (self.style.thinking_output, &self.preview, duration) {
             (Output::Full, _, _) => {}
             (_, Some(preview), Some(duration)) if preview.source() == Source::Reasoning => {
@@ -381,13 +404,15 @@ impl Stream {
             machine,
             argument: summary,
             path: path.clone(),
+            kind: Kind::of_tool(name).filter(|_| self.style.tool_output == Output::Hidden),
             state: CallState::Running,
         };
         // The table is for the user, so it shows whatever tool output does.
         if name == "table"
             && let Some(table) = crate::table::pretty(args)
         {
-            self.calls.flush_all(width);
+            self.calls.flush_all(width, &mut self.group);
+        self.group.close();
             screen::line(format_args!("\n{}", entry.line(CallStatus::Running, width)));
             table.lines().for_each(screen::line);
             self.calls.push(CallEntry {
@@ -397,7 +422,8 @@ impl Stream {
             return;
         }
         if let Some(todos) = tool::todos(name, args) {
-            self.calls.flush_all(width);
+            self.calls.flush_all(width, &mut self.group);
+        self.group.close();
             screen::line(format_args!("\n{}", entry.line(CallStatus::Running, width)));
             todos.iter().for_each(|todo| screen::line(todo));
             self.calls.push(CallEntry {
@@ -406,11 +432,12 @@ impl Stream {
             });
             return;
         }
-        let Some(changes) = tool::changes(name, args) else {
+        let Some(changes) = tool::changes(name, args).filter(|_| entry.kind.is_none()) else {
             self.calls.push(entry);
             return;
         };
-        self.calls.flush_all(width);
+        self.calls.flush_all(width, &mut self.group);
+        self.group.close();
         screen::line(format_args!("\n{}", entry.line(CallStatus::Running, width)));
         self.calls.push(CallEntry {
             state: CallState::Printed,
@@ -448,8 +475,12 @@ impl Stream {
         let index = self.calls.position(&result.call);
         let is_latest = index.is_some_and(|at| at + 1 == self.calls.entries.len());
         let own_box = match &self.preview {
-            Some(preview) if !result.is_error && is_latest => Some(preview.source())
-                .filter(|source| matches!(source, Source::Command | Source::Changes)),
+            Some(preview)
+                if !result.is_error && is_latest && self.style.tool_output != Output::Hidden =>
+            {
+                Some(preview.source())
+                    .filter(|source| matches!(source, Source::Command | Source::Changes))
+            }
             _ => None,
         };
         if let Some(source) = own_box {
@@ -465,7 +496,7 @@ impl Stream {
             {
                 entry.state = CallState::Printed;
             }
-            self.calls.drain_ready();
+            self.calls.drain_ready(&mut self.group);
             return self.flush();
         }
         self.end_preview(Ending::Interrupted);
@@ -513,12 +544,12 @@ impl Stream {
                         line: entry.line(status, width),
                         body,
                     };
-                    self.calls.drain_ready();
+                    self.calls.drain_ready(&mut self.group);
                     return;
                 }
                 CallState::Printed | CallState::Finished { .. } => {
                     entry.state = CallState::Printed;
-                    self.calls.drain_ready();
+                    self.calls.drain_ready(&mut self.group);
                 }
             }
         }
@@ -543,21 +574,26 @@ impl Stream {
     /// More of a running command's output: whole lines, but for its end.
     pub fn output(&mut self, text: String) {
         self.ran_live = true;
-        self.calls.print_latest(terminal_width());
+        // Hidden output previews live under the call, which stays in the
+        // live region and collapses to its summary when it finishes.
+        if self.style.tool_output != Output::Hidden {
+            self.calls.print_latest(terminal_width(), &mut self.group);
+        }
         match self.style.tool_output {
             Output::Full => {
                 self.settle();
                 text.split_inclusive('\n')
                     .for_each(|text| screen::line(line(Mark::Printed, text)));
             }
-            Output::Preview => self.preview(Source::Command, &text),
-            Output::Hidden => {}
+            Output::Preview | Output::Hidden => self.preview(Source::Command, &text),
         }
     }
 
     /// A step a subagent took, as [`super::agent_step`] puts it.
     pub fn agent_step(&mut self, step: String) {
-        self.calls.print_latest(terminal_width());
+        if self.style.subagent_output != Output::Hidden {
+            self.calls.print_latest(terminal_width(), &mut self.group);
+        }
         match self.style.subagent_output {
             Output::Full => {
                 self.settle();
@@ -567,8 +603,9 @@ impl Stream {
                     muted.paint(&clip(&step, terminal_width().saturating_sub(2)))
                 ));
             }
-            Output::Preview => self.preview(Source::Agents, &format!("{step}\n")),
-            Output::Hidden => {}
+            Output::Preview | Output::Hidden => {
+                self.preview(Source::Agents, &format!("{step}\n"))
+            }
         }
     }
 
@@ -592,9 +629,10 @@ impl Stream {
     /// Shows everything received and ends the open part and preview, so
     /// other output can follow.
     pub fn settle(&mut self) {
-        self.calls.flush_all(terminal_width());
+        self.calls.flush_all(terminal_width(), &mut self.group);
         self.end_preview(Ending::Interrupted);
         self.flush();
+        self.group.close();
     }
 
     /// The conversation was compacted to `summary`, from and to about
@@ -637,6 +675,18 @@ impl Stream {
             return;
         };
         self.hide_status();
+        // Hidden output shows only while it goes on.
+        let hidden = match preview.source() {
+            Source::Reasoning => self.style.thinking_output,
+            Source::Agents => self.style.subagent_output,
+            _ => self.style.tool_output,
+        } == Output::Hidden;
+        if hidden {
+            if preview.source() == Source::Reasoning {
+                self.group.add(Kind::Thought);
+            }
+            return;
+        }
         if preview.source() == Source::Reasoning {
             let took = match ending {
                 Ending::Thought(duration) => Some(duration),
@@ -702,12 +752,16 @@ impl Stream {
     /// Hands the reply up to `budget` characters of the backlog, in order.
     fn reveal(&mut self, mut budget: usize) {
         if !self.backlog.is_empty() {
-            self.calls.flush_all(terminal_width());
+            self.calls.flush_all(terminal_width(), &mut self.group);
             self.end_preview(Ending::Interrupted);
         }
         while let Some(chunk) = self.backlog.pop_front() {
             match chunk {
                 Chunk::End => self.reply.finish(),
+                Chunk::Thought(duration) if self.style.thinking_output == Output::Hidden => {
+                    self.group.add(Kind::Thought);
+                    _ = duration;
+                }
                 Chunk::Thought(duration) => thought(duration),
                 Chunk::Text(part, mut text) => {
                     let end = text
@@ -716,6 +770,7 @@ impl Stream {
                         .map_or(text.len(), |(at, _)| at);
                     let rest = text.split_off(end);
                     if !text.is_empty() {
+                        self.group.close();
                         self.reply.push(part, &text);
                     }
                     budget -= text.chars().count();
@@ -735,7 +790,11 @@ impl Stream {
     /// the terminal, so none wraps.
     fn status(&self, above: usize) -> Vec<String> {
         let room = terminal_height().saturating_sub(above + 2);
-        let mut rows = self.calls.live_rows(terminal_width(), room);
+        let mut rows = match self.group.is_empty() {
+            true => Vec::new(),
+            false => vec![String::new(), self.group.styled()],
+        };
+        rows.extend(self.calls.live_rows(terminal_width(), room));
         if let Some(preview) = &self.preview {
             rows.extend(preview.framed(self.preview_width(), ""));
         }
@@ -832,18 +891,14 @@ mod tests {
         stream.result(&tool_result("2", "read", "one\ntwo\nthree\n", false));
         assert_eq!(
             stream.calls.live_rows(80, 24),
-            [
-                "",
-                "● read on turing /a.rs",
-                "",
-                "● read on fermi /b.rs · 3 lines",
-            ]
+            ["", "● read on turing /a.rs"]
         );
 
         // First call finishes: both drain from the live region in order.
         stream.result(&tool_result("1", "read", "alpha\nbeta\n", false));
         assert!(stream.calls.live_rows(80, 24).is_empty());
         assert!(stream.calls.entries.is_empty());
+        assert_eq!(stream.group.text(), "Read 2 files");
     }
 
     #[test]
@@ -865,12 +920,7 @@ mod tests {
         stream.result(&tool_result("2", "read", "No such file or directory", true));
         assert_eq!(
             stream.calls.live_rows(80, 24),
-            [
-                "",
-                "● read /first.rs",
-                "",
-                "✗ read /missing.rs · No such file or directory",
-            ]
+            ["", "● read /first.rs"]
         );
     }
 }
