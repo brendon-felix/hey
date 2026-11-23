@@ -15,9 +15,15 @@ pub enum Kind {
     Command,
     Read,
     Search,
+    WebSearch,
     List,
     Edit,
     Fetch,
+    Memory,
+    Skill,
+    Project,
+    ToolLookup,
+    Mcp,
     Other,
 }
 
@@ -30,11 +36,18 @@ impl Kind {
             "shell" | "bash" | "spawn_process" | "process_output" | "process_list"
             | "process_kill" => Self::Command,
             "read" => Self::Read,
-            "search" | "web_search" => Self::Search,
+            "search" => Self::Search,
+            "web_search" => Self::WebSearch,
             "list" => Self::List,
             "edit" | "write" | "move" | "delete" => Self::Edit,
             "fetch" => Self::Fetch,
-            "table" | "ask_user" | "spawn_agents" | "mcp_call" => return None,
+            "recall_memory" => Self::Memory,
+            "skill" => Self::Skill,
+            "project" => Self::Project,
+            "tool_search" => Self::ToolLookup,
+            "mcp_call" | "mcp_resources" | "mcp_read_resource" => Self::Mcp,
+            _ if name.starts_with("mcp__") => Self::Mcp,
+            "table" | "ask_user" | "spawn_agents" | "compact" => return None,
             _ if name == crate::tools::TODO || name == crate::tools::EXIT_PLAN => return None,
             _ => Self::Other,
         };
@@ -42,7 +55,22 @@ impl Kind {
     }
 
     fn phrase(self, count: usize) -> String {
+        let times = |text: &str| match count {
+            1 => text.to_owned(),
+            2 => format!("{text} twice"),
+            n => format!("{text} {n} times"),
+        };
         let (verb, one, many) = match self {
+            Self::WebSearch => return times("searched the web"),
+            Self::Mcp => {
+                return match count {
+                    1 => "used an MCP tool".into(),
+                    n => format!("used {n} MCP tools"),
+                };
+            }
+            Self::Memory => return times("checked memory"),
+            Self::Project => return times("checked the project"),
+            Self::ToolLookup => return times("looked up tools"),
             Self::Thought => {
                 return match count {
                     1 => "thought".into(),
@@ -56,6 +84,7 @@ impl Kind {
             Self::List => ("listed", "directory", "directories"),
             Self::Edit => ("edited", "file", "files"),
             Self::Fetch => ("fetched", "page", "pages"),
+            Self::Skill => ("loaded", "skill", "skills"),
             Self::Other => ("used", "tool", "tools"),
         };
         match count {
@@ -131,6 +160,8 @@ mod tests {
             "Ran 3 commands, thought twice"
         );
         assert_eq!(text(&[Thought; 3]), "Thought 3 times");
+        assert_eq!(text(&[WebSearch, Read, WebSearch]), "Searched the web twice, read a file");
+        assert_eq!(text(&[Mcp]), "Used an MCP tool");
         assert_eq!(text(&[Search, Read, Read, Thought]), "Ran a search, read 2 files, thought");
     }
 }
