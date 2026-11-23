@@ -792,7 +792,9 @@ impl Stream {
         let room = terminal_height().saturating_sub(above + 2);
         let mut rows = match self.group.is_empty() {
             true => Vec::new(),
-            false => vec![String::new(), self.group.styled()],
+            false => std::iter::once(String::new())
+                .chain(self.group.rows())
+                .collect(),
         };
         rows.extend(self.calls.live_rows(terminal_width(), room));
         if let Some(preview) = &self.preview {

@@ -6,7 +6,8 @@
 //! line, as `Thought twice, ran a command, read 2 files`.
 
 
-use super::palette;
+
+use super::{palette, screen};
 
 /// What a piece of hidden activity counts as.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -127,15 +128,21 @@ impl Group {
             .unwrap_or_default()
     }
 
-    /// The summary as it is drawn.
-    pub fn styled(&self) -> String {
-        palette().muted.paint(&self.text()).italic().to_string()
+    /// The summary as it is drawn, wrapped to the terminal's width.
+    pub fn rows(&self) -> Vec<String> {
+        let width = super::terminal_width().saturating_sub(1).max(1);
+        let muted = palette().muted;
+        super::wrapped(&self.text(), width)
+            .iter()
+            .map(|row| muted.paint(row).italic().to_string())
+            .collect()
     }
 
     /// Prints the summary for good and starts over.
     pub fn close(&mut self) {
         if !self.is_empty() {
-            super::screen::line(format_args!("\n{}", self.styled()));
+            screen::line("");
+            self.rows().into_iter().for_each(screen::line);
             self.items = Vec::new();
         }
     }
