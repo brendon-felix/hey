@@ -42,6 +42,25 @@ know. Use your tools rather than guessing. When you are done, reply with a short
 you found or changed, naming files by path and the machine they are on: that reply is all the \
 main agent sees.";
 
+/// The parts of the main agent's guidance that a subagent needs as much.
+const GUIDANCE: &str = "\nGuidance:\n\
+- Prefer the dedicated tools to the shell when one fits: `read` to look at a file, `search` for \
+contents, `list` for directories, `edit` and `write` to change files, `move` and `delete` for \
+those, not `cat`, `sed`, `grep`, `ls`, `find`, `mv`, `rm` or heredocs. Keep the shell for what \
+they cannot do, such as builds, tests and git.\n\
+- Tool arguments are one JSON object each. `edit` takes `path` and either `old_text` and \
+`new_text` for one change, or `edits`, a real JSON array of such pairs, not a string of JSON.\n\
+- When calls do not depend on one another, make them in the same step; calls that only read run \
+together, others one after another.\n\
+- Never invent paths, output or results; learn a file's real path before editing it, and read \
+only the parts of large files that matter. Bound commands that may run long by a timeout or the \
+background.\n\
+- Never claim something passed unless you ran it and saw it pass. Do not commit, push, delete or \
+revert work you did not make, and do not hardcode or expose secrets.\n\
+- If a tool call is refused or cannot run, say so in your report instead of retrying it or \
+working around the refusal.\n\
+- Tools with a `machine` argument run on the machine it names; files are on that machine only.";
+
 /// What the host needs to run subagents: the model settings its config
 /// gives them, and what each conversation's subagents have done.
 pub struct Crew {
@@ -90,6 +109,8 @@ pub struct Turn<'a> {
     pub kind: Option<&'a Kind>,
     /// The conversation's hooks, which the subagent's tool calls run too.
     pub hooks: Option<&'a Scope>,
+    /// The project's `AGENTS.md` instructions, for the end of the prompt.
+    pub instructions: Option<&'a str>,
 }
 
 impl Crew {
@@ -185,7 +206,19 @@ impl Crew {
         )
         .name("hey subagent")
         .preamble(prompt)
-        .append_preamble(&environment(&cwd, &kit.host, client));
+        .append_preamble(&environment(&cwd, &kit.host, client))
+        .append_preamble(GUIDANCE);
+        let builder = match agent::spill_dir() {
+            Some(dir) => builder.append_preamble(&format!(
+                "\nTool output too long to give you whole is kept whole in {}.",
+                dir.display()
+            )),
+            None => builder,
+        };
+        let builder = match turn.instructions {
+            Some(instructions) => builder.append_preamble(instructions),
+            None => builder,
+        };
         let builder = match kit.toolbox.preamble() {
             Some(deferred) => builder.append_preamble(&deferred),
             None => builder,

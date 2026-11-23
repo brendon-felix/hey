@@ -966,6 +966,7 @@ impl Host {
             thinking: request.options.thinking,
             kinds: subagents::kinds(&agent::working_directory()),
             hooks: Some(self.scope(id)),
+            instructions: thread.instructions.as_ref().and_then(Instructions::preamble),
         }
     }
 

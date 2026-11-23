@@ -49,6 +49,8 @@ pub struct Spawn {
     /// The kinds of agent a task may name as its `type`.
     pub kinds: Kinds,
     pub hooks: Option<Scope>,
+    /// The project's `AGENTS.md` instructions, as the main agent has them.
+    pub instructions: Option<String>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -203,6 +205,7 @@ impl Spawn {
                 thinking: self.thinking,
                 kind,
                 hooks: self.hooks.as_ref(),
+                instructions: self.instructions.as_deref(),
             };
             let reporter = Tagged {
                 run: run.clone(),
