@@ -32,7 +32,7 @@ model = "openai/gpt-5.5"
 # max_tokens = 8192
 
 # Most model calls one answer may take, tool calls included.
-max_turns = 50
+max_turns = 150
 
 # Show "Hey!" when starting and "Bye!" when exiting.
 greetings = true
@@ -172,7 +172,7 @@ max_bytes = 32768
 auto = true
 # Tokens a model call may take in and give back before the conversation is
 # compacted, or 90% of the model's window if that is fewer.
-threshold = 100000
+threshold = 400000
 # Model that writes summaries, as `vendor/model`. When unset, the
 # conversation's.
 # model = "openai/gpt-5.4-mini"

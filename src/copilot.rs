@@ -12,7 +12,12 @@ use std::path::PathBuf;
 use anyhow::{Context, Result, bail};
 use http::header::{AUTHORIZATION, HeaderValue};
 use http::{Request, Uri};
-use rig_core::Model;
+use rig_core::catalog::Catalog;
+use rig_core::operation::Completion;
+use rig_core::providers::openai::Route;
+use rig_core::providers::openai::wire::OpenAiWire;
+use rig_core::providers::registry::ProviderId;
+use rig_core::{DynModel, Model};
 use rig_core::http_client::{
     self, Bytes, DynHttpClient, HttpClientExt, LazyBody, MultipartForm, Response, StreamingResponse,
 };
@@ -77,6 +82,28 @@ pub fn signed(options: ConnectOptions) -> Result<ConnectOptions> {
     Ok(options.api_key(UNSIGNED).http(session()?))
 }
 
+/// A completion model of the signed-in plan. Copilot serves OpenAI's newer
+/// models only on `/responses`, which rig's Copilot dialect picks for `codex`
+/// models alone, so the catalog's API for the model decides here.
+pub fn connect(id: &str, base_url: Option<String>) -> Result<DynModel<Completion>> {
+    let responses = ProviderId::catalog(VENDOR)
+        .and_then(|provider| Catalog::builtin().get_exact(provider, id))
+        .and_then(|spec| spec.details.provider.as_ref())
+        .is_some_and(|api| {
+            api.shape.as_deref() == Some("responses")
+                || (api.shape.is_none() && api.npm.as_deref() == Some("@ai-sdk/openai"))
+        })
+        || id.to_ascii_lowercase().contains("codex");
+    let mut config = OpenAIConfig::with_key(&DIALECT, UNSIGNED).with_route(match responses {
+        true => Route::Responses,
+        false => Route::Chat,
+    });
+    if let Some(url) = base_url {
+        config = config.with_base_url(url);
+    }
+    Ok(Model::new(OpenAiWire::new(config, id), session()?).into())
+}
+
 /// The chat models the signed-in plan offers, at `base_url` when one is
 /// configured.
 pub async fn models(base_url: Option<String>) -> Result<Vec<ModelInfo>> {
@@ -133,6 +160,34 @@ impl Session {
     }
 }
 
+/// Chat requests carry system messages as arrays of text parts, which
+/// Copilot's Claude models ignore; sends them as plain strings.
+fn flatten_system(request: &mut Request<Bytes>) {
+    if !request.uri().path().ends_with("/chat/completions") {
+        return;
+    }
+    let Ok(mut body) = serde_json::from_slice::<serde_json::Value>(request.body()) else {
+        return;
+    };
+    let mut changed = false;
+    if let Some(messages) = body.get_mut("messages").and_then(|m| m.as_array_mut()) {
+        for message in messages {
+            if message["role"] != "system" {
+                continue;
+            }
+            let Some(parts) = message["content"].as_array() else {
+                continue;
+            };
+            let text: Vec<&str> = parts.iter().filter_map(|p| p["text"].as_str()).collect();
+            message["content"] = text.join("\n\n").into();
+            changed = true;
+        }
+    }
+    if changed && let Ok(bytes) = serde_json::to_vec(&body) {
+        *request.body_mut() = Bytes::from(bytes);
+    }
+}
+
 /// `uri` at the session's endpoint, unless it was sent to another host than
 /// Copilot's default, such as a configured `base_url`.
 fn rebased(uri: &Uri, context: &AuthContext) -> Option<Result<Uri, http::uri::InvalidUri>> {
@@ -155,6 +210,8 @@ impl HttpClientExt for Session {
         let session = self.clone();
         let request = request.map(Into::<Bytes>::into);
         async move {
+            let mut request = request;
+            flatten_system(&mut request);
             let request = session.sign(request).await?;
             session.http.send(request).await
         }
@@ -183,6 +240,8 @@ impl HttpClientExt for Session {
     {
         let request = request.map(Into::<Bytes>::into);
         async move {
+            let mut request = request;
+            flatten_system(&mut request);
             let request = self.sign(request).await?;
             self.http.send_streaming(request).await
         }

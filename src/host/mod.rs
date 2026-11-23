@@ -860,7 +860,15 @@ impl Host {
         {
             builder = builder.append_preamble(&instructions);
         }
-        if let Some(max_tokens) = self.max_tokens {
+        // Anthropic refuses a request without `max_tokens`, and the catalog
+        // does not know every model's, so fall back to a safe amount.
+        let max_tokens = self.max_tokens.or_else(|| {
+            model
+                .reference()
+                .starts_with("anthropic/")
+                .then_some(32_000)
+        });
+        if let Some(max_tokens) = max_tokens {
             builder = builder.max_tokens(max_tokens);
         }
         builder.build()

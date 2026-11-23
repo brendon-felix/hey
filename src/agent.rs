@@ -142,6 +142,15 @@ impl Model {
     /// sign-in, at the base URL its `[providers.<vendor>]` section names.
     pub fn connect(reference: &str, providers: &Providers) -> Result<Self> {
         let vendor = reference.split('/').next().unwrap_or_default();
+        if vendor == copilot::VENDOR {
+            let id = reference.split_once('/').map_or("", |(_, id)| id);
+            let inner = copilot::connect(id, config::base_url(providers, vendor)?)
+                .with_context(|| format!("cannot use model `{reference}`"))?;
+            return Ok(Self {
+                reference: reference.to_owned(),
+                inner,
+            });
+        }
         let options = match config::base_url(providers, vendor)? {
             Some(url) => ConnectOptions::new().base_url(url),
             None => ConnectOptions::new(),

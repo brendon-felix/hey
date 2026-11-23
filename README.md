@@ -310,7 +310,7 @@ them (the goal, progress, decisions, next steps, and exact names, paths and erro
 stay as they are, so it fits the model's window and each call reads less. It happens:
 
 - **On its own**, once a model call takes in and gives back more than `threshold` tokens
-  (100,000), or 90% of the model's window if that is fewer. It is checked before every model call,
+  (400,000), or 90% of the model's window if that is fewer. It is checked before every model call,
   so a long answer is compacted while it goes on.
 - **With `/compact [focus]`**, at any time. While an answer is in progress it compacts before the
   model's next step; otherwise at once, followed like an answer. `focus` says what the summary
@@ -325,7 +325,7 @@ conversation keeps its title.
 
 ```toml
 [compaction]
-threshold = 150000                 # compact later
+threshold = 600000                 # compact later
 model = "openai/gpt-5.4-mini"      # a cheaper model to write summaries
 # auto = false                     # only /compact and the agent's tool compact
 ```

@@ -60,7 +60,7 @@ impl Default for Config {
             thinking: None,
             system_prompt: None,
             max_tokens: None,
-            max_turns: 50,
+            max_turns: 150,
             greetings: true,
             interactive: false,
             providers: Providers::default(),
@@ -526,7 +526,7 @@ impl Default for Compaction {
     fn default() -> Self {
         Self {
             auto: true,
-            threshold: 100_000,
+            threshold: 400_000,
             model: None,
         }
     }
