@@ -766,6 +766,7 @@ impl Host {
             hosting: self.hosting,
             host: &self.machine,
             client: request.client.as_ref(),
+            surface: request.surface,
             model: &request.options.model,
             started: id.started(),
             thread: id,

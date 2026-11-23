@@ -260,6 +260,17 @@ async fn dispatch(args: Args, config: Config) -> Result<ExitCode> {
         ),
         None => None,
     };
+    protocol::Surface::set(if args.acp {
+        protocol::Surface::Acp
+    } else if args.json {
+        protocol::Surface::Json
+    } else if args.print {
+        protocol::Surface::Print
+    } else if !args.message.is_empty() && !(args.interactive || config.interactive) {
+        protocol::Surface::Once
+    } else {
+        protocol::Surface::Repl
+    });
     let backend = connect(&args, &config).await?;
     if args.memories {
         browser::memories::browse(&backend).await?;

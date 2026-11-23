@@ -326,6 +326,39 @@ pub struct RunRequest {
     /// The condition `/goal` set, which the answer is judged against.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub goal: Option<String>,
+    /// How the user is talking to hey, as the model is told.
+    #[serde(default)]
+    pub surface: Surface,
+}
+
+/// How the user is talking to hey.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Surface {
+    /// The interactive REPL in a terminal.
+    #[default]
+    Repl,
+    /// One message given as arguments, answered in the terminal.
+    Once,
+    /// `--print`: plain output for scripts, with no one to answer questions.
+    Print,
+    /// `--json`: a stream of JSON events for a program.
+    Json,
+    /// `--acp`: an editor drives hey through the Agent Client Protocol.
+    Acp,
+}
+
+static SURFACE: std::sync::OnceLock<Surface> = std::sync::OnceLock::new();
+
+impl Surface {
+    /// The surface of this process, set once at startup.
+    pub fn current() -> Self {
+        SURFACE.get().copied().unwrap_or_default()
+    }
+
+    pub fn set(surface: Surface) {
+        let _ = SURFACE.set(surface);
+    }
 }
 
 /// What a run does with its prompt.

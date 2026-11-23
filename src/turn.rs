@@ -52,6 +52,7 @@ pub fn request(prompt: String, options: RunOptions) -> RunRequest {
         client: None,
         task: Task::Answer,
         goal: None,
+        surface: crate::protocol::Surface::current(),
     }
 }
 
@@ -65,6 +66,7 @@ pub fn compaction(focus: String, options: RunOptions) -> RunRequest {
         client: None,
         task: Task::Compact,
         goal: None,
+        surface: crate::protocol::Surface::current(),
     }
 }
 

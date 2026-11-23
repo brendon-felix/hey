@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 
 use chrono::NaiveDateTime;
 
-use crate::protocol::{ClientInfo, Machine};
+use crate::protocol::{ClientInfo, Machine, Surface};
 use crate::sessions::SessionId;
 use crate::skills::Source;
 
@@ -33,6 +33,8 @@ pub struct Setting<'a> {
     pub hosting: Hosting,
     pub host: &'a Machine,
     pub client: Option<&'a ClientInfo>,
+    /// How the user is talking to hey.
+    pub surface: Surface,
     pub model: &'a str,
     /// Kept for the whole conversation rather than the run's own time, so
     /// the preamble stays the same and the provider's prompt cache works.
@@ -60,6 +62,7 @@ impl Setting<'_> {
             )),
             Some(self.host_line()),
             self.user_line(),
+            Some(self.surface_line()),
             self.system_line(),
             self.windows_line(),
             self.started.map(|started| {
@@ -246,6 +249,33 @@ impl Setting<'_> {
                  describe. {unreachable}"
             )),
             (Hosting::Local, None) => None,
+        }
+    }
+
+    /// How the user is talking to hey, which decides how replies are shown.
+    fn surface_line(&self) -> String {
+        match self.surface {
+            Surface::Repl => "The user talks to you in hey's interactive terminal REPL; they \
+                              see your replies as they stream and can answer questions or \
+                              approve tool calls."
+                .into(),
+            Surface::Once => "The user ran hey from a terminal with a single message; your \
+                              reply is printed there and the session ends after it, so do not \
+                              ask follow-up questions you need answered to proceed."
+                .into(),
+            Surface::Print => "hey runs non-interactively (`--print`): your reply goes to \
+                               stdout for a script or pipe, and no one can answer questions, \
+                               so decide sensibly and keep the output clean and plain."
+                .into(),
+            Surface::Json => "hey runs non-interactively (`--json`): a program reads your \
+                              reply as a stream of JSON events, and no one can answer \
+                              questions, so decide sensibly."
+                .into(),
+            Surface::Acp => "You run as an external agent in an editor through the Agent \
+                             Client Protocol (`hey --acp`), not in a terminal: replies are \
+                             shown in the editor's chat panel, which renders Markdown \
+                             properly, so the `table` tool is not needed."
+                .into(),
         }
     }
 

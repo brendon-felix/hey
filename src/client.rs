@@ -827,6 +827,7 @@ mod tests {
             client: None,
             task: Default::default(),
             goal: None,
+            surface: Default::default(),
         };
 
         let events: Vec<Event> = client
