@@ -119,6 +119,13 @@ impl Setting<'_> {
                     .into(),
             ),
             Some(
+                "When a task splits into independent parts, such as searching several areas, \
+                 researching several questions or changing separate files, divide and conquer: \
+                 use `spawn_agents` to run them in parallel, each with a self-contained task, \
+                 and combine their reports. Do small or sequential work yourself."
+                    .into(),
+            ),
+            Some(
                 "Your replies are printed to the terminal as raw Markdown, so Markdown tables \
                  come out misaligned. To show a table, call the `table` tool: the user sees it \
                  drawn with borders even when tool output is hidden, so do not repeat it in your \
