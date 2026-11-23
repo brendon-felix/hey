@@ -127,7 +127,7 @@ fn paint(mut lines: Vec<String>, footer: String, height: usize) -> Result<()> {
         queue!(
             out,
             cursor::MoveTo(0, row as u16),
-            Print(line),
+            Print(crate::render::linkify(line)),
             Clear(ClearType::UntilNewLine)
         )?;
     }

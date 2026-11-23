@@ -15,9 +15,8 @@ use super::preview::{Call, Preview, Source};
 use super::reply::{Part, Reply};
 use super::tool::{self, Mark, line};
 use super::{
-    CallStatus, Style, animations, call_line, call_path, clip, clock, compacted, link,
-    machine_arg, palette, screen, summarize_args, terminal_height, terminal_width, theme, thought,
-    thought_text,
+    CallStatus, Style, animations, call_line, call_path, clip, clock, compacted, link, machine_arg,
+    palette, screen, summarize_args, terminal_height, terminal_width, theme, thought, thought_text,
 };
 use crate::config::Output;
 
@@ -471,9 +470,10 @@ impl Stream {
                     preview.push(given);
                     preview.framed(self.preview_width(), "")
                 }
-                Output::Full if !shown => {
-                    given.lines().map(|text| line(Mark::Printed, text)).collect()
-                }
+                Output::Full if !shown => given
+                    .lines()
+                    .map(|text| line(Mark::Printed, text))
+                    .collect(),
                 Output::Full | Output::Preview | Output::Hidden => Vec::new(),
             }
         };
@@ -501,7 +501,11 @@ impl Stream {
         }
         let room = width.saturating_sub(5);
         if result.is_error {
-            screen::line(format_args!("  {} {}", "✗".red(), clip(&summary, room).red()));
+            screen::line(format_args!(
+                "  {} {}",
+                "✗".red(),
+                clip(&summary, room).red()
+            ));
             return;
         }
         body.into_iter().for_each(screen::line);
@@ -797,12 +801,7 @@ mod tests {
         );
         assert_eq!(
             stream.calls.live_rows(80, 24),
-            [
-                "",
-                "● read on turing /a.rs",
-                "",
-                "● read on fermi /b.rs",
-            ]
+            ["", "● read on turing /a.rs", "", "● read on fermi /b.rs",]
         );
 
         // Second call finishes first: its live row updates in place while the

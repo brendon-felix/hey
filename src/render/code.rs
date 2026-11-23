@@ -24,9 +24,31 @@ impl Code {
         self.0.is_some()
     }
 
-    /// The next line, cut to `width` columns, tabs as four spaces.
-    pub fn row(&mut self, line: &str, width: usize) -> String {
-        self.sized(line, width).0
+    /// The next line wrapped into rows of at most `width` columns, tabs as
+    /// four spaces, each row highlighted.
+    pub fn wrapped(&mut self, line: &str, width: usize) -> Vec<String> {
+        let line = line.replace('\t', "    ").replace('\r', "");
+        let rows = super::wrap::rows(&line, width);
+        let Some(highlighter) = &mut self.0 else {
+            return rows
+                .iter()
+                .map(|row| line[super::wrap::trimmed(&line, row)].to_owned())
+                .collect();
+        };
+        let text = format!("{line}\n");
+        let spans = highlighter.line(&text);
+        rows.iter()
+            .map(|row| {
+                let row = super::wrap::trimmed(&line, row);
+                spans
+                    .iter()
+                    .filter_map(|(color, range)| {
+                        let range = range.start.max(row.start)..range.end.min(row.end);
+                        (range.start < range.end).then(|| color.paint(&text[range]).to_string())
+                    })
+                    .collect()
+            })
+            .collect()
     }
 
     /// [`Self::row`], and the columns it takes.

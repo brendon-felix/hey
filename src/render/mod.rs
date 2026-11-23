@@ -33,6 +33,7 @@ use crate::steer;
 use preview::{Preview, Source};
 
 pub use code::Code;
+pub use link::linkify;
 pub use reply::{Reply, rows as reply_rows};
 pub use stream::{FRAME, Stream};
 pub use theme::{Color, Palette, Theme, palette, themes};
@@ -143,10 +144,7 @@ pub(super) fn call_line(
     };
     let summary = match outcome.is_empty() {
         true => clip(&summary, room),
-        false => clip(
-            &summary,
-            room.saturating_sub(display_width(&outcome) + 3),
-        ),
+        false => clip(&summary, room.saturating_sub(display_width(&outcome) + 3)),
     };
     let outcome = match (status, outcome.is_empty()) {
         (_, true) | (CallStatus::Running, _) => String::new(),

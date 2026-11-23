@@ -93,6 +93,25 @@ pub async fn confirm(ask: &Ask, style: &render::Style) -> Decision {
     }
 }
 
+/// How a message typed during an answer should be sent: `Some(true)` to
+/// steer the answer, `Some(false)` to queue it for after; `None` when
+/// dismissed with Esc or Ctrl+C.
+pub async fn steer_or_queue() -> Option<bool> {
+    let options = vec![
+        "Steer: hand it to the model as soon as it can take it".to_owned(),
+        "Queue: send it once the answer ends".to_owned(),
+    ];
+    let picked = async {
+        Menu::open("Send this message how?".to_owned(), options)?
+            .answer()
+            .await
+    };
+    match picked.await {
+        Ok(Answer::Picked(index)) => Some(index == 0),
+        _ => None,
+    }
+}
+
 /// Asks the agent's `question`, offering `choices` and a typed answer.
 async fn answer(question: &str, choices: &[String]) -> Decision {
     const TYPE: &str = "Type an answer…";
@@ -240,36 +259,39 @@ impl Menu {
         }
     }
 
-    /// Draws in the colours dialoguer's prompts use, each row clipped so
-    /// none wraps and the rows stay countable.
+    /// Draws in the colours dialoguer's prompts use, wrapping the question
+    /// and options at the terminal's width so all of them can be read; the
+    /// rows are counted from the wrapping so they can be erased.
     fn draw(&mut self) -> io::Result<()> {
         let mut out = stdout();
         self.erase(&mut out)?;
         let palette = palette();
-        let width = render::terminal_width().saturating_sub(4);
-        let question = render::clip(&self.question, width);
-        queue!(
-            out,
-            Print(format!(
-                "{} {} {}",
-                palette.accent.paint("?"),
-                question.bold(),
-                palette.muted.paint("›")
-            ))
-        )?;
-        for (index, option) in self.options.iter().enumerate() {
-            let option = render::clip(option, width);
-            let row = match index == self.selected {
-                true => format!(
-                    "{} {}",
-                    palette.accent.paint("❯"),
-                    palette.name.paint(&option)
-                ),
-                false => format!("  {option}"),
+        let width = render::terminal_width().saturating_sub(4).max(1);
+        let mut lines = Vec::new();
+        for (n, row) in render::wrapped(&self.question, width).iter().enumerate() {
+            let mark = if n == 0 {
+                palette.accent.paint("?").to_string()
+            } else {
+                " ".to_owned()
             };
-            queue!(out, Print("\r\n"), Print(row))?;
+            lines.push(format!("{mark} {}", row.bold()));
         }
-        self.rows = 1 + self.options.len() as u16;
+        if let Some(last) = lines.last_mut() {
+            last.push_str(&format!(" {}", palette.muted.paint("›")));
+        }
+        for (index, option) in self.options.iter().enumerate() {
+            for (n, row) in render::wrapped(option, width).iter().enumerate() {
+                lines.push(match (index == self.selected, n == 0) {
+                    (true, true) => {
+                        format!("{} {}", palette.accent.paint("❯"), palette.name.paint(row))
+                    }
+                    (true, false) => format!("  {}", palette.name.paint(row)),
+                    (false, _) => format!("  {row}"),
+                });
+            }
+        }
+        queue!(out, Print(render::linkify(&lines.join("\r\n"))))?;
+        self.rows = lines.len() as u16;
         out.flush()
     }
 

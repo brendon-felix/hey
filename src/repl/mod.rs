@@ -29,6 +29,7 @@ use crate::protocol::{AgentId, ApprovalId, Ask, ModelInfo, RunId, RunOptions, Sn
 use crate::render::{self, Reply, Style, Theme, palette, screen, snailprint};
 use crate::sessions::SessionId;
 use crate::skills::Invocation;
+use crate::config::WhileAnswering;
 use crate::steer::Steer;
 use crate::transcript;
 use crate::turn::{self, Follow, Outcome, Step, Turn};
@@ -55,6 +56,7 @@ struct Session {
     options: RunOptions,
     window: Option<u32>,
     style: Style,
+    while_answering: crate::config::WhileAnswering,
     greetings: bool,
     /// Where settings changed here are saved.
     config_file: Option<PathBuf>,
@@ -165,6 +167,7 @@ impl Repl {
             },
             window: setup.model.context_window,
             style: setup.style,
+            while_answering: setup.editor.send_while_answering,
             greetings: setup.greetings,
             config_file: setup.config_file,
             status,
@@ -369,7 +372,19 @@ impl Session {
             return self.send(message).await;
         };
         match (way, current.then) {
-            (Way::Steer, Then::Answer) => self.steer(message).await,
+            (Way::Steer, Then::Answer) => {
+                let steer = match self.while_answering {
+                    WhileAnswering::Steer => Some(true),
+                    WhileAnswering::Queue => Some(false),
+                    WhileAnswering::Ask => crate::ui::steer_or_queue().await,
+                };
+                match steer {
+                    Some(true) => self.steer(message).await,
+                    Some(false) => self.outbox.queue(message),
+                    // Dismissed: the message goes back to the input.
+                    None => self.returned.push(message),
+                }
+            }
             (Way::Now, _) => self.send_now(Some(message)).await,
             (Way::Steer | Way::Queue, _) => self.outbox.queue(message),
         }
@@ -1269,8 +1284,14 @@ fn help() {
         ("Ctrl+R", "search input history"),
         ("Ctrl+O", "write the message in $EDITOR"),
         ("Alt+Enter", "insert a newline"),
-        ("Enter", "send; while answering, steer the answer"),
-        ("Ctrl+Q", "queue the message for after the answer"),
+        (
+            "Enter",
+            "send; while answering, ask whether to steer or queue",
+        ),
+        (
+            "Ctrl+Q",
+            "queue the message for after the answer, without asking",
+        ),
         ("Ctrl+S", "send now, stopping the answer"),
         ("Alt+Up", "edit the message queued last"),
         ("Ctrl+V", "attach the clipboard's image"),

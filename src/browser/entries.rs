@@ -822,17 +822,22 @@ impl Tool {
                             '-' => "- ".red().to_string(),
                             _ => "+ ".green().to_string(),
                         };
-                        rows.push(gutter(&format!(
-                            "{sign}{}",
-                            code.row(&line, width.saturating_sub(2))
-                        )));
+                        for (n, row) in code
+                            .wrapped(&line, width.saturating_sub(2))
+                            .into_iter()
+                            .enumerate()
+                        {
+                            let sign = if n == 0 { sign.as_str() } else { "  " };
+                            rows.push(gutter(&format!("{sign}{row}")));
+                        }
                         continue;
                     }
-                    let row = render::clip(&format!("{mark} {line}"), width);
-                    rows.push(gutter(&match mark {
-                        '-' => row.red().to_string(),
-                        _ => row.green().to_string(),
-                    }));
+                    for row in render::wrapped(&format!("{mark} {line}"), width) {
+                        rows.push(gutter(&match mark {
+                            '-' => row.red().to_string(),
+                            _ => row.green().to_string(),
+                        }));
+                    }
                 }
             }
             (None, Some(todos)) => rows.extend(todos.iter().map(|todo| gutter(todo.trim_start()))),
@@ -863,7 +868,7 @@ impl Tool {
             if self.name == "read" && code.is_on() {
                 let lines = render::read_lines(given).trim_end();
                 for line in lines.lines() {
-                    rows.push(gutter(&code.row(line, width)));
+                    rows.extend(code.wrapped(line, width).iter().map(|row| gutter(row)));
                 }
                 let notes = given[lines.len()..].trim();
                 if !notes.is_empty() {
@@ -924,12 +929,11 @@ impl Agent {
             ));
         }
         for step in &self.steps[skipped..] {
-            rows.push(gutter(
-                &palette
-                    .muted
-                    .paint(&render::clip(&format!("› {step}"), width))
-                    .to_string(),
-            ));
+            rows.extend(
+                render::wrapped(&format!("› {step}"), width)
+                    .iter()
+                    .map(|row| gutter(&palette.muted.paint(row).to_string())),
+            );
         }
         match &self.state {
             AgentState::Done(output) if !output.trim().is_empty() => {

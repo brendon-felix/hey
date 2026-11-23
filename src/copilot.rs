@@ -13,23 +13,23 @@ use anyhow::{Context, Result, bail};
 use http::header::{AUTHORIZATION, HeaderValue};
 use http::{Request, Uri};
 use rig_core::catalog::Catalog;
-use rig_core::operation::Completion;
-use rig_core::providers::openai::Route;
-use rig_core::providers::openai::wire::OpenAiWire;
-use rig_core::providers::registry::ProviderId;
-use rig_core::{DynModel, Model};
 use rig_core::http_client::{
     self, Bytes, DynHttpClient, HttpClientExt, LazyBody, MultipartForm, Response, StreamingResponse,
 };
 use rig_core::model::ModelInfo;
+use rig_core::operation::Completion;
 use rig_core::providers::copilot::DIALECT;
 use rig_core::providers::copilot::auth::{
     AuthContext, AuthSource, Authenticator, DeviceCodeHandler, FileTokenStore, TokenStore,
 };
 use rig_core::providers::copilot::model_listing::Models;
 use rig_core::providers::openai::OpenAIConfig;
+use rig_core::providers::openai::Route;
+use rig_core::providers::openai::wire::OpenAiWire;
 use rig_core::providers::registry::ConnectOptions;
+use rig_core::providers::registry::ProviderId;
 use rig_core::wasm_compat::WasmCompatSend;
+use rig_core::{DynModel, Model};
 
 use crate::config;
 
