@@ -557,7 +557,7 @@ pub fn terminal_width() -> usize {
     crossterm::terminal::size().map_or(80, |(width, _)| usize::from(width))
 }
 
-fn terminal_height() -> usize {
+pub fn terminal_height() -> usize {
     crossterm::terminal::size().map_or(24, |(_, height)| usize::from(height))
 }
 

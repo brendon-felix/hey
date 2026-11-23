@@ -354,6 +354,7 @@ fn styled(line_editor: Reedline, palette: Palette) -> Reedline {
         .with_hinter(Box::new(MessageHinter {
             history: DefaultHinter::default().with_style(fg(palette.muted)),
             command: false,
+            tall: false,
         }))
         .with_visual_selection_style(Style::new().reverse())
 }
@@ -466,7 +467,14 @@ fn with_menu_bindings(mut keybindings: Keybindings) -> Keybindings {
 struct MessageHinter {
     history: DefaultHinter,
     command: bool,
+    /// The history hint was too tall to show, so none is offered.
+    tall: bool,
 }
+
+/// Newlines a hint may hold: one makes it two rows. A taller one moves the
+/// prompt too far when it appears at the bottom of the screen; such a
+/// message is still reachable through history with Up.
+const HINT_NEWLINES: usize = 1;
 
 impl Hinter for MessageHinter {
     fn handle(
@@ -478,23 +486,29 @@ impl Hinter for MessageHinter {
         cwd: &str,
     ) -> String {
         self.command = line.starts_with('/');
-        match self.command {
-            true => String::new(),
-            false => self
-                .history
-                .handle(line, pos, history, use_ansi_coloring, cwd),
+        self.tall = false;
+        if self.command {
+            return String::new();
         }
+        let hint = self
+            .history
+            .handle(line, pos, history, use_ansi_coloring, cwd);
+        if hint.matches('\n').count() > HINT_NEWLINES {
+            self.tall = true;
+            return String::new();
+        }
+        hint
     }
 
     fn complete_hint(&self) -> String {
-        match self.command {
+        match self.command || self.tall {
             true => String::new(),
             false => self.history.complete_hint(),
         }
     }
 
     fn next_hint_token(&self) -> String {
-        match self.command {
+        match self.command || self.tall {
             true => String::new(),
             false => self.history.next_hint_token(),
         }
@@ -927,11 +941,18 @@ impl Prompt for HeyPrompt {
             return Cow::Borrowed(LEFT);
         };
         // Each row from a reset, against the prompt colour reedline sets.
-        let rows: Vec<String> = screen::live()
+        let mut rows: Vec<String> = screen::live()
             .into_iter()
             .chain(outbox.rows(render::terminal_width().saturating_sub(1)))
             .map(|row| format!("{LEFT}{row}"))
             .collect();
+        // Rows above the input that fill the screen leave reedline unable to
+        // move up to repaint from the first, so each repaint scrolls and
+        // stacks another copy. Keep them to half the screen, the newest.
+        let most = (render::terminal_height() / 2).max(1);
+        if rows.len() > most {
+            rows.drain(..rows.len() - most);
+        }
         above.set(rows.len());
         match rows.is_empty() {
             true => Cow::Borrowed(LEFT),
