@@ -55,6 +55,8 @@ pub struct Status {
     pub plan: bool,
     /// The condition `/goal` set.
     pub goal: Option<String>,
+    /// How long the latest answer took.
+    pub elapsed: Option<Duration>,
 }
 
 impl Status {
@@ -73,7 +75,12 @@ impl Status {
             None => render::tokens(used),
         });
         let goal = self.goal.as_ref().map(|_| "goal".to_owned());
-        self.after_remote(std::iter::once(model).chain(context).chain(goal))
+        self.after_remote(
+            std::iter::once(model)
+                .chain(context)
+                .chain(goal)
+                .chain(self.took()),
+        )
     }
 
     fn full(&self) -> String {
@@ -92,8 +99,13 @@ impl Status {
             std::iter::once(self.model.clone())
                 .chain(thinking)
                 .chain(context)
-                .chain(self.goal.as_ref().map(|goal| format!("goal: {goal}"))),
+                .chain(self.goal.as_ref().map(|goal| format!("goal: {goal}")))
+                .chain(self.took()),
         )
+    }
+
+    fn took(&self) -> Option<String> {
+        self.elapsed.map(render::live_clock)
     }
 
     fn after_remote(&self, parts: impl Iterator<Item = String>) -> String {

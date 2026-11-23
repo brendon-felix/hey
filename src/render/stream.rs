@@ -246,6 +246,8 @@ pub struct Stream {
     /// Received but not yet shown.
     backlog: VecDeque<Chunk>,
     started: Instant,
+    /// When the current activity began, which the status times.
+    activity_since: Instant,
     quiet_since: Instant,
 }
 
@@ -277,6 +279,7 @@ impl Stream {
             ran_live: false,
             backlog: VecDeque::new(),
             started: now,
+            activity_since: now,
             quiet_since: now,
         }
     }
@@ -287,8 +290,15 @@ impl Stream {
         self.started = Instant::now().checked_sub(elapsed).unwrap_or(self.started);
     }
 
+    fn set_activity(&mut self, activity: Activity) {
+        if self.activity != activity {
+            self.activity = activity;
+            self.activity_since = Instant::now();
+        }
+    }
+
     pub fn text(&mut self, text: String) {
-        self.activity = Activity::Waiting;
+        self.set_activity(Activity::Waiting);
         self.receive(Part::Text, text);
     }
 
@@ -307,7 +317,7 @@ impl Stream {
     /// its part and those around it end.
     pub fn end_part(&mut self) {
         if !matches!(self.activity, Activity::Preparing(_)) {
-            self.activity = Activity::Waiting;
+            self.set_activity(Activity::Waiting);
         }
         self.backlog.push_back(Chunk::End);
     }
@@ -335,7 +345,7 @@ impl Stream {
     /// it.
     pub fn preparing(&mut self, tool: String) {
         self.writing.push(Call::new(tool.clone()));
-        self.activity = Activity::Preparing(tool);
+        self.set_activity(Activity::Preparing(tool));
         self.end_reply();
     }
 
@@ -359,7 +369,7 @@ impl Stream {
         }
         self.end_preview(Ending::Interrupted);
         self.flush();
-        self.activity = Activity::Running(name.to_owned());
+        self.set_activity(Activity::Running(name.to_owned()));
         let summary = summarize_args(args);
         let machine = machine.map(str::to_owned).or_else(|| machine_arg(args));
         let path = call_path(args);
@@ -429,7 +439,7 @@ impl Stream {
     /// or shows its output or error below a call whose line was already
     /// printed.
     pub fn result(&mut self, result: &ToolResult) {
-        self.activity = Activity::Waiting;
+        self.set_activity(Activity::Waiting);
         let text = tool::text(result);
         let summary = match result.is_error {
             true => text.lines().next().unwrap_or("failed").to_owned(),
@@ -659,7 +669,7 @@ impl Stream {
         if self.activity == Activity::Thinking {
             return;
         }
-        self.activity = Activity::Thinking;
+        self.set_activity(Activity::Thinking);
         self.end_reply();
     }
 
@@ -757,7 +767,7 @@ impl Stream {
             "{} {}",
             palette.accent.paint(SPINNER[frame % SPINNER.len()]),
             palette.muted.paint(&clip(
-                &format!("{} {}", self.activity, live_clock(elapsed)),
+                &format!("{} {}", self.activity, live_clock(self.activity_since.elapsed())),
                 terminal_width().saturating_sub(3)
             )),
         )

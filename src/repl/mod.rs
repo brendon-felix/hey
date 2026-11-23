@@ -13,7 +13,7 @@ mod watch;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use anyhow::Result;
 use fuzzy_matcher::skim::SkimMatcherV2;
@@ -187,7 +187,7 @@ impl Repl {
         if setup.plan {
             session.set_plan(true).await;
         }
-        session.show_status(None);
+        session.show_status(None, None);
         Self { session, editor }
     }
 
@@ -639,7 +639,7 @@ impl Session {
             self.note_plan(plan);
         }
         if turn.context.is_some() || turn.plan.is_some() {
-            self.show_status(turn.context);
+            self.show_status(turn.context, turn.elapsed);
         }
     }
 
@@ -653,7 +653,7 @@ impl Session {
             .and_then(|activity| activity.run);
         self.displayed = 0;
         self.thread = thread;
-        self.show_status(None);
+        self.show_status(None, None);
     }
 
     /// Fetches the host's conversations, shared files, skills and this
@@ -1054,7 +1054,7 @@ impl Session {
         let model = self.backend.model(&reference).await?;
         self.options.model = model.reference;
         self.window = model.context_window;
-        self.show_status(None);
+        self.show_status(None, None);
         println!("{} {}", "Using".bold(), palette().name.paint(&reference));
         self.save(Setting::Model(&reference));
         Ok(())
@@ -1306,7 +1306,7 @@ impl Session {
             .plan = on;
     }
 
-    fn show_status(&self, context: Option<u64>) {
+    fn show_status(&self, context: Option<u64>, elapsed: Option<Duration>) {
         let mut status = self.status.lock().unwrap_or_else(PoisonError::into_inner);
         *status = Status {
             plan: self.plan,
@@ -1316,6 +1316,7 @@ impl Session {
             context,
             window: self.window,
             goal: self.goal.clone(),
+            elapsed,
         };
     }
 }

@@ -39,6 +39,8 @@ pub struct Turn {
     pub saved: Option<usize>,
     /// Whether the thread was left in plan mode, when the run changed it.
     pub plan: Option<bool>,
+    /// How long the run took, when the host said when it began.
+    pub elapsed: Option<Duration>,
 }
 
 /// A request to answer `prompt`, with the files and directories it mentions
@@ -158,6 +160,7 @@ pub async fn run(
                 run: None,
                 saved: None,
                 plan: None,
+                elapsed: None,
             }
         }
     }
@@ -371,6 +374,7 @@ impl Follow {
             run: self.seen.run,
             saved: self.seen.saved,
             plan: self.seen.plan,
+            elapsed: self.began.map(|began| began.elapsed()),
         }
     }
 
