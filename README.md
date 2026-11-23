@@ -6,6 +6,23 @@ of `hey` is on ease of use, speed, and a pleasant terminal experience.
 
 ![demo](./hey_demo.gif)
 
+## Why hey
+
+There are plenty of coding agents. `hey` is for people who live in the terminal and want to keep it
+that way.
+
+- **It is a real terminal program, not a full-screen app.** Answers stream straight into your
+  scrollback with syntax highlighting (via [syntect](https://github.com/trishume/syntect), with bat's
+  themes), so you can scroll, select, copy and pipe them like any other output.
+- **Your editor, your keys.** Input is built on [reedline](https://github.com/nushell/reedline), the
+  line editor of Nushell: Vi, Helix or Emacs mode, completion with descriptions, history search,
+  a status line, and composing in `$EDITOR`.
+- **Provider agnostic, including local models.** Use OpenAI, Anthropic, Gemini, OpenRouter,
+  GitHub Copilot or a local model through Ollama, and switch with `-m`. Nothing is tied to one vendor.
+- **Provider agnostic remote hosting.** Run `hey --serve` on any machine you own, keep your
+  conversations and memory there, and pick them up from any other machine, whichever model the
+  host uses, even a local one on your own hardware.
+
 ## Features
 
 - Any model [rig](https://rig.rs) supports: OpenAI, Anthropic, Gemini, Ollama, OpenRouter, and more
@@ -820,3 +837,7 @@ markdown_dir = "~/Notes/hey"         # default: <data dir>/hey/markdown, named <
 
 Point `markdown_dir` at an Obsidian vault folder to browse threads there. On a remote host the
 files are on that host.
+
+## License
+
+[MIT](LICENSE)

@@ -6,3 +6,6 @@ test*
 hey.toml
 *.json
 .DS_Store
+deploy.nu
+.agents/
+conversations/
