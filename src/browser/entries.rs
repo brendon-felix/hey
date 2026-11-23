@@ -804,6 +804,11 @@ impl Tool {
         if let ToolState::Writing = self.state {
             return muted(&self.args);
         }
+        if self.name == "table"
+            && let Some(table) = crate::table::pretty(&self.args)
+        {
+            return table.lines().map(gutter).collect();
+        }
         match (
             render::changed_lines(&self.name, &self.args),
             render::todo_rows(&self.name, &self.args),
@@ -842,7 +847,7 @@ impl Tool {
             }
             (None, Some(todos)) => rows.extend(todos.iter().map(|todo| gutter(todo.trim_start()))),
             (None, None) => match self.name.as_str() {
-                "shell" => rows.extend(muted(&format!("$ {}", render::call_summary(&self.args)))),
+                "shell" | "bash" => rows.extend(muted(&format!("$ {}", render::call_summary(&self.args)))),
                 _ => rows.extend(muted(&render::call_input(&self.args))),
             },
         }

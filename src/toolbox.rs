@@ -192,6 +192,7 @@ impl Toolbox {
             confine,
             ..Shell::default()
         };
+        let shell = backgrounded(dynamic(shell), background.clone());
         let builtin = [
             dynamic(Read {
                 workspace: workspace.clone(),
@@ -231,7 +232,8 @@ impl Toolbox {
                 base,
                 confine,
             }),
-            backgrounded(dynamic(shell), background.clone()),
+            shell.clone(),
+            aliased(shell, ALIAS),
             background,
             dynamic(ProcessOutput),
             dynamic(ProcessList),
@@ -310,6 +312,32 @@ fn briefly(tool: &str, error: ToolExecutionError) -> ToolExecutionError {
         _ => " Send the arguments as one JSON object that matches the tool's schema.",
     };
     ToolExecutionError::invalid_args(format!("{}{cut}.{hint}", &message[..end]))
+}
+
+/// The name other agents give `shell`, which models call it by.
+pub const ALIAS: &str = "bash";
+
+/// The tool a call to `name` is, as permissions and routing know it: `bash`
+/// is `shell`.
+pub fn canonical(name: &str) -> &str {
+    if name == ALIAS { Shell::NAME } else { name }
+}
+
+/// `tool` under another `name`, taking the same arguments, so that a model
+/// that calls it by that name is not told it does not exist.
+fn aliased(tool: DynamicTool, name: &str) -> DynamicTool {
+    let definition = tool.definition();
+    let description = format!("Same as `{}`.", definition.name);
+    DynamicTool::new_with_context(
+        ToolName::new(name).expect("alias names are valid"),
+        description,
+        definition.parameters,
+        move |context, args| {
+            let tool = tool.clone();
+            Box::pin(async move { tool.run_with(context, args).await })
+        },
+    )
+    .with_annotations(definition.annotations)
 }
 
 /// `shell`, which sends a call that asks for `run_in_background`, as Claude

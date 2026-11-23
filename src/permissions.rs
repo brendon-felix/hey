@@ -302,7 +302,7 @@ impl<R: Reporter> Approval<R> {
         }
         // A deferred tool called through `mcp_call` asks as that tool does.
         let called = crate::mcp::deferred::called(name, args);
-        let name = called.as_deref().unwrap_or(name);
+        let name = crate::toolbox::canonical(called.as_deref().unwrap_or(name));
         match self.permissions.get(name) {
             Permission::Allow => DispatchAction::proceed(),
             Permission::Deny => {

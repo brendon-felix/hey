@@ -373,6 +373,19 @@ impl Stream {
             path: path.clone(),
             state: CallState::Running,
         };
+        // The table is for the user, so it shows whatever tool output does.
+        if name == "table"
+            && let Some(table) = crate::table::pretty(args)
+        {
+            self.calls.flush_all(width);
+            screen::line(format_args!("\n{}", entry.line(CallStatus::Running, width)));
+            table.lines().for_each(screen::line);
+            self.calls.push(CallEntry {
+                state: CallState::Printed,
+                ..entry
+            });
+            return;
+        }
         if let Some(todos) = tool::todos(name, args) {
             self.calls.flush_all(width);
             screen::line(format_args!("\n{}", entry.line(CallStatus::Running, width)));
@@ -450,7 +463,7 @@ impl Stream {
         let width = terminal_width();
         let name = result.name.as_str();
         let (source, given) = match name {
-            "shell" => (Source::Command, split_status(&text).0),
+            "shell" | "bash" => (Source::Command, split_status(&text).0),
             "read" if self.style.highlight => (Source::Returned, super::read_lines(&text)),
             _ => (Source::Returned, text.as_str()),
         };

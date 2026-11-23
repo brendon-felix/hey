@@ -240,10 +240,27 @@ pub fn thought_text(duration: Option<Duration>) -> String {
     }
 }
 
-fn clock(elapsed: Duration) -> String {
+/// A duration as `850ms` below a second, `12s` below a minute, else `2m 05s`.
+pub fn clock(elapsed: Duration) -> String {
+    if elapsed < Duration::from_secs(1) {
+        return format!("{}ms", elapsed.as_millis());
+    }
     match elapsed.as_secs() {
         seconds @ 0..60 => format!("{seconds}s"),
         seconds => format!("{}m {:02}s", seconds / 60, seconds % 60),
+    }
+}
+
+#[cfg(test)]
+mod clock_tests {
+    use super::*;
+
+    #[test]
+    fn durations_read_in_the_unit_that_fits() {
+        assert_eq!(clock(Duration::from_millis(850)), "850ms");
+        assert_eq!(clock(Duration::ZERO), "0ms");
+        assert_eq!(clock(Duration::from_millis(1999)), "1s");
+        assert_eq!(clock(Duration::from_secs(125)), "2m 05s");
     }
 }
 
@@ -465,7 +482,7 @@ pub fn wrapped(text: &str, width: usize) -> Vec<String> {
 
 /// A call's arguments as its tool takes them: without the machine it runs
 /// on, which tools that refuse unknown arguments would reject.
-fn tool_args(args: &str) -> Option<serde_json::Map<String, serde_json::Value>> {
+pub fn tool_args(args: &str) -> Option<serde_json::Map<String, serde_json::Value>> {
     match serde_json::from_str(args).ok()? {
         serde_json::Value::Object(mut map) => {
             map.remove(route::ARG);

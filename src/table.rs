@@ -38,9 +38,10 @@ impl Tool for Table {
     type Error = ToolExecutionError;
 
     fn description(&self) -> String {
-        "Draw a table with box-drawing characters and rounded corners, its borders aligned \
-         and its cells wrapped to the terminal's width. Always use it for tables rather than \
-         writing Markdown tables, and put its output in your reply verbatim, in a code block."
+        "Show the user a table. They see it drawn with box-drawing characters and rounded \
+         corners, borders aligned and cells wrapped to their terminal, even when tool output \
+         is hidden; you get it back as a Markdown table. Always use it for tables rather than \
+         writing Markdown tables, and do not repeat it in your reply."
             .into()
     }
 
@@ -59,18 +60,46 @@ impl Tool for Table {
         _context: &mut ToolContext,
         args: TableArgs,
     ) -> Result<String, ToolExecutionError> {
-        let width = args.width.unwrap_or_else(|| {
-            crossterm::terminal::size()
-                .map(|(columns, _)| usize::from(columns))
-                .unwrap_or(FALLBACK_WIDTH)
-        });
-        Ok(render(
-            &args.headers,
-            &args.rows,
-            args.padding.unwrap_or(1),
-            width,
-        ))
+        Ok(markdown(&args.headers, &args.rows))
     }
+}
+
+/// How a call's `args` look to the user: the bordered table, as wide as the
+/// terminal allows. `None` when they are not a table's.
+pub fn pretty(args: &str) -> Option<String> {
+    let args: TableArgs = serde_json::from_value(crate::render::tool_args(args)?.into()).ok()?;
+    let terminal = crossterm::terminal::size()
+        .map(|(columns, _)| usize::from(columns))
+        .unwrap_or(FALLBACK_WIDTH);
+    let width = args.width.map_or(terminal, |width| width.min(terminal));
+    Some(render(
+        &args.headers,
+        &args.rows,
+        args.padding.unwrap_or(1),
+        width,
+    ))
+}
+
+/// The table as Markdown, for the model's history.
+pub fn markdown(headers: &[String], rows: &[Vec<String>]) -> String {
+    let columns = headers
+        .len()
+        .max(rows.iter().map(Vec::len).max().unwrap_or(0));
+    if columns == 0 {
+        return String::new();
+    }
+    let line = |row: &[String]| {
+        let cells: Vec<String> = (0..columns)
+            .map(|at| {
+                let cell = row.get(at).map_or("", String::as_str);
+                cell.replace('|', "\\|").replace('\n', "<br>")
+            })
+            .collect();
+        format!("| {} |", cells.join(" | "))
+    };
+    let mut out = vec![line(headers), format!("|{}", " --- |".repeat(columns))];
+    out.extend(rows.iter().map(|row| line(row)));
+    out.join("\n")
 }
 
 /// The table as lines of text no wider than `width`, where it can be.
@@ -188,5 +217,12 @@ mod tests {
         );
         let widths: Vec<_> = out.lines().map(display_width).collect();
         assert!(widths.iter().all(|&w| w == widths[0] && w <= 24), "{out}");
+    }
+
+    #[test]
+    fn markdown_escapes_cells() {
+        let s = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        let out = markdown(&s(&["a", "b"]), &[s(&["x|y", "l1\nl2"])]);
+        assert_eq!(out, "| a | b |\n| --- | --- |\n| x\\|y | l1<br>l2 |");
     }
 }

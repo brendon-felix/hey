@@ -109,8 +109,17 @@ impl Setting<'_> {
             ),
             Some(
                 "Your replies are printed to the terminal as raw Markdown, so Markdown tables \
-                 come out misaligned. To show a table, call the `table` tool and paste its \
-                 output verbatim in a code block; never write a Markdown table yourself."
+                 come out misaligned. To show a table, call the `table` tool: the user sees it \
+                 drawn with borders even when tool output is hidden, so do not repeat it in your \
+                 reply, and never write a Markdown table yourself."
+                    .into(),
+            ),
+            Some(
+                "When the user mentions something you don't recognise or aren't sure of (a \
+                 project, tool, library, person, event, version, error message or recent \
+                 change), don't guess or pretend to know it: if you have `web_search`, use it \
+                 to find context first, and `fetch` the best pages when the snippets are not \
+                 enough. Look in the working directory too when it may be local."
                     .into(),
             ),
             self.spill.map(|dir| {

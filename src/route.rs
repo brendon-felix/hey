@@ -63,7 +63,7 @@ impl Kit {
                     "write" | "edit" | "move" | "delete" => {
                         checkpoint::files(tool, turn.clone(), None)
                     }
-                    "shell" => checkpoint::shell(tool, turn.clone()),
+                    "shell" | "bash" => checkpoint::shell(tool, turn.clone()),
                     _ => tool,
                 })
                 .collect(),
