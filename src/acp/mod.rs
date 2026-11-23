@@ -14,14 +14,13 @@ use std::sync::{Arc, Mutex};
 
 use agent_client_protocol::v1::ConnectionTo;
 use agent_client_protocol::v1::schema::{
-    AgentCapabilities, AvailableCommand, AvailableCommandInput, AvailableCommandsUpdate,
-    CancelNotification, Content, ContentBlock, ContentChunk, ImageContent, Implementation,
-    InitializeRequest, InitializeResponse, NewSessionRequest, NewSessionResponse, PermissionOption,
-    PermissionOptionKind, PromptCapabilities, PromptRequest, PromptResponse,
-    RequestPermissionOutcome, RequestPermissionRequest, RequestPermissionResponse,
-    SessionAdditionalDirectoriesCapabilities, SessionCapabilities, SessionNotification,
-    SessionUpdate, StopReason, TextContent, ToolCall, ToolCallContent, ToolCallStatus,
-    ToolCallUpdate, ToolCallUpdateFields, ToolKind, UnstructuredCommandInput,
+    AgentCapabilities, AvailableCommandsUpdate, CancelNotification, Content, ContentBlock,
+    ContentChunk, ImageContent, Implementation, InitializeRequest, InitializeResponse,
+    NewSessionRequest, NewSessionResponse, PermissionOption, PermissionOptionKind,
+    PromptCapabilities, PromptRequest, PromptResponse, RequestPermissionOutcome,
+    RequestPermissionRequest, RequestPermissionResponse, SessionAdditionalDirectoriesCapabilities,
+    SessionCapabilities, SessionNotification, SessionUpdate, StopReason, TextContent, ToolCall,
+    ToolCallContent, ToolCallStatus, ToolCallUpdate, ToolCallUpdateFields, ToolKind,
 };
 use agent_client_protocol::{Agent, Client, Error, Stdio};
 use anyhow::Result;
@@ -34,6 +33,8 @@ use crate::protocol::{Ask, Attachment, Decision, Ending, Event, RunOptions};
 use crate::sessions::SessionId;
 use crate::turn;
 
+mod commands;
+
 /// A conversation the editor opened, and the folders of its workspace.
 #[derive(Clone)]
 struct Session {
@@ -42,11 +43,17 @@ struct Session {
     /// to the model with the first prompt.
     roots: Vec<PathBuf>,
     told: bool,
+    /// What `/model`, `/think`, `/goal` and `/plan` set for this session.
+    model: String,
+    thinking: Option<Thinking>,
+    goal: Option<String>,
+    plan: bool,
 }
 
 /// What every session answers with.
 struct Shared {
     backend: Backend,
+    /// What a session starts with.
     model: String,
     thinking: Option<Thinking>,
     system_prompt: Option<String>,
@@ -105,21 +112,19 @@ pub async fn serve(
                     thread,
                     roots,
                     told: false,
+                    model: on_new.model.clone(),
+                    thinking: on_new.thinking,
+                    goal: None,
+                    plan: false,
                 };
                 on_new.sessions.lock().unwrap().insert(id.clone(), session);
                 responder.respond(NewSessionResponse::new(id.clone()))?;
                 // After the response, which the editor needs to know the session.
                 cx.send_notification(SessionNotification::new(
                     id,
-                    SessionUpdate::AvailableCommandsUpdate(AvailableCommandsUpdate::new(vec![
-                        AvailableCommand::new(
-                            "add-dir",
-                            "Add a folder to this conversation's workspace",
-                        )
-                        .input(AvailableCommandInput::Unstructured(
-                            UnstructuredCommandInput::new("path of the folder"),
-                        )),
-                    ])),
+                    SessionUpdate::AvailableCommandsUpdate(AvailableCommandsUpdate::new(
+                        commands::available(&on_new).await,
+                    )),
                 ))
             },
             agent_client_protocol::on_receive_request!(),
@@ -163,44 +168,59 @@ pub async fn serve(
     served.map_err(|error| anyhow::anyhow!("ACP connection failed: {error}"))
 }
 
-/// Answers `request`, telling the editor what happens, and why it ended.
+/// Answers `request`: a command it types, or a message for the model.
 async fn prompt(
     shared: &Shared,
     cx: &ConnectionTo<Client>,
     request: PromptRequest,
 ) -> Result<StopReason> {
     let session = request.session_id.clone();
-    let (thread, roots) = {
+    let key = session.0.to_string();
+    let (text, attachments) = content(request.prompt);
+    let what = match commands::run(shared, &key, &text).await? {
+        commands::Outcome::Said(said) => {
+            cx.send_notification(SessionNotification::new(
+                session.clone(),
+                SessionUpdate::AgentMessageChunk(chunk(said)),
+            ))
+            .ok();
+            return Ok(StopReason::EndTurn);
+        }
+        commands::Outcome::Ask(text) => commands::Run::Answer(text),
+        commands::Outcome::Run(run) => run,
+    };
+    let (thread, run) = {
         let mut sessions = shared.sessions.lock().unwrap();
         let known = sessions
-            .get_mut(session.0.as_ref())
-            .ok_or_else(|| anyhow::anyhow!("unknown session {}", session.0))?;
-        let roots = (!std::mem::replace(&mut known.told, true)).then(|| known.roots.clone());
-        (known.thread.clone(), roots)
-    };
-    let (mut text, attachments) = content(request.prompt);
-    if let Some(argument) = text.trim().strip_prefix("/add-dir") {
-        let said = add_dir(shared, session.0.as_ref(), argument.trim());
-        cx.send_notification(SessionNotification::new(
-            session.clone(),
-            SessionUpdate::AgentMessageChunk(chunk(said)),
-        ))
-        .ok();
-        return Ok(StopReason::EndTurn);
-    }
-    if let Some(note) = roots.as_deref().and_then(workspace) {
-        text = format!("{note}\n\n{text}");
-    }
-    let mut run = turn::request(
-        text.clone(),
-        RunOptions {
-            model: shared.model.clone(),
-            thinking: shared.thinking,
+            .get_mut(&key)
+            .ok_or_else(|| anyhow::anyhow!("unknown session {key}"))?;
+        let options = RunOptions {
+            model: known.model.clone(),
+            thinking: known.thinking,
             system_prompt: shared.system_prompt.clone(),
-        },
-    );
-    run.attachments.extend(attachments);
-    run.prompt = text;
+        };
+        let mut run = match what {
+            commands::Run::Compact(focus) => turn::compaction(focus, options),
+            commands::Run::Answer(mut text) => {
+                // A slash command invokes a skill only at the message's start,
+                // so the workspace waits for a message that has none.
+                if !text.trim_start().starts_with('/')
+                    && !std::mem::replace(&mut known.told, true)
+                    && let Some(note) = workspace(&known.roots)
+                {
+                    text = format!("{note}\n\n{text}");
+                }
+                let mut run = turn::request(text.clone(), options);
+                run.attachments.extend(attachments);
+                run.prompt = text;
+                run.goal = known.goal.clone();
+                run
+            }
+        };
+        run.client = None;
+        (known.thread.clone(), run)
+    };
+    let run = run;
     let mut events = shared.backend.start(&thread, run).await?;
     let send = |update: SessionUpdate| {
         cx.send_notification(SessionNotification::new(session.clone(), update))
@@ -253,6 +273,16 @@ async fn prompt(
                 let decision = permission(cx, &session, open.last(), &ask).await;
                 shared.backend.answer(&thread, id, decision).await?;
             }
+            Event::Plan { on } => {
+                if let Some(known) = shared.sessions.lock().unwrap().get_mut(&key) {
+                    known.plan = on;
+                }
+            }
+            Event::Compacted { before, after, .. } => {
+                send(SessionUpdate::AgentMessageChunk(chunk(format!(
+                    "Compacted the conversation: about {before} tokens became {after}.\n\n"
+                ))))
+            }
             Event::Notice { text } => tracing::info!(notice = %text, "hey notice"),
             Event::End { ending, .. } => {
                 return match ending {
@@ -264,37 +294,6 @@ async fn prompt(
             _ => {}
         }
     }
-}
-
-/// Adds the folder `argument` names to `session`'s workspace, and says what
-/// came of it. The model is told of the new list with the next prompt.
-fn add_dir(shared: &Shared, session: &str, argument: &str) -> String {
-    if argument.is_empty() {
-        return "Usage: `/add-dir <path>`".into();
-    }
-    let mut sessions = shared.sessions.lock().unwrap();
-    let Some(known) = sessions.get_mut(session) else {
-        return "This conversation is unknown.".into();
-    };
-    let expanded = match crate::config::expand_path(argument) {
-        Ok(path) => path,
-        Err(error) => return format!("Cannot use `{argument}`: {error:#}"),
-    };
-    let path = match known.roots[0].join(&expanded).canonicalize() {
-        Ok(path) if path.is_dir() => path,
-        Ok(path) => return format!("`{}` is not a folder.", path.display()),
-        Err(error) => return format!("Cannot use `{argument}`: {error}"),
-    };
-    if known.roots.contains(&path) {
-        return format!("`{}` is already in the workspace.", path.display());
-    }
-    known.roots.push(path.clone());
-    known.told = false;
-    format!(
-        "Added `{}`. The workspace now has {} folders.",
-        path.display(),
-        known.roots.len()
-    )
 }
 
 /// What tells the model of a workspace of several folders; nothing for one.
@@ -496,7 +495,6 @@ mod tests {
     #[test]
     fn only_a_workspace_of_several_folders_is_told() {
         assert_eq!(workspace(&[PathBuf::from("/a")]), None);
-        assert!(add_dir_usage());
         let note = workspace(&[PathBuf::from("/a"), PathBuf::from("/b")]).unwrap();
         assert!(note.contains("- /a") && note.contains("- /b"));
     }
