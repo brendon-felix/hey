@@ -14,13 +14,14 @@ use std::sync::{Arc, Mutex};
 
 use agent_client_protocol::v1::ConnectionTo;
 use agent_client_protocol::v1::schema::{
-    AgentCapabilities, CancelNotification, Content, ContentBlock, ContentChunk, ImageContent,
-    Implementation, InitializeRequest, InitializeResponse, NewSessionRequest, NewSessionResponse,
-    PermissionOption, PermissionOptionKind, PromptCapabilities, PromptRequest, PromptResponse,
+    AgentCapabilities, AvailableCommand, AvailableCommandInput, AvailableCommandsUpdate,
+    CancelNotification, Content, ContentBlock, ContentChunk, ImageContent, Implementation,
+    InitializeRequest, InitializeResponse, NewSessionRequest, NewSessionResponse, PermissionOption,
+    PermissionOptionKind, PromptCapabilities, PromptRequest, PromptResponse,
     RequestPermissionOutcome, RequestPermissionRequest, RequestPermissionResponse,
     SessionAdditionalDirectoriesCapabilities, SessionCapabilities, SessionNotification,
     SessionUpdate, StopReason, TextContent, ToolCall, ToolCallContent, ToolCallStatus,
-    ToolCallUpdate, ToolCallUpdateFields, ToolKind,
+    ToolCallUpdate, ToolCallUpdateFields, ToolKind, UnstructuredCommandInput,
 };
 use agent_client_protocol::{Agent, Client, Error, Stdio};
 use anyhow::Result;
@@ -90,7 +91,7 @@ pub async fn serve(
             agent_client_protocol::on_receive_request!(),
         )
         .on_receive_request(
-            async move |request: NewSessionRequest, responder, _cx| {
+            async move |request: NewSessionRequest, responder, cx: ConnectionTo<Client>| {
                 // Tools and instructions work from the process's directory.
                 if let Err(error) = std::env::set_current_dir(&request.cwd) {
                     tracing::warn!(cwd = %request.cwd.display(), %error, "cannot enter the session's directory");
@@ -106,7 +107,20 @@ pub async fn serve(
                     told: false,
                 };
                 on_new.sessions.lock().unwrap().insert(id.clone(), session);
-                responder.respond(NewSessionResponse::new(id))
+                responder.respond(NewSessionResponse::new(id.clone()))?;
+                // After the response, which the editor needs to know the session.
+                cx.send_notification(SessionNotification::new(
+                    id,
+                    SessionUpdate::AvailableCommandsUpdate(AvailableCommandsUpdate::new(vec![
+                        AvailableCommand::new(
+                            "add-dir",
+                            "Add a folder to this conversation's workspace",
+                        )
+                        .input(AvailableCommandInput::Unstructured(
+                            UnstructuredCommandInput::new("path of the folder"),
+                        )),
+                    ])),
+                ))
             },
             agent_client_protocol::on_receive_request!(),
         )
@@ -165,6 +179,15 @@ async fn prompt(
         (known.thread.clone(), roots)
     };
     let (mut text, attachments) = content(request.prompt);
+    if let Some(argument) = text.trim().strip_prefix("/add-dir") {
+        let said = add_dir(shared, session.0.as_ref(), argument.trim());
+        cx.send_notification(SessionNotification::new(
+            session.clone(),
+            SessionUpdate::AgentMessageChunk(chunk(said)),
+        ))
+        .ok();
+        return Ok(StopReason::EndTurn);
+    }
     if let Some(note) = roots.as_deref().and_then(workspace) {
         text = format!("{note}\n\n{text}");
     }
@@ -241,6 +264,37 @@ async fn prompt(
             _ => {}
         }
     }
+}
+
+/// Adds the folder `argument` names to `session`'s workspace, and says what
+/// came of it. The model is told of the new list with the next prompt.
+fn add_dir(shared: &Shared, session: &str, argument: &str) -> String {
+    if argument.is_empty() {
+        return "Usage: `/add-dir <path>`".into();
+    }
+    let mut sessions = shared.sessions.lock().unwrap();
+    let Some(known) = sessions.get_mut(session) else {
+        return "This conversation is unknown.".into();
+    };
+    let expanded = match crate::config::expand_path(argument) {
+        Ok(path) => path,
+        Err(error) => return format!("Cannot use `{argument}`: {error:#}"),
+    };
+    let path = match known.roots[0].join(&expanded).canonicalize() {
+        Ok(path) if path.is_dir() => path,
+        Ok(path) => return format!("`{}` is not a folder.", path.display()),
+        Err(error) => return format!("Cannot use `{argument}`: {error}"),
+    };
+    if known.roots.contains(&path) {
+        return format!("`{}` is already in the workspace.", path.display());
+    }
+    known.roots.push(path.clone());
+    known.told = false;
+    format!(
+        "Added `{}`. The workspace now has {} folders.",
+        path.display(),
+        known.roots.len()
+    )
 }
 
 /// What tells the model of a workspace of several folders; nothing for one.
@@ -442,6 +496,7 @@ mod tests {
     #[test]
     fn only_a_workspace_of_several_folders_is_told() {
         assert_eq!(workspace(&[PathBuf::from("/a")]), None);
+        assert!(add_dir_usage());
         let note = workspace(&[PathBuf::from("/a"), PathBuf::from("/b")]).unwrap();
         assert!(note.contains("- /a") && note.contains("- /b"));
     }
