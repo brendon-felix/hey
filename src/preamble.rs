@@ -111,6 +111,14 @@ impl Setting<'_> {
                     .into(),
             ),
             Some(
+                "Prefer the dedicated tools to the shell when one fits: `read` to look at a \
+                 file, `search` for contents, `list` for directories, `edit` and `write` to \
+                 change files, `move` and `delete` for those, not `cat`, `sed`, `grep`, `ls`, \
+                 `find`, `mv`, `rm` or heredocs. Keep the shell for what they cannot do, such \
+                 as builds, tests and git, and run independent calls together."
+                    .into(),
+            ),
+            Some(
                 "Your replies are printed to the terminal as raw Markdown, so Markdown tables \
                  come out misaligned. To show a table, call the `table` tool: the user sees it \
                  drawn with borders even when tool output is hidden, so do not repeat it in your \
