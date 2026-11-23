@@ -18,8 +18,9 @@ use agent_client_protocol::v1::schema::{
     Implementation, InitializeRequest, InitializeResponse, NewSessionRequest, NewSessionResponse,
     PermissionOption, PermissionOptionKind, PromptCapabilities, PromptRequest, PromptResponse,
     RequestPermissionOutcome, RequestPermissionRequest, RequestPermissionResponse,
-    SessionNotification, SessionUpdate, StopReason, TextContent, ToolCall, ToolCallContent,
-    ToolCallStatus, ToolCallUpdate, ToolCallUpdateFields, ToolKind,
+    SessionAdditionalDirectoriesCapabilities, SessionCapabilities, SessionNotification,
+    SessionUpdate, StopReason, TextContent, ToolCall, ToolCallContent, ToolCallStatus,
+    ToolCallUpdate, ToolCallUpdateFields, ToolKind,
 };
 use agent_client_protocol::{Agent, Client, Error, Stdio};
 use anyhow::Result;
@@ -32,6 +33,16 @@ use crate::protocol::{Ask, Attachment, Decision, Ending, Event, RunOptions};
 use crate::sessions::SessionId;
 use crate::turn;
 
+/// A conversation the editor opened, and the folders of its workspace.
+#[derive(Clone)]
+struct Session {
+    thread: SessionId,
+    /// The workspace's folders, the first being the working directory; told
+    /// to the model with the first prompt.
+    roots: Vec<PathBuf>,
+    told: bool,
+}
+
 /// What every session answers with.
 struct Shared {
     backend: Backend,
@@ -39,7 +50,7 @@ struct Shared {
     thinking: Option<Thinking>,
     system_prompt: Option<String>,
     /// The hey conversation of each ACP session, by the id the editor knows.
-    sessions: Mutex<HashMap<String, SessionId>>,
+    sessions: Mutex<HashMap<String, Session>>,
 }
 
 /// Serves ACP on stdin and stdout until the editor closes them. Nothing
@@ -66,7 +77,10 @@ pub async fn serve(
         .on_receive_request(
             async move |initialize: InitializeRequest, responder, _cx| {
                 let capabilities = AgentCapabilities::new()
-                    .prompt_capabilities(PromptCapabilities::new().image(true).embedded_context(true));
+                    .prompt_capabilities(PromptCapabilities::new().image(true).embedded_context(true))
+                    .session_capabilities(SessionCapabilities::new().additional_directories(
+                        SessionAdditionalDirectoriesCapabilities::new(),
+                    ));
                 responder.respond(
                     InitializeResponse::new(initialize.protocol_version)
                         .agent_capabilities(capabilities)
@@ -83,7 +97,15 @@ pub async fn serve(
                 }
                 let thread = SessionId::new();
                 let id = thread.as_str().to_owned();
-                on_new.sessions.lock().unwrap().insert(id.clone(), thread);
+                let roots = std::iter::once(request.cwd.clone())
+                    .chain(request.additional_directories.clone())
+                    .collect();
+                let session = Session {
+                    thread,
+                    roots,
+                    told: false,
+                };
+                on_new.sessions.lock().unwrap().insert(id.clone(), session);
                 responder.respond(NewSessionResponse::new(id))
             },
             agent_client_protocol::on_receive_request!(),
@@ -114,7 +136,7 @@ pub async fn serve(
                     .lock()
                     .unwrap()
                     .get(cancel.session_id.0.as_ref())
-                    .cloned();
+                    .map(|session| session.thread.clone());
                 if let Some(thread) = thread {
                     on_cancel.backend.stop(&thread).await.ok();
                 }
@@ -134,14 +156,18 @@ async fn prompt(
     request: PromptRequest,
 ) -> Result<StopReason> {
     let session = request.session_id.clone();
-    let thread = shared
-        .sessions
-        .lock()
-        .unwrap()
-        .get(session.0.as_ref())
-        .cloned()
-        .ok_or_else(|| anyhow::anyhow!("unknown session {}", session.0))?;
-    let (text, attachments) = content(request.prompt);
+    let (thread, roots) = {
+        let mut sessions = shared.sessions.lock().unwrap();
+        let known = sessions
+            .get_mut(session.0.as_ref())
+            .ok_or_else(|| anyhow::anyhow!("unknown session {}", session.0))?;
+        let roots = (!std::mem::replace(&mut known.told, true)).then(|| known.roots.clone());
+        (known.thread.clone(), roots)
+    };
+    let (mut text, attachments) = content(request.prompt);
+    if let Some(note) = roots.as_deref().and_then(workspace) {
+        text = format!("{note}\n\n{text}");
+    }
     let mut run = turn::request(
         text.clone(),
         RunOptions {
@@ -215,6 +241,24 @@ async fn prompt(
             _ => {}
         }
     }
+}
+
+/// What tells the model of a workspace of several folders; nothing for one.
+fn workspace(roots: &[PathBuf]) -> Option<String> {
+    if roots.len() < 2 {
+        return None;
+    }
+    let list: Vec<String> = roots
+        .iter()
+        .map(|root| format!("- {}", root.display()))
+        .collect();
+    Some(format!(
+        "The editor's workspace has {} folders, all the user's project. The first, {}, is \
+         your working directory; use absolute paths for the others:\n{}",
+        roots.len(),
+        roots[0].display(),
+        list.join("\n")
+    ))
 }
 
 fn chunk(text: String) -> ContentChunk {
@@ -388,5 +432,17 @@ async fn permission(
             .and_then(|index| choices.get(index))
             .map_or(Decision::Decline, |choice| Decision::Answer(choice.clone())),
         _ => Decision::Decline,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_a_workspace_of_several_folders_is_told() {
+        assert_eq!(workspace(&[PathBuf::from("/a")]), None);
+        let note = workspace(&[PathBuf::from("/a"), PathBuf::from("/b")]).unwrap();
+        assert!(note.contains("- /a") && note.contains("- /b"));
     }
 }
