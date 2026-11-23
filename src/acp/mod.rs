@@ -222,6 +222,9 @@ async fn prompt(
     };
     let run = run;
     let mut events = shared.backend.start(&thread, run).await?;
+    // With a remote host, the calls it lends this machine run here.
+    let mut follower = None;
+    let mut lent = tokio::task::JoinSet::new();
     let send = |update: SessionUpdate| {
         cx.send_notification(SessionNotification::new(session.clone(), update))
             .ok();
@@ -269,6 +272,16 @@ async fn prompt(
                     id, fields,
                 )));
             }
+            Event::Began {
+                follower: began, ..
+            } => follower = began,
+            Event::ClientCall { id, call } => {
+                if let Some(call) =
+                    follower.and_then(|follower| shared.backend.lend(&thread, follower, id, call))
+                {
+                    lent.spawn(call);
+                }
+            }
             Event::Approval { id, ask } => {
                 let decision = permission(cx, &session, open.last(), &ask).await;
                 shared.backend.answer(&thread, id, decision).await?;
@@ -285,6 +298,7 @@ async fn prompt(
             }
             Event::Notice { text } => tracing::info!(notice = %text, "hey notice"),
             Event::End { ending, .. } => {
+                lent.shutdown().await;
                 return match ending {
                     Ending::Answered => Ok(StopReason::EndTurn),
                     Ending::Interrupted => Ok(StopReason::Cancelled),
