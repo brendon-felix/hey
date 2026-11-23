@@ -57,9 +57,18 @@ impl Outbox {
         std::mem::take(&mut self.lock().steering)
     }
 
-    /// The message queued last, taken back.
-    pub fn unqueue(&self) -> Option<String> {
-        self.lock().queued.pop_back()
+    /// What waits, in the order it is delivered: the messages steering,
+    /// then those queued, and how many are steering.
+    pub fn snapshot(&self) -> (Vec<String>, usize) {
+        let messages = self.lock();
+        let steering = messages.steering.len();
+        let all = messages.steering.iter().chain(&messages.queued);
+        (all.cloned().collect(), steering)
+    }
+
+    /// Replaces the queued messages.
+    pub fn set_queued(&self, queued: impl IntoIterator<Item = String>) {
+        self.lock().queued = queued.into_iter().collect();
     }
 
     /// Every message still waiting, oldest first: those steering, which the

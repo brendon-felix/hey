@@ -267,6 +267,15 @@ impl Backend {
         }
     }
 
+    /// Takes back a message steering the thread's answer; false when the
+    /// model was already handed it.
+    pub async fn unsteer(&self, id: &SessionId, prompt: &str) -> Result<bool> {
+        match self {
+            Backend::Local(host) => Ok(host.unsteer(id, prompt)),
+            Backend::Remote(client, _) => client.unsteer(id, prompt).await,
+        }
+    }
+
     /// Has the answer in progress in the thread compact before its next
     /// model call, or once it answered; false when the thread is not
     /// answering, or its answer is ending.

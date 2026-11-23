@@ -95,6 +95,21 @@ impl Waiting {
         waiting
     }
 
+    /// Takes back the message `prompt`, if still waiting; false when the
+    /// model was already handed it, or the run takes no more.
+    pub fn withdraw(&mut self, prompt: &str) -> bool {
+        let Self::Open(waiting) = self else {
+            return false;
+        };
+        match waiting.iter().position(|steering| steering.prompt == prompt) {
+            Some(at) => {
+                waiting.remove(at);
+                true
+            }
+            None => false,
+        }
+    }
+
     pub fn close(&mut self) {
         *self = Self::Closed;
     }

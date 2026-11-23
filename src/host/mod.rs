@@ -591,6 +591,12 @@ impl Host {
         run.steer(steering)
     }
 
+    /// Takes back the message `prompt` steering thread `id`; false when the
+    /// model was already handed it, or the thread is not answering.
+    pub fn unsteer(&self, id: &SessionId, prompt: &str) -> bool {
+        self.run(id).is_some_and(|run| run.unsteer(prompt))
+    }
+
     /// Takes up call `call` for `follower`; false when another client took
     /// it first, or it is no longer waited for.
     pub fn claim(&self, id: &SessionId, call: CallId, follower: FollowerId) -> bool {

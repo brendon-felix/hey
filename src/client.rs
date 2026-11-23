@@ -322,6 +322,15 @@ impl Client {
         .await
     }
 
+    pub async fn unsteer(&self, id: &SessionId, prompt: &str) -> Result<bool> {
+        let path = format!("v1/threads/{}/steer", id.as_str());
+        self.done(
+            self.http.delete(self.url(&path)?).json(prompt),
+            StatusCode::CONFLICT,
+        )
+        .await
+    }
+
     pub async fn compact(&self, id: &SessionId, focus: &str) -> Result<bool> {
         let path = format!("v1/threads/{}/compact", id.as_str());
         self.done(

@@ -124,8 +124,8 @@ pub enum Read {
     Queue(String),
     /// Ctrl+S: what was typed, to send at once, stopping the answer.
     Now(String),
-    /// Alt+Up: the message queued last, back to edit.
-    Unqueue,
+    /// Alt+Up: manage the messages waiting to be sent.
+    Manage,
     /// Ctrl+V: attach the clipboard's image.
     Paste,
     /// Ctrl+C, with what was typed.
@@ -139,7 +139,7 @@ pub enum Read {
 /// What keys bound to [`ReedlineEvent::ExecuteHostCommand`] ask for.
 const QUEUE: &str = "queue";
 const NOW: &str = "now";
-const UNQUEUE: &str = "unqueue";
+const MANAGE: &str = "manage";
 const PASTE: &str = "paste";
 
 pub struct Editor {
@@ -289,7 +289,7 @@ impl Editor {
         let send = match command {
             QUEUE => Read::Queue,
             NOW => Read::Now,
-            UNQUEUE => return Read::Unqueue,
+            MANAGE => return Read::Manage,
             PASTE => return Read::Paste,
             _ => return Read::Woken,
         };
@@ -465,7 +465,7 @@ fn with_menu_bindings(mut keybindings: Keybindings) -> Keybindings {
     for (modifiers, key, command) in [
         (KeyModifiers::CONTROL, KeyCode::Char('q'), QUEUE),
         (KeyModifiers::CONTROL, KeyCode::Char('s'), NOW),
-        (KeyModifiers::ALT, KeyCode::Up, UNQUEUE),
+        (KeyModifiers::ALT, KeyCode::Up, MANAGE),
         (KeyModifiers::CONTROL, KeyCode::Char('v'), PASTE),
     ] {
         keybindings.add_binding(

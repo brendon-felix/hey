@@ -141,6 +141,12 @@ impl Run {
         lock(&self.steers).push(steering)
     }
 
+    /// Takes back the message `prompt` before the model is handed it; false
+    /// when it already was.
+    pub fn unsteer(&self, prompt: &str) -> bool {
+        lock(&self.steers).withdraw(prompt)
+    }
+
     /// The messages waiting, for the next tool result to hand over.
     pub fn take_steers(&self) -> Vec<Steering> {
         lock(&self.steers).take()

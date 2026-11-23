@@ -172,7 +172,7 @@ work in one-shot messages too: `hey review @src/main.rs`.
 | Enter | Send; while an answer is in progress, ask whether to steer it or queue the message |
 | Ctrl+Q | Queue the message for after the answer |
 | Ctrl+S | Send now, stopping the answer |
-| Alt+Up | Take back the message queued last, to edit |
+| Alt+Up | Manage waiting messages: reorder, edit, remove |
 | Ctrl+V | Attach the clipboard's image, as a mention of it saved in hey's cache |
 | Ctrl+C | Stop a running answer, or exit |
 | Ctrl+D | Exit |
@@ -187,7 +187,12 @@ running. A message sent meanwhile is held above the prompt until the answer take
   so it can change course without starting over; an answer that ends first takes it as its next
   prompt. It shows in the conversation where the model read it.
 - **Ctrl+Q** queues it without asking, to be sent once the answer ends; queued messages go one per answer, in
-  order. **Alt+Up** takes back the one queued last.
+  order.
+- **Alt+Up** opens one list of every waiting message, steering first and then queued, in the order
+  they are delivered. ↑/↓ select, Shift+↑/↓ (or J/K) move a message, Enter edits it in place, `d`
+  removes it, Esc applies and Ctrl+C cancels. Kinds belong to places in the list, so moving a message
+  across the boundary turns a queued message into a steering one or back. A steering message the
+  model has already been handed is gone from the list.
 - **Ctrl+S** sends it now: the answer stops, and the message is sent at once. With nothing typed,
   it sends the first queued message.
 

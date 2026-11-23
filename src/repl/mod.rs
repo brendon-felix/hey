@@ -274,7 +274,7 @@ impl Session {
         // here would be drawn over.
         match read {
             Read::Line(_) | Read::Interrupted(_) | Read::Exit => screen::direct(),
-            Read::Queue(_) | Read::Now(_) | Read::Unqueue | Read::Paste | Read::Woken => {}
+            Read::Queue(_) | Read::Now(_) | Read::Manage | Read::Paste | Read::Woken => {}
         }
         (editor, read)
     }
@@ -306,11 +306,7 @@ impl Session {
                 Ok(None) => render::notice("no image in the clipboard"),
                 Err(error) => render::notice(&format!("nothing pasted: {error:#}")),
             },
-            Read::Unqueue => {
-                if let Some(message) = self.outbox.unqueue() {
-                    editor.insert(&message);
-                }
-            }
+            Read::Manage => self.manage().await,
             Read::Interrupted(typed) => match self.current.is_some() {
                 true => self.interrupt(typed).await,
                 false => return Flow::Exit,
@@ -477,6 +473,62 @@ impl Session {
         // Only now, so the next run, this terminal's own, wakes nothing.
         if self.current.is_none() {
             self.watch.set_following(false);
+        }
+    }
+
+    /// Alt+Up: reorders, edits and removes the messages waiting, steering
+    /// and queued alike. Steering ones are taken back from the host first
+    /// and handed over again in their new order, unless the model took them
+    /// meanwhile.
+    async fn manage(&mut self) {
+        let (texts, steering) = self.outbox.snapshot();
+        if texts.is_empty() {
+            render::notice("no messages waiting");
+            return;
+        }
+        let Some((mut texts, mut steering)) = crate::ui::manage(texts.clone(), steering).await
+        else {
+            return;
+        };
+        let (before, was_steering) = self.outbox.snapshot();
+        if texts == before && steering == was_steering {
+            return;
+        }
+        // Those the model has been handed since are gone from the list.
+        for prompt in before[..was_steering].iter().rev() {
+            let withdrawn = self
+                .backend
+                .unsteer(&self.thread, prompt)
+                .await
+                .unwrap_or(false);
+            if withdrawn {
+                continue;
+            }
+            self.outbox.steered(prompt);
+            if let Some(at) = texts.iter().position(|text| text == prompt) {
+                texts.remove(at);
+                if at < steering {
+                    steering -= 1;
+                }
+            }
+        }
+        let queued = texts.split_off(steering);
+        self.outbox.unsteered();
+        self.outbox.set_queued(queued);
+        // Messages the run no longer takes go first in the queue, in order.
+        let mut refused = Vec::new();
+        for message in texts {
+            let steer = Steer {
+                attachments: turn::attachments(&message),
+                prompt: message.clone(),
+            };
+            match self.backend.steer(&self.thread, &steer).await {
+                Ok(true) if refused.is_empty() => self.outbox.steering(message),
+                _ => refused.push(message),
+            }
+        }
+        for message in refused.into_iter().rev() {
+            self.outbox.queue_first(message);
         }
     }
 
@@ -1293,7 +1345,7 @@ fn help() {
             "queue the message for after the answer, without asking",
         ),
         ("Ctrl+S", "send now, stopping the answer"),
-        ("Alt+Up", "edit the message queued last"),
+        ("Alt+Up", "reorder, edit or remove waiting messages"),
         ("Ctrl+V", "attach the clipboard's image"),
         ("Ctrl+C", "stop a running answer, or exit"),
         ("Ctrl+D", "exit"),

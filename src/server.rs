@@ -52,7 +52,7 @@ pub async fn serve(host: Arc<Host>, config: &config::Server) -> Result<()> {
         .route("/v1/threads/{id}", get(open).delete(delete))
         .route("/v1/threads/{id}/run", post(start).delete(stop))
         .route("/v1/threads/{id}/runs/{run}", get(follow))
-        .route("/v1/threads/{id}/steer", post(steer))
+        .route("/v1/threads/{id}/steer", post(steer).delete(unsteer))
         .route("/v1/threads/{id}/compact", post(compact))
         .route("/v1/threads/{id}/undo", post(undo))
         .route("/v1/threads/{id}/viewed", post(viewed))
@@ -311,6 +311,19 @@ async fn steer(
     Json(steer): Json<Steer>,
 ) -> StatusCode {
     match host.steer(&id, steer).await {
+        true => StatusCode::NO_CONTENT,
+        false => StatusCode::CONFLICT,
+    }
+}
+
+/// Takes back a steering message, the body being its prompt; 409 when the
+/// model was already handed it.
+async fn unsteer(
+    State(host): State<Arc<Host>>,
+    Path(id): Path<SessionId>,
+    Json(prompt): Json<String>,
+) -> StatusCode {
+    match host.unsteer(&id, &prompt) {
         true => StatusCode::NO_CONTENT,
         false => StatusCode::CONFLICT,
     }

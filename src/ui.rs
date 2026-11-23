@@ -112,6 +112,179 @@ pub async fn steer_or_queue() -> Option<bool> {
     }
 }
 
+/// Lets the user reorder, edit and remove the messages waiting to be sent:
+/// `texts` in delivery order, the first `steering` of them steering the
+/// answer and the rest queued after it. Kinds belong to positions, so a
+/// message moved across the boundary changes kind and its neighbour takes
+/// the other. `None` when cancelled; else the messages and how many steer.
+pub async fn manage(texts: Vec<String>, steering: usize) -> Option<(Vec<String>, usize)> {
+    let mut menu = Manager {
+        texts,
+        steering,
+        selected: 0,
+        editing: false,
+        rows: 0,
+    };
+    terminal::enable_raw_mode().ok()?;
+    menu.run().await.ok().flatten()
+}
+
+struct Manager {
+    texts: Vec<String>,
+    steering: usize,
+    selected: usize,
+    editing: bool,
+    rows: u16,
+}
+
+impl Manager {
+    async fn run(&mut self) -> io::Result<Option<(Vec<String>, usize)>> {
+        let mut input = EventStream::new();
+        loop {
+            if self.texts.is_empty() {
+                return Ok(Some((Vec::new(), 0)));
+            }
+            self.draw()?;
+            let Some(input) = input.next().await else {
+                return Ok(None);
+            };
+            let Input::Key(key) = input? else { continue };
+            if key.kind == KeyEventKind::Release {
+                continue;
+            }
+            let control = key.modifiers.contains(KeyModifiers::CONTROL);
+            let moving = key
+                .modifiers
+                .intersects(KeyModifiers::SHIFT | KeyModifiers::ALT);
+            if control && key.code == KeyCode::Char('c') {
+                return Ok(None);
+            }
+            let last = self.texts.len() - 1;
+            if self.editing {
+                let text = &mut self.texts[self.selected];
+                match key.code {
+                    KeyCode::Enter if moving => text.push('\n'),
+                    KeyCode::Enter | KeyCode::Esc => {
+                        if text.trim().is_empty() {
+                            self.remove();
+                        }
+                        self.editing = false;
+                    }
+                    KeyCode::Backspace => {
+                        text.pop();
+                    }
+                    KeyCode::Char(c) if !control => text.push(c),
+                    _ => {}
+                }
+                continue;
+            }
+            match key.code {
+                KeyCode::Up if moving => self.shift(false),
+                KeyCode::Down if moving => self.shift(true),
+                KeyCode::Char('K') => self.shift(false),
+                KeyCode::Char('J') => self.shift(true),
+                KeyCode::Up | KeyCode::Char('k') => {
+                    self.selected = self.selected.checked_sub(1).unwrap_or(last);
+                }
+                KeyCode::Down | KeyCode::Char('j') => {
+                    self.selected = if self.selected == last { 0 } else { self.selected + 1 };
+                }
+                KeyCode::Enter | KeyCode::Char('e') => self.editing = true,
+                KeyCode::Delete | KeyCode::Backspace | KeyCode::Char('d' | 'x') => self.remove(),
+                KeyCode::Esc | KeyCode::Char('q') => {
+                    return Ok(Some((std::mem::take(&mut self.texts), self.steering)));
+                }
+                _ => {}
+            }
+        }
+    }
+
+    /// Moves the selected message a place down or up; the kinds stay with
+    /// the places.
+    fn shift(&mut self, down: bool) {
+        let to = match down {
+            true if self.selected + 1 < self.texts.len() => self.selected + 1,
+            false if self.selected > 0 => self.selected - 1,
+            _ => return,
+        };
+        self.texts.swap(self.selected, to);
+        self.selected = to;
+    }
+
+    fn remove(&mut self) {
+        self.texts.remove(self.selected);
+        if self.selected < self.steering {
+            self.steering -= 1;
+        }
+        self.selected = self.selected.min(self.texts.len().saturating_sub(1));
+    }
+
+    fn draw(&mut self) -> io::Result<()> {
+        let mut out = stdout();
+        queue!(out, MoveToColumn(0))?;
+        if self.rows > 1 {
+            queue!(out, MoveUp(self.rows - 1))?;
+        }
+        queue!(out, Clear(ClearType::FromCursorDown))?;
+        let palette = palette();
+        let width = render::terminal_width().saturating_sub(14).max(1);
+        let mut lines = vec![format!(
+            "{} {}",
+            palette.accent.paint("?"),
+            "Waiting messages".bold()
+        )];
+        for (index, text) in self.texts.iter().enumerate() {
+            let label = match index < self.steering {
+                true => "↳ steering",
+                false => "+ queued  ",
+            };
+            let selected = index == self.selected;
+            let mark = match selected {
+                true => palette.accent.paint("❯").to_string(),
+                false => " ".to_owned(),
+            };
+            let shown = match (selected, self.editing) {
+                (true, true) => format!("{text}▏"),
+                _ => text.clone(),
+            };
+            let rows = match selected {
+                true => render::wrapped(&shown, width),
+                false => vec![render::clip(&shown, width)],
+            };
+            for (n, row) in rows.iter().enumerate() {
+                let head = if n == 0 { label } else { "          " };
+                let row = match selected {
+                    true => palette.name.paint(row).to_string(),
+                    false => row.clone(),
+                };
+                let head = palette.muted.paint(head);
+                lines.push(format!("{} {head} {row}", if n == 0 { &mark } else { " " }));
+            }
+        }
+        let keys = match self.editing {
+            true => "type to edit · Enter done · Alt+Enter newline · Esc done",
+            false => "↑↓ select · Shift+↑↓ or J/K move · Enter edit · d remove · Esc apply · Ctrl+C cancel",
+        };
+        lines.push(palette.muted.paint(keys).to_string());
+        queue!(out, Print(lines.join("\r\n")))?;
+        self.rows = lines.len() as u16;
+        out.flush()
+    }
+}
+
+impl Drop for Manager {
+    fn drop(&mut self) {
+        let mut out = stdout();
+        queue!(out, MoveToColumn(0)).ok();
+        if self.rows > 1 {
+            queue!(out, MoveUp(self.rows - 1)).ok();
+        }
+        queue!(out, Clear(ClearType::FromCursorDown)).ok();
+        out.flush().ok();
+        _ = terminal::disable_raw_mode();
+    }
+}
+
 /// Asks the agent's `question`, offering `choices` and a typed answer.
 async fn answer(question: &str, choices: &[String]) -> Decision {
     const TYPE: &str = "Type an answer…";
