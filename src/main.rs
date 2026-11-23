@@ -33,6 +33,8 @@ mod notify;
 mod permissions;
 mod preamble;
 mod processes;
+mod projects;
+mod projects_tool;
 mod protocol;
 mod render;
 mod repl;

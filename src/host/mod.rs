@@ -96,6 +96,7 @@ pub struct Host {
     shared: PathBuf,
     /// What clients synced, for agents to go on with while they are away.
     sync: crate::sync::Store,
+    projects: Arc<crate::projects::Projects>,
     memory: Option<Arc<Memory>>,
     /// The last time memory failed, until a client is told.
     memory_failure: Mutex<Option<String>>,
@@ -214,6 +215,7 @@ impl Host {
             tools::TODO,
             tools::ASK_USER,
             tools::EXIT_PLAN,
+            crate::projects::TOOL,
         ]
         .into_iter()
         .chain(spawn)
@@ -240,6 +242,14 @@ impl Host {
             sessions,
             shared: config.shared.dir()?,
             sync: crate::sync::Store::new(config.sync.dir()?),
+            projects: {
+                let data = config::data_dir()?;
+                crate::projects::install_skill();
+                Arc::new(crate::projects::Projects::open(
+                    data.join("projects.toml"),
+                    data.join("projects"),
+                )?)
+            },
             memory: Memory::open(&config.memory, &config.providers)?.map(Arc::new),
             memory_failure: Mutex::default(),
             compaction: config.compaction.clone(),
@@ -793,6 +803,21 @@ impl Host {
             turn: self.turn(id),
         };
         let (tools, routes) = kit.tools(&thread.seen, Some(live), None);
+        let current = request
+            .client
+            .as_ref()
+            .filter(|client| client.lent.is_some())
+            .and_then(|client| {
+                let machine = client.lent.as_ref()?.machine.clone();
+                let info = client.project.as_ref()?;
+                let name = self.projects.observe(&machine, info).ok()?;
+                Some((name, machine))
+            });
+        if let Some((name, _)) = &current
+            && let Some(project) = self.projects.get(name)
+        {
+            thread.permissions.overlay(&project.tools);
+        }
         let notes = &thread.notes;
         let hooks = ToolHooks::new(self.scope(id), run.clone());
         let builder = agent::builder(
@@ -806,6 +831,15 @@ impl Host {
         .name("hey")
         .preamble(system_prompt)
         .append_preamble(&setting.render());
+        let builder = match &current {
+            Some((name, machine)) => {
+                match self.projects.note(name, &self.name, machine) {
+                    Some(note) => builder.append_preamble(&note),
+                    None => builder,
+                }
+            }
+            None => builder,
+        };
         let skills_here = skills;
         let builder = skills.equip(builder);
         let builder = match request.client.as_ref() {
@@ -847,6 +881,15 @@ impl Host {
                 run: run.clone(),
                 notes: notes.clone(),
             });
+        if let Some((name, machine)) = current {
+            builder = builder.tool(crate::projects_tool::ProjectTool {
+                projects: self.projects.clone(),
+                run: run.clone(),
+                host: self.name.clone(),
+                client: Some(machine),
+                current: Some(name),
+            });
+        }
         if let Some(crew) = &self.crew {
             builder = builder.tool(self.spawn(crew, id, thread, request, kit));
         }

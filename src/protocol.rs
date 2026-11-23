@@ -408,6 +408,9 @@ pub struct ClientInfo {
     /// The skills found on the client's machine, as of this run.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub skills: Vec<crate::skills::Skill>,
+    /// The project the client's working directory is in, if any.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project: Option<crate::projects::ProjectInfo>,
 }
 
 /// A file or directory a mention attaches, as read where it was found, by

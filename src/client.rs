@@ -83,6 +83,9 @@ impl Client {
                 url: base.to_string(),
                 lent: Some(lent),
                 skills: Vec::new(),
+                project: std::env::current_dir()
+                    .ok()
+                    .and_then(|dir| crate::projects::detect(&dir)),
             }),
             base,
         };
@@ -246,6 +249,7 @@ impl Client {
     pub async fn start(&self, id: &SessionId, request: RunRequest) -> Result<Events> {
         let mut info = ClientInfo::clone(&self.info);
         info.skills = crate::skills::find(&crate::agent::working_directory()).skills;
+        info.project = crate::projects::detect(&crate::agent::working_directory());
         let request = RunRequest {
             client: Some(info),
             ..request
@@ -814,6 +818,7 @@ mod tests {
                 url: base.to_string(),
                 lent: None,
                 skills: Vec::new(),
+                project: None,
             }),
         };
         let request = RunRequest {

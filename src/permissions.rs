@@ -48,6 +48,8 @@ pub fn default_rules() -> BTreeMap<String, Permission> {
         crate::tools::EXIT_PLAN,
         crate::mcp::deferred::SEARCH,
         crate::memory::TOOL,
+        // `adopt` asks the user itself, and the rest only read or note.
+        crate::projects::TOOL,
     ];
     tools
         .map(|tool| (tool.to_owned(), Permission::Allow))
@@ -171,6 +173,17 @@ impl Permissions {
 
     pub fn set_planning(&self, on: bool) {
         self.planning.store(on, Ordering::Relaxed);
+    }
+
+    /// Applies a project's rules over the ones this conversation has, for
+    /// the tools it already has a rule for.
+    pub fn overlay(&self, rules: &BTreeMap<String, Permission>) {
+        let mut mine = self.lock();
+        for (tool, permission) in rules {
+            if let Some(slot) = mine.get_mut(tool) {
+                *slot = *permission;
+            }
+        }
     }
 
     pub fn allow(&self, tool: &str) {
