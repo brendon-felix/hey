@@ -6,7 +6,7 @@ use std::borrow::Cow;
 use std::cell::Cell;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use crossterm::cursor::{MoveToColumn, MoveUp, SetCursorStyle};
 use crossterm::execute;
@@ -28,8 +28,7 @@ use super::commands::{self, Arg, COMMANDS};
 use super::mentions::{self as host, HostIndex, Index, Mentions};
 use super::models;
 use super::outbox::Outbox;
-use super::watch::{self, Watch};
-use crate::config::{self, EditMode as Mode, RightPrompt, Thinking};
+use crate::config::{self, EditMode as Mode, RightPrompt};
 use crate::mention::{self, Mention, Reference};
 use crate::render::{self, Palette, palette, screen};
 
@@ -42,30 +41,24 @@ const POLL: Duration = Duration::from_millis(33);
 /// Columns the prompt indicator, `> ` or another, takes before the input.
 const INDICATOR: usize = 2;
 
-/// What the right prompt shows: where the agent runs and how full its context is.
+/// What the right prompt shows: how full the context is, plan mode, the goal
+/// and how long the answer has taken.
 #[derive(Debug, Default)]
 pub struct Status {
-    /// The remote host, when the agent runs on one.
-    pub remote: Option<String>,
-    pub model: String,
-    pub thinking: Option<Thinking>,
     pub context: Option<u64>,
     pub window: Option<u32>,
     /// Whether the conversation is in plan mode.
     pub plan: bool,
     /// The condition `/goal` set.
     pub goal: Option<String>,
-    /// How long the latest answer took.
+    /// When the answer in progress began, which the prompt counts from.
+    pub began: Option<Instant>,
+    /// How long the latest answer took, once it ended.
     pub elapsed: Option<Duration>,
 }
 
 impl Status {
     fn short(&self) -> String {
-        let name = short_name(&self.model);
-        let model = match self.thinking {
-            Some(level) => format!("{name} {}", level.as_str()),
-            None => name.to_owned(),
-        };
         let context = self.context.map(|used| match self.window {
             Some(window) => format!(
                 "{}/{}",
@@ -75,18 +68,10 @@ impl Status {
             None => render::tokens(used),
         });
         let goal = self.goal.as_ref().map(|_| "goal".to_owned());
-        self.after_remote(
-            std::iter::once(model)
-                .chain(context)
-                .chain(goal)
-                .chain(self.took()),
-        )
+        self.parts(context, goal)
     }
 
     fn full(&self) -> String {
-        let thinking = self
-            .thinking
-            .map(|level| format!("thinking {}", level.as_str()));
         let context = self.context.map(|used| match self.window {
             Some(window) => format!(
                 "{} / {} tokens",
@@ -95,36 +80,24 @@ impl Status {
             ),
             None => format!("{} tokens", render::tokens(used)),
         });
-        self.after_remote(
-            std::iter::once(self.model.clone())
-                .chain(thinking)
-                .chain(context)
-                .chain(self.goal.as_ref().map(|goal| format!("goal: {goal}")))
-                .chain(self.took()),
-        )
+        let goal = self.goal.as_ref().map(|goal| format!("goal: {goal}"));
+        self.parts(context, goal)
     }
 
-    fn took(&self) -> Option<String> {
-        self.elapsed.map(render::live_clock)
-    }
-
-    fn after_remote(&self, parts: impl Iterator<Item = String>) -> String {
+    fn parts(&self, context: Option<String>, goal: Option<String>) -> String {
         let plan = self.plan.then(|| "plan".to_owned());
+        let took = self
+            .began
+            .map(|began| began.elapsed())
+            .or(self.elapsed)
+            .map(render::live_clock);
         plan.into_iter()
-            .chain(self.remote.iter().cloned())
-            .chain(parts)
+            .chain(context)
+            .chain(goal)
+            .chain(took)
             .collect::<Vec<_>>()
             .join(" · ")
     }
-}
-
-/// The model without its vendor or Ollama's default tag, which `/model` still
-/// shows in full.
-fn short_name(reference: &str) -> &str {
-    let name = reference
-        .rsplit_once('/')
-        .map_or(reference, |(_, name)| name);
-    name.strip_suffix(":latest").unwrap_or(name)
 }
 
 pub type SharedStatus = Arc<Mutex<Status>>;
@@ -171,7 +144,6 @@ impl Editor {
         outbox: Outbox,
         choices: Choices,
         index: &Index,
-        watch: Watch,
         wake: Arc<AtomicBool>,
     ) -> Self {
         let completer = InputCompleter {
@@ -224,7 +196,6 @@ impl Editor {
             prompt: HeyPrompt::Editing {
                 status,
                 outbox,
-                watch,
                 colors,
                 right: config.right_prompt,
                 above: Cell::new(0),
@@ -582,6 +553,7 @@ pub fn editor_error(error: &std::io::Error) -> String {
 pub struct Choices {
     pub thinking: Vec<String>,
     pub themes: Vec<String>,
+    pub hosts: Vec<String>,
 }
 
 impl Choices {
@@ -641,6 +613,7 @@ impl Choices {
             Some(Arg::Model) => return models::suggestions(&index.models, arg.trim(), span),
             Some(Arg::Thinking) => &self.thinking,
             Some(Arg::Theme) => &self.themes,
+            Some(Arg::Host) => &self.hosts,
             Some(Arg::Thread) => {
                 return host::thread_matches(matcher, &index.threads, arg.trim())
                     .map(|summary| host::thread_suggestion(summary, span))
@@ -932,13 +905,11 @@ const LEFT: &str = "\x1b[0m";
 /// While editing: what an answer in progress redraws and the messages
 /// waiting for it, above a bare indicator, and the status on the right edge
 /// of the input's row, as in nushell; reedline drops the status once the
-/// input reaches it. The status starts with the other threads that are
-/// answering or answered unseen.
+/// input reaches it.
 enum HeyPrompt {
     Editing {
         status: SharedStatus,
         outbox: Outbox,
-        watch: Watch,
         colors: bool,
         right: RightPrompt,
         /// Rows drawn above the input last time, to erase them.
@@ -949,38 +920,17 @@ enum HeyPrompt {
     Submitted,
 }
 
-/// The editing status: a spinner and a blue dot counting the other threads
-/// answering and answered unseen, then the model and its context.
+/// The editing status, in the muted colour.
 fn status_line(
     status: &SharedStatus,
-    watch: &Watch,
     colors: bool,
     summary: fn(&Status) -> String,
 ) -> String {
-    let paint = |color: Color, text: &str| match colors {
-        true => color.paint(text).to_string(),
-        false => text.to_owned(),
-    };
-    let muted = |text: &str| paint(palette().muted.into(), text);
-    let elsewhere = watch.elsewhere();
-    let running = (elsewhere.running > 0).then(|| {
-        let spinner = paint(palette().accent.into(), watch::spinner());
-        format!(
-            "{spinner}{}",
-            muted(&format!(" {} running", elsewhere.running))
-        )
-    });
-    let unseen = (elsewhere.unseen > 0).then(|| {
-        let dot = paint(Color::Blue, "●");
-        format!("{dot}{}", muted(&format!(" {} new", elsewhere.unseen)))
-    });
     let summary = summary(&status.lock().unwrap_or_else(PoisonError::into_inner));
-    running
-        .into_iter()
-        .chain(unseen)
-        .chain(std::iter::once(muted(&summary)))
-        .collect::<Vec<_>>()
-        .join(&muted(" · "))
+    match colors {
+        true => palette().muted.paint(&summary).to_string(),
+        false => summary,
+    }
 }
 
 impl Prompt for HeyPrompt {
@@ -1009,7 +959,6 @@ impl Prompt for HeyPrompt {
         match self {
             Self::Editing {
                 status,
-                watch,
                 colors,
                 right,
                 ..
@@ -1019,7 +968,7 @@ impl Prompt for HeyPrompt {
                     RightPrompt::Short => Status::short,
                     RightPrompt::Full => Status::full,
                 };
-                Cow::Owned(status_line(status, watch, *colors, summary))
+                Cow::Owned(status_line(status, *colors, summary))
             }
             Self::Submitted => Cow::Borrowed(""),
         }

@@ -96,10 +96,11 @@ pub async fn confirm(ask: &Ask, style: &render::Style) -> Decision {
 /// How a message typed during an answer should be sent: `Some(true)` to
 /// steer the answer, `Some(false)` to queue it for after; `None` when
 /// dismissed with Esc or Ctrl+C.
-pub async fn steer_or_queue() -> Option<bool> {
+pub async fn steer_or_queue() -> Option<Delivery> {
     let options = vec![
         "Steer: hand it to the model as soon as it can take it".to_owned(),
         "Queue: send it once the answer ends".to_owned(),
+        "Interrupt: stop the answer and send it now".to_owned(),
     ];
     let picked = async {
         Menu::open("Send this message how?".to_owned(), options)?
@@ -107,9 +108,18 @@ pub async fn steer_or_queue() -> Option<bool> {
             .await
     };
     match picked.await {
-        Ok(Answer::Picked(index)) => Some(index == 0),
+        Ok(Answer::Picked(0)) => Some(Delivery::Steer),
+        Ok(Answer::Picked(1)) => Some(Delivery::Queue),
+        Ok(Answer::Picked(_)) => Some(Delivery::Interrupt),
         _ => None,
     }
+}
+
+/// How a message typed during an answer is delivered.
+pub enum Delivery {
+    Steer,
+    Queue,
+    Interrupt,
 }
 
 /// Lets the user reorder, edit and remove the messages waiting to be sent:

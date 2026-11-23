@@ -273,7 +273,11 @@ async fn dispatch(args: Args, config: Config) -> Result<ExitCode> {
     } else {
         protocol::Surface::Repl
     });
-    let backend = connect(&args, &config).await?;
+    let remote = match args.local {
+        true => None,
+        false => args.remote.as_deref().or(config.remote.as_deref()),
+    };
+    let backend = connect(remote, &config).await?;
     if args.memories {
         browser::memories::browse(&backend).await?;
         return Ok(ExitCode::SUCCESS);
@@ -372,6 +376,7 @@ async fn dispatch(args: Args, config: Config) -> Result<ExitCode> {
                 editor: config.editor,
                 colors: config.display.colors,
                 plan: args.plan,
+                config_path: args.config.clone(),
             })
             .await;
             repl.run(first).await?;
@@ -404,11 +409,7 @@ async fn latest(backend: &Backend) -> Result<SessionId> {
 
 /// The remote that `--remote` or the config names, unless `--local`; else a
 /// host in this process.
-async fn connect(args: &Args, config: &Config) -> Result<Backend> {
-    let remote = match args.local {
-        true => None,
-        false => args.remote.as_ref().or(config.remote.as_ref()),
-    };
+async fn connect(remote: Option<&str>, config: &Config) -> Result<Backend> {
     match remote {
         Some(name) => {
             let remote = config

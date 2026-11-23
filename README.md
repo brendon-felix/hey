@@ -103,7 +103,8 @@ Type `/` or press Tab to see commands and skills; the status line describes the 
 | `/undo` | Put back the files the latest answer changed; again for the one before |
 | `/plan` | Enter or leave plan mode |
 | `/goal [condition]` | Keep working until `condition` is met; without one, clear it |
-| `/model [vendor/model]`, `/m` | Switch model; without one, pick from the models the host can use |
+| `/model [vendor/model]`, `/m` | Show the current model and switch; without a name, pick from the models the host can use |
+| `/host [name]` | Show the host the agent runs on, or switch to `local` or a host from `[remotes]`; switching starts a new conversation |
 | `/think [level]` | Set thinking: `off`, `minimal`…`max`, or `default` |
 | `/theme [theme]`, `/t` | Switch theme; without one, pick with a live preview |
 | `/tools` | List tools, their permissions and MCP servers |

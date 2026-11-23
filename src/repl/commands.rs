@@ -25,6 +25,8 @@ pub enum Command {
     /// Work toward a condition, judged after each answer; none clears it.
     Goal(Option<String>),
     Model(Option<String>),
+    /// Show the host the agent runs on, or switch to another.
+    Host(Option<String>),
     Think(Option<String>),
     Theme(Option<String>),
     Tools,
@@ -50,6 +52,7 @@ pub enum Scope {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Arg {
     Model,
+    Host,
     Thinking,
     Theme,
     Thread,
@@ -65,6 +68,7 @@ impl Arg {
     pub fn placeholder(self) -> &'static str {
         match self {
             Arg::Model => "vendor/model",
+            Arg::Host => "host",
             Arg::Thinking => "level",
             Arg::Theme => "theme",
             Arg::Thread => "thread",
@@ -191,6 +195,13 @@ pub const COMMANDS: &[Spec] = &[
         arg: Some(Arg::Model),
         about: "Switch model",
         build: Command::Model,
+    },
+    Spec {
+        name: "host",
+        aliases: &[],
+        arg: Some(Arg::Host),
+        about: "Show the host the agent runs on, or switch to another",
+        build: Command::Host,
     },
     Spec {
         name: "think",

@@ -7,22 +7,21 @@
 //! when a run starts on this terminal's thread elsewhere.
 
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, LazyLock, Mutex, MutexGuard, PoisonError};
-use std::time::{Duration, Instant};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+use std::time::Duration;
 
 use futures::StreamExt;
 use reedline::RepaintSignal;
 
 use crate::backend::Backend;
 use crate::host::HEARTBEAT;
-use crate::protocol::{Activities, Activity, ThreadStatus};
+use crate::protocol::{Activities, Activity};
 use crate::sessions::SessionId;
 
 /// How long the activity stream may stay silent before it counts as lost.
 const SILENCE: Duration = HEARTBEAT.saturating_mul(2);
 const RETRY: Duration = Duration::from_secs(3);
-const SPIN: Duration = Duration::from_millis(100);
-const SPINNER: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+const TICK: Duration = Duration::from_secs(1);
 
 #[derive(Clone)]
 pub struct Watch(Arc<Mutex<State>>);
@@ -37,13 +36,8 @@ struct State {
     /// The line editor's break signal.
     wake: Arc<AtomicBool>,
     repaint: Option<RepaintSignal>,
-}
-
-/// How many of the threads other than this terminal's are in each state.
-#[derive(Debug, Default, PartialEq, Eq)]
-pub struct Elsewhere {
-    pub running: usize,
-    pub unseen: usize,
+    /// The task that listens to the host, until another host replaces it.
+    listener: Option<tokio::task::AbortHandle>,
 }
 
 impl Watch {
@@ -54,6 +48,7 @@ impl Watch {
             following: false,
             wake,
             repaint: None,
+            listener: None,
         })))
     }
 
@@ -61,8 +56,18 @@ impl Watch {
     /// with `repaint` as they change and while a spinner turns.
     pub fn start(&self, backend: Backend, repaint: RepaintSignal) {
         self.lock().repaint = Some(repaint);
-        tokio::spawn(self.clone().listen(backend));
-        tokio::spawn(self.clone().spin());
+        tokio::spawn(self.clone().tick());
+        self.listen_to(backend);
+    }
+
+    /// Follows `backend` from now on, instead of the host before it.
+    pub fn listen_to(&self, backend: Backend) {
+        let task = tokio::spawn(self.clone().listen(backend));
+        let mut state = self.lock();
+        if let Some(old) = state.listener.replace(task.abort_handle()) {
+            old.abort();
+        }
+        state.activities = Activities::new();
     }
 
     pub fn set_current(&self, thread: SessionId) {
@@ -76,24 +81,6 @@ impl Watch {
     /// What `thread` last did on the host, as the host last said.
     pub fn activity(&self, thread: &SessionId) -> Option<Activity> {
         self.lock().activities.get(thread).copied()
-    }
-
-    /// Counts the threads other than this terminal's that are answering or
-    /// have something new, leaving out archived ones, as the browser does.
-    pub fn elsewhere(&self) -> Elsewhere {
-        let state = self.lock();
-        let others = state
-            .activities
-            .iter()
-            .filter(|(id, activity)| **id != state.current && !activity.archived);
-        others.fold(Elsewhere::default(), |mut counts, (_, activity)| {
-            match activity.status {
-                ThreadStatus::Running | ThreadStatus::Asking => counts.running += 1,
-                ThreadStatus::Unseen => counts.unseen += 1,
-                ThreadStatus::Idle => {}
-            }
-            counts
-        })
     }
 
     /// Forgets a wake-up the editor has not taken, before looking at what
@@ -138,12 +125,14 @@ impl Watch {
         }
     }
 
-    /// Repaints the prompt so its spinner turns, while there is one.
-    async fn spin(self) {
+    /// Repaints the prompt each second while a run is followed, so the
+    /// time it shows counts live.
+    async fn tick(self) {
         loop {
-            tokio::time::sleep(SPIN).await;
-            if self.elsewhere().running > 0
-                && let Some(repaint) = &self.lock().repaint
+            tokio::time::sleep(TICK).await;
+            let state = self.lock();
+            if state.following
+                && let Some(repaint) = &state.repaint
             {
                 repaint.request_repaint();
             }
@@ -155,16 +144,10 @@ impl Watch {
     }
 }
 
-/// The spinner's frame now; every spinner shows the same one.
-pub fn spinner() -> &'static str {
-    static START: LazyLock<Instant> = LazyLock::new(Instant::now);
-    let ticks = START.elapsed().as_millis() / SPIN.as_millis();
-    SPINNER[ticks as usize % SPINNER.len()]
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::protocol::ThreadStatus;
 
     fn id(text: &str) -> SessionId {
         text.parse().unwrap()
@@ -199,14 +182,6 @@ mod tests {
             .into(),
         );
         assert!(wake.load(Ordering::Relaxed));
-        assert_eq!(
-            watch.elsewhere(),
-            Elsewhere {
-                running: 0,
-                unseen: 2
-            },
-            "archived left out"
-        );
 
         watch.rest();
         watch.update([(id("mine"), activity(Some(2), ThreadStatus::Idle))].into());

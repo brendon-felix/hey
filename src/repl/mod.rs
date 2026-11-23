@@ -22,7 +22,7 @@ use yansi::Paint;
 use crate::backend::Backend;
 use crate::browser;
 use crate::clipboard::{Clipboard, Copied};
-use crate::config::{Setting, Thinking};
+use crate::config::{Config, Setting, Thinking};
 use crate::mention;
 use crate::permissions::Permission;
 use crate::protocol::{AgentId, ApprovalId, Ask, ModelInfo, RunId, RunOptions, Snapshot};
@@ -85,6 +85,7 @@ struct Session {
     plan: bool,
     /// The condition `/goal` set, which each answer works toward.
     goal: Option<String>,
+    config_path: Option<PathBuf>,
 }
 
 struct Current {
@@ -132,6 +133,9 @@ pub struct Setup {
     pub colors: bool,
     /// Start the conversation in plan mode.
     pub plan: bool,
+    /// The config file given on the command line, which `/host` reads the
+    /// known hosts from.
+    pub config_path: Option<PathBuf>,
 }
 
 impl Repl {
@@ -140,6 +144,7 @@ impl Repl {
         let choices = Choices {
             thinking: thinking_choices(),
             themes: render::themes(),
+            hosts: known_hosts(setup.config_path.as_deref()),
         };
         let index = Index::default();
         models::fetch(setup.backend.clone(), index.clone());
@@ -153,7 +158,6 @@ impl Repl {
             outbox.clone(),
             choices,
             &index,
-            watch.clone(),
             wake,
         );
         watch.start(setup.backend.clone(), editor.repaint_signal());
@@ -183,6 +187,7 @@ impl Repl {
             returned: Vec::new(),
             plan: false,
             goal: None,
+            config_path: setup.config_path,
         };
         if setup.plan {
             session.set_plan(true).await;
@@ -370,13 +375,14 @@ impl Session {
         match (way, current.then) {
             (Way::Steer, Then::Answer) => {
                 let steer = match self.while_answering {
-                    WhileAnswering::Steer => Some(true),
-                    WhileAnswering::Queue => Some(false),
+                    WhileAnswering::Steer => Some(crate::ui::Delivery::Steer),
+                    WhileAnswering::Queue => Some(crate::ui::Delivery::Queue),
                     WhileAnswering::Ask => crate::ui::steer_or_queue().await,
                 };
                 match steer {
-                    Some(true) => self.steer(message).await,
-                    Some(false) => self.outbox.queue(message),
+                    Some(crate::ui::Delivery::Steer) => self.steer(message).await,
+                    Some(crate::ui::Delivery::Queue) => self.outbox.queue(message),
+                    Some(crate::ui::Delivery::Interrupt) => self.send_now(Some(message)).await,
                     // Dismissed: the message goes back to the input.
                     None => self.returned.push(message),
                 }
@@ -543,6 +549,10 @@ impl Session {
     /// Follows `follow` from here on.
     fn follow(&mut self, follow: Follow) {
         self.watch.set_following(true);
+        self.status
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .began = Some(Instant::now());
         self.current = Some(Current {
             follow,
             then: Then::Answer,
@@ -554,6 +564,10 @@ impl Session {
     fn let_go(&mut self) {
         if self.current.take().is_some() {
             self.watch.set_following(false);
+            self.status
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .began = None;
             self.outbox.unsteered();
             let unsent = self.outbox.take();
             self.give_back(unsent);
@@ -757,6 +771,7 @@ impl Session {
             }
             Command::Goal(condition) => self.set_goal(condition),
             Command::Model(reference) => self.switch_model(reference).await?,
+            Command::Host(name) => self.switch_host(name).await?,
             Command::Think(level) => self.set_thinking(level)?,
             Command::Theme(theme) => self.switch_theme(theme, editor)?,
             Command::Tools => self.list_tools().await?,
@@ -1046,7 +1061,14 @@ impl Session {
     async fn switch_model(&mut self, reference: Option<String>) -> Result<()> {
         let reference = match reference {
             Some(reference) => reference,
-            None => match self.pick_model().await? {
+            None => match {
+                println!(
+                    "{} {}",
+                    "Using".bold(),
+                    palette().name.paint(&self.options.model)
+                );
+                self.pick_model().await?
+            } {
                 Some(reference) => reference,
                 None => return Ok(()),
             },
@@ -1088,6 +1110,71 @@ impl Session {
             .map(|model| model.reference))
     }
 
+    /// Shows the host the agent runs on and picks from the known ones, or
+    /// switches to `name`. The conversation stays on the host it was on, so
+    /// a new one starts on the other.
+    async fn switch_host(&mut self, name: Option<String>) -> Result<()> {
+        let hosts = known_hosts(self.config_path.as_deref());
+        let current = self.backend.remote().unwrap_or(LOCAL).to_owned();
+        let name = match name {
+            Some(name) => name,
+            None => {
+                println!(
+                    "{} {}",
+                    "Host".bold(),
+                    palette().name.paint(&current)
+                );
+                let rows: Vec<String> = hosts
+                    .iter()
+                    .map(|host| match *host == current {
+                        true => format!("✓ {host}"),
+                        false => format!("  {host}"),
+                    })
+                    .collect();
+                let index = hosts.iter().position(|host| *host == current).unwrap_or(0);
+                match ui::pick("Select a host", &rows, index)? {
+                    Some(index) => hosts.get(index).cloned().unwrap_or_default(),
+                    None => return Ok(()),
+                }
+            }
+        };
+        if name == current {
+            println!("{} {}\n", "Already on".bold(), palette().name.paint(&name));
+            return Ok(());
+        }
+        if !hosts.contains(&name) {
+            render::error(&format!(
+                "no host `{name}`; known: {}",
+                hosts.join(", ")
+            ));
+            return Ok(());
+        }
+        if self.current.is_some() {
+            render::notice("an answer is in progress; wait for it or stop it first");
+            return Ok(());
+        }
+        let config = Config::load(self.config_path.as_deref())?;
+        let remote = (name != LOCAL).then_some(name.as_str());
+        let backend = crate::connect(remote, &config).await?;
+        let defaults = backend.defaults().await?;
+        let model = backend.model(&defaults.model).await?;
+        self.backend = backend;
+        self.watch.listen_to(self.backend.clone());
+        models::fetch(self.backend.clone(), self.index.clone());
+        self.options.model = model.reference;
+        self.options.thinking = defaults.thinking;
+        self.window = model.context_window;
+        self.set_thread(SessionId::new());
+        self.indexed = None;
+        println!(
+            "{} {}\n{}\n",
+            "Now on".bold(),
+            palette().name.paint(&name),
+            "Started a new conversation; conversations stay on the host they began on.".bold()
+        );
+        Ok(())
+    }
+
     fn set_thinking(&mut self, level: Option<String>) -> Result<()> {
         let level = match level {
             Some(level) => level,
@@ -1112,10 +1199,6 @@ impl Session {
             level => Some(level.parse::<Thinking>().map_err(anyhow::Error::msg)?),
         };
         self.options.thinking = thinking;
-        self.status
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .thinking = thinking;
         let described = thinking.map_or("the model's default", Thinking::as_str);
         println!("{} {}", "Thinking:".bold(), palette().name.paint(described));
         self.save(Setting::Thinking(thinking));
@@ -1308,17 +1391,30 @@ impl Session {
 
     fn show_status(&self, context: Option<u64>, elapsed: Option<Duration>) {
         let mut status = self.status.lock().unwrap_or_else(PoisonError::into_inner);
+        let began = match elapsed {
+            Some(_) => None,
+            None => status.began,
+        };
         *status = Status {
             plan: self.plan,
-            remote: self.backend.remote().map(str::to_owned),
-            model: self.options.model.clone(),
-            thinking: self.options.thinking,
             context,
             window: self.window,
             goal: self.goal.clone(),
+            began,
             elapsed,
         };
     }
+}
+
+/// What `/host` calls this machine.
+const LOCAL: &str = "local";
+
+/// This machine, then each remote the config names.
+fn known_hosts(config_path: Option<&std::path::Path>) -> Vec<String> {
+    let remotes = Config::load(config_path)
+        .map(|config| config.remotes.into_keys().collect::<Vec<_>>())
+        .unwrap_or_default();
+    std::iter::once(LOCAL.to_owned()).chain(remotes).collect()
 }
 
 /// Leaves reasoning to the model, as an unset `thinking` does.
