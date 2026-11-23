@@ -111,22 +111,53 @@ pub fn user_line(text: &str, palette: Palette) -> String {
     )
 }
 
+pub enum CallStatus<'a> {
+    Running,
+    Done(&'a str),
+    Failed(&'a str),
+}
+
 /// A tool call as it shows, `width` columns at most: its name, the machine
-/// it runs on when that is named, and the argument that identifies it.
-fn call_line(name: &str, machine: Option<&str>, summary: &str, width: usize) -> String {
+/// it runs on when that is named, the argument that identifies it, and its
+/// outcome once it has one.
+pub(super) fn call_line(
+    name: &str,
+    machine: Option<&str>,
+    summary: &str,
+    status: CallStatus<'_>,
+    width: usize,
+) -> String {
     let palette = palette();
+    let glyph = match status {
+        CallStatus::Running | CallStatus::Done(_) => palette.name.paint("●").to_string(),
+        CallStatus::Failed(_) => "✗".red().to_string(),
+    };
     let on = machine
         .map(|machine| format!(" on {machine}"))
         .unwrap_or_default();
-    let room = width.saturating_sub(name.chars().count() + on.chars().count() + 3);
+    let summary = summary.replace(['\n', '\t'], " ");
+    let room = width.saturating_sub(2 + name.chars().count() + on.chars().count() + 1);
+    let outcome = match status {
+        CallStatus::Running => String::new(),
+        CallStatus::Done(outcome) | CallStatus::Failed(outcome) => clip(outcome, room / 2),
+    };
+    let summary = match outcome.is_empty() {
+        true => clip(&summary, room),
+        false => clip(
+            &summary,
+            room.saturating_sub(display_width(&outcome) + 3),
+        ),
+    };
+    let outcome = match (status, outcome.is_empty()) {
+        (_, true) | (CallStatus::Running, _) => String::new(),
+        (CallStatus::Done(_), false) => palette.muted.paint(&format!(" · {outcome}")).to_string(),
+        (CallStatus::Failed(_), false) => format!(" · {outcome}").red().to_string(),
+    };
     format!(
-        "{} {}{} {}",
-        palette.name.paint("●"),
+        "{glyph} {}{} {}{outcome}",
         name.bold(),
         palette.muted.paint(&on),
-        palette
-            .muted
-            .paint(&clip(&summary.replace('\t', " "), room))
+        palette.muted.paint(&summary)
     )
 }
 

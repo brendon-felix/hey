@@ -2,7 +2,7 @@
 /*                              render/stream.rs                              */
 /* -------------------------------------------------------------------------- */
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::VecDeque;
 use std::fmt;
 use std::io::IsTerminal;
 use std::time::{Duration, Instant};
@@ -15,8 +15,9 @@ use super::preview::{Call, Preview, Source};
 use super::reply::{Part, Reply};
 use super::tool::{self, Mark, line};
 use super::{
-    Style, animations, call_line, call_path, clip, clock, compacted, machine_arg, palette, screen,
-    summarize_args, terminal_height, terminal_width, theme, thought, thought_text,
+    CallStatus, Style, animations, call_line, call_path, clip, clock, compacted, link,
+    machine_arg, palette, screen, summarize_args, terminal_height, terminal_width, theme, thought,
+    thought_text,
 };
 use crate::config::Output;
 
@@ -58,60 +59,148 @@ enum Ending<'a> {
     Answered(&'a str),
 }
 
-/// The calls shown whose results have yet to come.
+/// The calls of the current batch: kept in the live region while any of
+/// them still runs, and printed in order as those at the front finish.
 #[derive(Default)]
 struct Calls {
-    named: HashMap<CallId, Named>,
-    /// The call shown last, until a result comes.
-    latest: Option<CallId>,
+    entries: VecDeque<CallEntry>,
 }
 
-/// A call as its line names it: its tool, and the argument it is known by.
-struct Named {
+/// A call in the batch, from when it starts until its line is printed.
+struct CallEntry {
+    id: Option<CallId>,
     tool: String,
+    machine: Option<String>,
     argument: String,
     /// The file it names, if any.
     path: Option<String>,
+    state: CallState,
 }
 
-impl Named {
-    fn label(&self) -> String {
-        format!("{} {}", self.tool, self.argument)
-    }
+enum CallState {
+    /// Its line was already printed above its body or before a question.
+    Printed,
+    /// Waiting in the live region for its result.
+    Running,
+    /// Answered while an earlier call in the batch still ran; its line and
+    /// any rows below it wait for that earlier call to finish.
+    Finished { line: String, body: Vec<String> },
+}
 
-    /// What a result shown apart from this call says: its `summary`, after
-    /// the call it answers unless that names its argument already.
-    fn marker(&self, summary: &str) -> String {
-        match !self.argument.is_empty() && summary.contains(&self.argument) {
-            true => summary.to_owned(),
-            false => format!("{} · {summary}", self.label()),
-        }
+impl CallEntry {
+    fn line(&self, status: CallStatus<'_>, width: usize) -> String {
+        call_line(
+            &self.tool,
+            self.machine.as_deref(),
+            &self.argument,
+            status,
+            width,
+        )
     }
 }
 
 impl Calls {
-    fn called(&mut self, id: Option<CallId>, named: Named) {
-        if let Some(id) = &id {
-            self.named.insert(id.clone(), named);
-        }
-        self.latest = id;
+    fn push(&mut self, entry: CallEntry) {
+        self.entries.push_back(entry);
     }
 
-    /// Where `result` shows: right under its call, or apart from it, as
-    /// when the calls of a reply run side by side.
-    fn answered(&mut self, result: &ToolResult) -> Placement {
-        let named = self.named.remove(&result.call);
-        match self.latest.take() == Some(result.call.clone()) {
-            true => Placement::Under,
-            false => Placement::Apart(named),
+    fn position(&self, id: &CallId) -> Option<usize> {
+        self.entries
+            .iter()
+            .position(|entry| entry.id.as_ref() == Some(id))
+    }
+
+    fn get_mut(&mut self, index: usize) -> Option<&mut CallEntry> {
+        self.entries.get_mut(index)
+    }
+
+    /// Prints every finished or already-printed call at the front of the
+    /// batch, stopping at the first call still running.
+    fn drain_ready(&mut self) {
+        while let Some(front) = self.entries.front() {
+            match &front.state {
+                CallState::Running => break,
+                CallState::Printed => {
+                    self.entries.pop_front();
+                }
+                CallState::Finished { .. } => {
+                    if let Some(CallEntry {
+                        state: CallState::Finished { line, body },
+                        ..
+                    }) = self.entries.pop_front()
+                    {
+                        screen::line(format_args!("\n{line}"));
+                        body.into_iter().for_each(screen::line);
+                    }
+                }
+            }
         }
     }
-}
 
-enum Placement {
-    Under,
-    /// Apart from its call, which it names when known.
-    Apart(Option<Named>),
+    /// Prints every remaining call in the batch so other output can follow.
+    fn flush_all(&mut self, width: usize) {
+        while let Some(entry) = self.entries.pop_front() {
+            match entry.state {
+                CallState::Printed => {}
+                CallState::Running => {
+                    let line = entry.line(CallStatus::Running, width);
+                    screen::line(format_args!("\n{line}"));
+                }
+                CallState::Finished { line, body } => {
+                    screen::line(format_args!("\n{line}"));
+                    body.into_iter().for_each(screen::line);
+                }
+            }
+        }
+    }
+
+    /// Prints the latest call's line if it is still waiting in the live
+    /// region, so its live output or preview can show right under it.
+    fn print_latest(&mut self, width: usize) {
+        if matches!(
+            self.entries.back(),
+            Some(CallEntry {
+                state: CallState::Running,
+                ..
+            })
+        ) {
+            for entry in &mut self.entries {
+                match std::mem::replace(&mut entry.state, CallState::Printed) {
+                    CallState::Printed => {}
+                    CallState::Running => {
+                        let line = entry.line(CallStatus::Running, width);
+                        screen::line(format_args!("\n{line}"));
+                    }
+                    CallState::Finished { line, body } => {
+                        screen::line(format_args!("\n{line}"));
+                        body.into_iter().for_each(screen::line);
+                    }
+                }
+            }
+        }
+    }
+
+    /// The rows of the batch still in the live region, in at most `height`
+    /// rows.
+    fn live_rows(&self, width: usize, height: usize) -> Vec<String> {
+        let mut rows = Vec::new();
+        for entry in &self.entries {
+            match &entry.state {
+                CallState::Printed => {}
+                CallState::Running => {
+                    rows.push(String::new());
+                    rows.push(link::linkify(&entry.line(CallStatus::Running, width)));
+                }
+                CallState::Finished { line, body } => {
+                    rows.push(String::new());
+                    rows.push(link::linkify(line));
+                    rows.extend(body.iter().map(|row| link::linkify(row)));
+                }
+            }
+        }
+        let skip = rows.len().saturating_sub(height);
+        rows.into_iter().skip(skip).collect()
+    }
 }
 
 /// What the spinner says the agent is doing.
@@ -155,8 +244,6 @@ pub struct Stream {
     writing: Vec<Call>,
     /// Whether the latest call's output showed as it ran.
     ran_live: bool,
-    /// Whether the result shown last left the chain of results open.
-    chained: bool,
     /// Received but not yet shown.
     backlog: VecDeque<Chunk>,
     started: Instant,
@@ -189,7 +276,6 @@ impl Stream {
             calls: Calls::default(),
             writing: Vec::new(),
             ran_live: false,
-            chained: false,
             backlog: VecDeque::new(),
             started: now,
             quiet_since: now,
@@ -261,9 +347,9 @@ impl Stream {
         }
     }
 
-    /// A call runs: its line, under which its output and result show, and
-    /// what it changes when it writes to a file. `machine` is the remote
-    /// client it runs on, if not the host.
+    /// A call runs: its line, updated in place with its result once it
+    /// finishes, and what it changes when it writes to a file. `machine` is
+    /// the remote client it runs on, if not the host.
     pub fn call(&mut self, name: &str, args: &str, machine: Option<&str>, id: Option<CallId>) {
         let written = self.writing.iter().position(|call| call.is(name, args));
         // Calls run in the order the model wrote them, should its arguments
@@ -272,38 +358,49 @@ impl Stream {
         if let Some(at) = written {
             self.writing.remove(at);
         }
-        self.settle();
+        self.end_preview(Ending::Interrupted);
+        self.flush();
         self.activity = Activity::Running(name.to_owned());
         let summary = summarize_args(args);
         let machine = machine.map(str::to_owned).or_else(|| machine_arg(args));
-        screen::line(format_args!(
-            "\n{}",
-            call_line(name, machine.as_deref(), &summary, terminal_width())
-        ));
-        self.calls.called(
-            id,
-            Named {
-                tool: name.to_owned(),
-                argument: summary.clone(),
-                path: call_path(args),
-            },
-        );
+        let path = call_path(args);
         self.ran_live = false;
-        self.chained = false;
+        let width = terminal_width();
+        let entry = CallEntry {
+            id,
+            tool: name.to_owned(),
+            machine,
+            argument: summary,
+            path: path.clone(),
+            state: CallState::Running,
+        };
         if let Some(todos) = tool::todos(name, args) {
+            self.calls.flush_all(width);
+            screen::line(format_args!("\n{}", entry.line(CallStatus::Running, width)));
             todos.iter().for_each(|todo| screen::line(todo));
+            self.calls.push(CallEntry {
+                state: CallState::Printed,
+                ..entry
+            });
             return;
         }
         let Some(changes) = tool::changes(name, args) else {
+            self.calls.push(entry);
             return;
         };
+        self.calls.flush_all(width);
+        screen::line(format_args!("\n{}", entry.line(CallStatus::Running, width)));
+        self.calls.push(CallEntry {
+            state: CallState::Printed,
+            ..entry
+        });
         match self.style.tool_output {
             Output::Full => changes
                 .iter()
                 .for_each(|(mark, text)| screen::line(line(*mark, text))),
             Output::Preview => {
                 let mut preview = Preview::new(Source::Changes);
-                preview.code_of(self.style.highlight.then(|| call_path(args)).flatten());
+                preview.code_of(self.style.highlight.then_some(path).flatten());
                 preview.push(
                     &changes
                         .iter()
@@ -316,23 +413,21 @@ impl Stream {
         }
     }
 
-    /// A call's result: what it gave back, where that has not shown as it
-    /// ran or with the call, and its marker, which closes the call's box
-    /// when it is still the last thing shown. A result shown apart from its
-    /// call is set apart as a call is, and names it.
+    /// A call's result: updates the call's line in place with its status,
+    /// or shows its output or error below a call whose line was already
+    /// printed.
     pub fn result(&mut self, result: &ToolResult) {
         self.activity = Activity::Waiting;
         let text = tool::text(result);
-        let placement = self.calls.answered(result);
         let summary = match result.is_error {
             true => text.lines().next().unwrap_or("failed").to_owned(),
             false => tool::summary(&text),
         };
+        let index = self.calls.position(&result.call);
+        let is_latest = index.is_some_and(|at| at + 1 == self.calls.entries.len());
         let own_box = match &self.preview {
-            Some(preview) if !result.is_error && matches!(placement, Placement::Under) => {
-                Some(preview.source())
-                    .filter(|source| matches!(source, Source::Command | Source::Changes))
-            }
+            Some(preview) if !result.is_error && is_latest => Some(preview.source())
+                .filter(|source| matches!(source, Source::Command | Source::Changes)),
             _ => None,
         };
         if let Some(source) = own_box {
@@ -343,32 +438,17 @@ impl Stream {
                 _ => "",
             };
             self.end_preview(Ending::Answered(outcome));
+            if let Some(at) = index
+                && let Some(entry) = self.calls.get_mut(at)
+            {
+                entry.state = CallState::Printed;
+            }
+            self.calls.drain_ready();
             return self.flush();
         }
-        self.settle();
-        let called = match placement {
-            Placement::Apart(Some(called)) => {
-                match self.chained {
-                    true => screen::line(format_args!("  {}", palette().muted.paint("│"))),
-                    false => screen::line(""),
-                }
-                Some(called)
-            }
-            Placement::Under | Placement::Apart(None) => None,
-        };
-        let marker = |summary: &str| match &called {
-            Some(called) => called.marker(summary),
-            None => summary.to_owned(),
-        };
-        let room = terminal_width().saturating_sub(5);
-        if result.is_error {
-            screen::line(format_args!(
-                "  {} {}",
-                "✗".red(),
-                clip(&marker(&summary), room).red()
-            ));
-            return;
-        }
+        self.end_preview(Ending::Interrupted);
+        self.flush();
+        let width = terminal_width();
         let name = result.name.as_str();
         let (source, given) = match name {
             "shell" => (Source::Command, split_status(&text).0),
@@ -376,37 +456,67 @@ impl Stream {
             _ => (Source::Returned, text.as_str()),
         };
         let shown = self.ran_live || tool::shows_changes(name) || given.trim().is_empty();
-        match self.style.tool_output {
-            Output::Preview if !shown && given.lines().count() > 1 => {
-                let mut preview = Preview::new(source);
-                if name == "read" && self.style.highlight {
-                    preview.code_of(called.as_ref().and_then(|called| called.path.clone()));
+        let path = index
+            .and_then(|at| self.calls.entries.get(at))
+            .and_then(|entry| entry.path.clone());
+        let body = if result.is_error {
+            Vec::new()
+        } else {
+            match self.style.tool_output {
+                Output::Preview if !shown && given.lines().count() > 1 => {
+                    let mut preview = Preview::new(source);
+                    if name == "read" && self.style.highlight {
+                        preview.code_of(path);
+                    }
+                    preview.push(given);
+                    preview.framed(self.preview_width(), "")
                 }
-                preview.label(called.as_ref().map(Named::label).unwrap_or_default());
-                preview.push(given);
-                self.preview = Some(preview);
-                return self.end_preview(Ending::Answered(""));
+                Output::Full if !shown => {
+                    given.lines().map(|text| line(Mark::Printed, text)).collect()
+                }
+                Output::Full | Output::Preview | Output::Hidden => Vec::new(),
             }
-            Output::Full if !shown => {
-                given
-                    .lines()
-                    .for_each(|text| screen::line(line(Mark::Printed, text)));
+        };
+        let status = match result.is_error {
+            true => CallStatus::Failed(&summary),
+            false => CallStatus::Done(&summary),
+        };
+        if let Some(at) = index
+            && let Some(entry) = self.calls.get_mut(at)
+        {
+            match entry.state {
+                CallState::Running => {
+                    entry.state = CallState::Finished {
+                        line: entry.line(status, width),
+                        body,
+                    };
+                    self.calls.drain_ready();
+                    return;
+                }
+                CallState::Printed | CallState::Finished { .. } => {
+                    entry.state = CallState::Printed;
+                    self.calls.drain_ready();
+                }
             }
-            Output::Full | Output::Preview | Output::Hidden => {}
         }
+        let room = width.saturating_sub(5);
+        if result.is_error {
+            screen::line(format_args!("  {} {}", "✗".red(), clip(&summary, room).red()));
+            return;
+        }
+        body.into_iter().for_each(screen::line);
         let muted = palette().muted;
-        let more = !self.calls.named.is_empty();
-        self.chained = more;
         screen::line(format_args!(
             "  {} {}",
-            muted.paint(if more { "├─" } else { "╰─" }),
-            muted.paint(&clip(&marker(&summary), room))
+            muted.paint("╰─"),
+            muted.paint(&clip(&summary, room))
         ));
     }
 
     /// More of a running command's output: whole lines, but for its end.
     pub fn output(&mut self, text: String) {
         self.ran_live = true;
+        self.calls.print_latest(terminal_width());
         match self.style.tool_output {
             Output::Full => {
                 self.settle();
@@ -420,6 +530,7 @@ impl Stream {
 
     /// A step a subagent took, as [`super::agent_step`] puts it.
     pub fn agent_step(&mut self, step: String) {
+        self.calls.print_latest(terminal_width());
         match self.style.subagent_output {
             Output::Full => {
                 self.settle();
@@ -454,6 +565,7 @@ impl Stream {
     /// Shows everything received and ends the open part and preview, so
     /// other output can follow.
     pub fn settle(&mut self) {
+        self.calls.flush_all(terminal_width());
         self.end_preview(Ending::Interrupted);
         self.flush();
     }
@@ -563,6 +675,7 @@ impl Stream {
     /// Hands the reply up to `budget` characters of the backlog, in order.
     fn reveal(&mut self, mut budget: usize) {
         if !self.backlog.is_empty() {
+            self.calls.flush_all(terminal_width());
             self.end_preview(Ending::Interrupted);
         }
         while let Some(chunk) = self.backlog.pop_front() {
@@ -588,16 +701,18 @@ impl Stream {
         }
     }
 
-    /// The status: the preview, if there is one, then the calls the model
-    /// has written that have yet to run, then, once the agent has been
-    /// quiet a while, the spinner, below `above` rows. Each row is narrower
-    /// than the terminal, so none wraps.
+    /// The status: the calls of the current batch still waiting in the live
+    /// region, the preview, if there is one, then the calls the model has
+    /// written that have yet to run, then, once the agent has been quiet a
+    /// while, the spinner, below `above` rows. Each row is narrower than
+    /// the terminal, so none wraps.
     fn status(&self, above: usize) -> Vec<String> {
-        let mut rows = self
-            .preview
-            .as_ref()
-            .map_or_else(Vec::new, |preview| preview.framed(self.preview_width(), ""));
-        rows.extend(self.written(terminal_height().saturating_sub(above + rows.len() + 2)));
+        let room = terminal_height().saturating_sub(above + 2);
+        let mut rows = self.calls.live_rows(terminal_width(), room);
+        if let Some(preview) = &self.preview {
+            rows.extend(preview.framed(self.preview_width(), ""));
+        }
+        rows.extend(self.written(room.saturating_sub(rows.len())));
         if self.quiet_since.elapsed() >= SPINNER_DELAY {
             rows.push(self.spinner());
         }
@@ -635,5 +750,105 @@ impl Stream {
         if self.mode != Mode::Lines {
             screen::set_live(Vec::new());
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use rig_core::message::{CallId, ToolName, ToolResult, ToolResultContent};
+
+    use super::*;
+
+    fn test_style(tool_output: Output) -> Style {
+        Style {
+            highlight: false,
+            wrap: None,
+            thinking_output: Output::Hidden,
+            tool_output,
+            subagent_output: Output::Hidden,
+            notify_after: None,
+        }
+    }
+
+    fn tool_result(id: &str, name: &str, text: &str, is_error: bool) -> ToolResult {
+        ToolResult {
+            call: CallId::from_wire(id),
+            name: ToolName::new(name).unwrap(),
+            content: vec![ToolResultContent::text(text)],
+            is_error,
+        }
+    }
+
+    #[test]
+    fn batched_calls_update_in_place_and_drain_in_order() {
+        yansi::disable();
+        let mut stream = Stream::with_mode(&test_style(Output::Hidden), Mode::Live);
+        stream.call(
+            "read",
+            r#"{"path":"/a.rs","machine":"turing"}"#,
+            Some("turing"),
+            Some(CallId::from_wire("1")),
+        );
+        stream.call(
+            "read",
+            r#"{"path":"/b.rs","machine":"fermi"}"#,
+            Some("fermi"),
+            Some(CallId::from_wire("2")),
+        );
+        assert_eq!(
+            stream.calls.live_rows(80, 24),
+            [
+                "",
+                "● read on turing /a.rs",
+                "",
+                "● read on fermi /b.rs",
+            ]
+        );
+
+        // Second call finishes first: its live row updates in place while the
+        // first call is still running.
+        stream.result(&tool_result("2", "read", "one\ntwo\nthree\n", false));
+        assert_eq!(
+            stream.calls.live_rows(80, 24),
+            [
+                "",
+                "● read on turing /a.rs",
+                "",
+                "● read on fermi /b.rs · 3 lines",
+            ]
+        );
+
+        // First call finishes: both drain from the live region in order.
+        stream.result(&tool_result("1", "read", "alpha\nbeta\n", false));
+        assert!(stream.calls.live_rows(80, 24).is_empty());
+        assert!(stream.calls.entries.is_empty());
+    }
+
+    #[test]
+    fn failed_call_updates_its_line_with_error_mark() {
+        yansi::disable();
+        let mut stream = Stream::with_mode(&test_style(Output::Hidden), Mode::Live);
+        stream.call(
+            "read",
+            r#"{"path":"/first.rs"}"#,
+            None,
+            Some(CallId::from_wire("1")),
+        );
+        stream.call(
+            "read",
+            r#"{"path":"/missing.rs"}"#,
+            None,
+            Some(CallId::from_wire("2")),
+        );
+        stream.result(&tool_result("2", "read", "No such file or directory", true));
+        assert_eq!(
+            stream.calls.live_rows(80, 24),
+            [
+                "",
+                "● read /first.rs",
+                "",
+                "✗ read /missing.rs · No such file or directory",
+            ]
+        );
     }
 }

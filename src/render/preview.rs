@@ -10,7 +10,7 @@ use yansi::{Paint, Style};
 
 use super::code::Code;
 use super::tool::PREVIEW_LINES;
-use super::{call_line, clip, palette, summarize, wrap};
+use super::{CallStatus, call_line, clip, palette, summarize, wrap};
 use crate::route;
 
 /// Most rows of the text being written the box shows.
@@ -314,7 +314,7 @@ impl Call {
         let machine = machine.as_ref().and_then(serde_json::Value::as_str);
         let mut rows = vec![
             String::new(),
-            call_line(&self.name, machine, &summary, width),
+            call_line(&self.name, machine, &summary, CallStatus::Running, width),
         ];
         if let Some(text) = writing(&self.args).filter(|text| text.contains('\n')) {
             let room = height.saturating_sub(rows.len() + 2);
