@@ -149,7 +149,8 @@ impl Workbench {
     ) -> Result<(), String> {
         let machine = self.machine();
         let called = crate::mcp::deferred::called(&call.tool, &call.args);
-        let tool = called.as_deref().unwrap_or(&call.tool);
+        // `bash` is `shell`: one permission, one "always allow".
+        let tool = crate::toolbox::canonical(called.as_deref().unwrap_or(&call.tool));
         match lending.permissions.get(tool) {
             Permission::Allow => Ok(()),
             Permission::Deny => Err(format!(
