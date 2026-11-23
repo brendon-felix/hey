@@ -14,6 +14,8 @@ of `hey` is on ease of use, speed, and a pleasant terminal experience.
 - Background processes: servers, watchers and long builds the agent starts, reads and stops,
   killed when hey exits
 - Images: `@shot.png` or Ctrl+V attaches one to a message, and `read` shows the model an image file
+- Editors: `hey --acp` speaks the [Agent Client Protocol](https://agentclientprotocol.com), so
+  [Zed](https://zed.dev/docs/ai/external-agents#custom-agents) and other editors can host hey
 - Headless: `hey --print` answers a script or cron job with the reply alone, or JSON events
 - Web tools: `fetch` reads a page as Markdown in a fraction of a second, and `web_search` searches
   with Brave
@@ -76,6 +78,7 @@ hey -p ~/prompts/reviewer.txt         # system prompt from a file
 hey --plan refactor the parser        # start in plan mode
 hey --remote fermi                    # run the agent on a remote host
 hey --serve                           # be a remote host
+hey --acp                             # be an ACP agent for an editor, on stdin and stdout
 hey --check-config                    # validate the config and exit
 hey --login copilot                   # sign in to GitHub Copilot
 hey -P summarize @CHANGELOG.md        # print the reply alone, for scripts

@@ -2,6 +2,7 @@
 /*                                  main.rs                                   */
 /* -------------------------------------------------------------------------- */
 
+mod acp;
 mod agent;
 mod backend;
 mod browser;
@@ -155,6 +156,14 @@ struct Args {
     #[arg(long, short = 'y', conflicts_with_all = ["threads", "memories", "interactive", "serve", "login"])]
     yes: bool,
 
+    /// Speak the Agent Client Protocol on stdin and stdout, to be an
+    /// external agent in an editor such as Zed
+    #[arg(
+        long,
+        conflicts_with_all = ["resume", "threads", "memories", "interactive", "serve", "login", "print", "json", "yes", "plan", "message", "check_config"],
+    )]
+    acp: bool,
+
     /// Message to send; without one, hey starts a REPL
     #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
     message: Vec<String>,
@@ -181,7 +190,7 @@ async fn main() -> ExitCode {
 }
 
 async fn run(args: Args) -> Result<ExitCode> {
-    if args.print || args.json {
+    if args.print || args.json || args.acp {
         render::screen::to_stderr();
     }
     let config = Config::load(args.config.as_deref())?;
@@ -261,6 +270,12 @@ async fn dispatch(args: Args, config: Config) -> Result<ExitCode> {
         .model(args.model.as_deref().unwrap_or(&defaults.model))
         .await?;
     let thinking = args.think.or(defaults.thinking);
+    if args.acp {
+        let served = acp::serve(backend.clone(), model.reference, thinking, system_prompt).await;
+        backend.settle().await;
+        served?;
+        return Ok(ExitCode::SUCCESS);
+    }
     let message = (!args.message.is_empty()).then(|| args.message.join(" "));
     if args.print || args.json {
         let prompt = match message {
