@@ -215,6 +215,7 @@ impl Crew {
         };
         let mut builder = builder
             .default_max_turns(self.max_turns)
+            .add_hook(crate::budget::Budget::new(self.max_turns, None))
             .memory(team.store.clone())
             .add_hook(ResultLimit {
                 bytes: self.result_bytes,

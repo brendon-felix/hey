@@ -44,6 +44,7 @@ impl Context {
                 entries,
                 truncated,
             } => self.directories.push(listing(path, entries, *truncated)),
+            Attachment::Skill { content, .. } => self.skills.push(content.clone()),
         }
     }
 

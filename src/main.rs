@@ -5,6 +5,7 @@
 mod agent;
 mod backend;
 mod browser;
+mod budget;
 mod checkpoint;
 mod client;
 mod clipboard;

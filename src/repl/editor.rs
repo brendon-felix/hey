@@ -525,13 +525,44 @@ impl Hinter for MessageHinter {
 /// `$VISUAL`, else `$EDITOR`, else `vi`, split into program and arguments so
 /// values like `code --wait` work.
 pub fn buffer_editor() -> std::process::Command {
-    let editor = std::env::var("VISUAL")
-        .or_else(|_| std::env::var("EDITOR"))
-        .unwrap_or_else(|_| "vi".into());
-    let mut words = editor.split_whitespace();
-    let mut command = std::process::Command::new(words.next().unwrap_or("vi"));
+    let mut words = editor_words().into_iter();
+    let program = words.next().unwrap_or_else(|| "vi".into());
+    let mut command = std::process::Command::new(program);
     command.args(words);
     command
+}
+
+/// The editor to use as a command line: `$VISUAL` or `$EDITOR` when what it
+/// names can be found, else the first of the usual editors that can be.
+fn editor_words() -> Vec<String> {
+    let set = ["VISUAL", "EDITOR"]
+        .into_iter()
+        .filter_map(|name| std::env::var(name).ok())
+        .map(|editor| editor.split_whitespace().map(str::to_owned).collect::<Vec<_>>());
+    let usual = ["zed", "code", "nvim", "hx", "vim", "vi", "nano"]
+        .into_iter()
+        .map(|name| vec![name.to_owned()]);
+    set.chain(usual)
+        .find(|words| words.first().is_some_and(|program| on_path(program)))
+        .unwrap_or_else(|| vec!["vi".into()])
+}
+
+/// Whether `program` is a path to a file, or is found in `$PATH`.
+fn on_path(program: &str) -> bool {
+    if program.contains('/') {
+        return std::path::Path::new(program).is_file();
+    }
+    std::env::var_os("PATH")
+        .is_some_and(|path| std::env::split_paths(&path).any(|dir| dir.join(program).is_file()))
+}
+
+/// Why no editor could be started, naming the one tried.
+pub fn editor_error(error: &std::io::Error) -> String {
+    let words = editor_words();
+    format!(
+        "cannot start `{}`: {error}; set $VISUAL or $EDITOR to an editor on your PATH",
+        words.join(" ")
+    )
 }
 
 /// What slash commands and their arguments complete to, besides what the
@@ -634,31 +665,41 @@ struct InputCompleter {
 impl Completer for InputCompleter {
     fn complete(&mut self, line: &str, pos: usize) -> CompletionResult {
         let before = line.get(..pos).unwrap_or(line);
-        let suggestions = match slash_start(before) {
-            Some(0) => self
-                .choices
-                .suggestions(before, &host::lock(&self.index), &self.matcher),
-            Some(start) => {
-                // Past the first word only skills and prompts apply, not commands.
-                let token = &before[start..];
-                self.choices
-                    .suggestions(token, &host::lock(&self.index), &self.matcher)
-                    .into_iter()
-                    .filter(|suggestion| {
-                        !COMMANDS
-                            .iter()
-                            .any(|spec| suggestion.value == format!("/{}", spec.name))
-                    })
-                    .map(|mut suggestion| {
-                        suggestion.span =
-                            Span::new(suggestion.span.start + start, suggestion.span.end + start);
-                        suggestion
-                    })
-                    .collect()
-            }
-            None => self.mentions.suggestions(before),
+        let suggestions = if before.starts_with('/') {
+            self.choices
+                .suggestions(before, &host::lock(&self.index), &self.matcher)
+        } else if mention::under(before, before.len()).is_some() {
+            self.mentions.suggestions(line, pos)
+        } else if let Some(start) = slash_start(before) {
+            self.slashed_skills(line, before, start)
+        } else {
+            Vec::new()
         };
         CompletionResult::fresh(suggestions)
+    }
+}
+
+impl InputCompleter {
+    /// The skills a `/word` inside a message, where `start` is its slash,
+    /// invokes; commands and MCP prompts only run from the start of one.
+    /// The word is replaced to its end, past the cursor.
+    fn slashed_skills(&self, line: &str, before: &str, start: usize) -> Vec<Suggestion> {
+        let typed = &before[start + 1..];
+        let rest = &line[before.len()..];
+        let end = before.len() + rest.find(char::is_whitespace).unwrap_or(rest.len());
+        let span = Span::new(start, end);
+        let index = host::lock(&self.index);
+        let invocable = index
+            .skills
+            .skills
+            .iter()
+            .filter(|skill| index.command(skill.name.as_str()).is_some());
+        host::skill_suggestions(&self.matcher, invocable, typed)
+            .map(|(skill, indices)| Suggestion {
+                value: format!("/{}", skill.name),
+                ..host::skill_suggestion(skill, indices, span)
+            })
+            .collect()
     }
 }
 
@@ -725,36 +766,81 @@ impl Highlighter for InputHighlighter {
         );
         let palette = palette();
         let mut styled = StyledText::new();
+        let index = host::lock(&self.0);
         match line.strip_prefix('/') {
-            None => {
-                let message = fg(palette.input);
-                let mut last = 0;
-                let index = host::lock(&self.0);
-                let known = mention::mentions(line)
-                    .filter_map(|mention| mention.resolve(|reference| index.describe(reference)));
-                for (_, span) in known {
-                    styled.push((message, line[last..span.start].to_owned()));
-                    styled.push((fg(palette.name), line[span.clone()].to_owned()));
-                    last = span.end;
-                }
-                styled.push((message, line[last..].to_owned()));
-            }
+            None => message(&mut styled, line, 0, cursor, fg(palette.input), &index),
             Some(rest) => {
                 let (word, arg) =
                     rest.split_at(rest.find(char::is_whitespace).unwrap_or(rest.len()));
-                let known =
-                    commands::find(word).is_some() || host::lock(&self.0).command(word).is_some();
-                let word_style = match known {
+                let builtin = commands::find(word).is_some();
+                let invoked = index.command(word).is_some() || index.prompt(word).is_some();
+                let word_style = match builtin || invoked {
                     true => fg(palette.name),
                     false => Color::Yellow.normal(),
                 };
                 styled.push((Style::default(), "/".into()));
                 styled.push((word_style, word.to_owned()));
-                styled.push((fg(palette.value), arg.to_owned()));
+                match invoked && !builtin {
+                    // What follows a skill is a message like any other.
+                    true => message(
+                        &mut styled,
+                        arg,
+                        1 + word.len(),
+                        cursor,
+                        fg(palette.input),
+                        &index,
+                    ),
+                    false => styled.push((fg(palette.value), arg.to_owned())),
+                }
             }
         }
         styled
     }
+}
+
+/// `text`, which starts `base` bytes into the line the `cursor` is in, as a
+/// message: mentions that name something and `/skill` words picked out,
+/// mentions that name nothing in yellow unless they are being typed.
+fn message(
+    styled: &mut StyledText,
+    text: &str,
+    base: usize,
+    cursor: usize,
+    plain: Style,
+    index: &HostIndex,
+) {
+    let palette = palette();
+    let mut marks: Vec<(std::ops::Range<usize>, Style)> = Vec::new();
+    for mention in mention::mentions(text) {
+        match mention.resolve(|reference| index.describe(reference)) {
+            Some((_, span)) => marks.push((span, fg(palette.name).bold())),
+            None => {
+                let typing = base + mention.span.start < cursor && cursor <= base + mention.span.end;
+                if !typing {
+                    marks.push((mention.span.clone(), Color::Yellow.normal()));
+                }
+            }
+        }
+    }
+    for (span, name) in crate::skills::slash_names(text) {
+        let inside = marks
+            .iter()
+            .any(|(mark, _)| mark.start < span.end && span.start < mark.end);
+        if !inside && index.command(name).is_some() {
+            marks.push((span, fg(palette.name).bold()));
+        }
+    }
+    marks.sort_by_key(|(span, _)| span.start);
+    let mut last = 0;
+    for (span, style) in marks {
+        if span.start < last {
+            continue;
+        }
+        styled.push((plain, text[last..span.start].to_owned()));
+        styled.push((style, text[span.clone()].to_owned()));
+        last = span.end;
+    }
+    styled.push((plain, text[last..].to_owned()));
 }
 
 /// Below the line while typing a slash command or a mention: what it does, or

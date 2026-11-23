@@ -9,6 +9,7 @@ use rig_agent::agent::{
     ModelTurnFinished,
 };
 use rig_agent::run::RequestPatch;
+use rig_core::completion::Document;
 use rig_core::message::Message;
 use rig_memory::{CompactReason, SummaryState, estimate_tokens};
 
@@ -103,7 +104,10 @@ impl Live {
     /// The history a model call on `conversation`, its prompt last, is sent
     /// instead, compacting first when asked or due; `None` to send it as
     /// it is.
-    async fn prepare(&self, conversation: &[Arc<Message>]) -> Option<Vec<Arc<Message>>> {
+    async fn prepare(
+        &self,
+        conversation: &[Arc<Message>],
+    ) -> (Option<Vec<Arc<Message>>>, Option<String>) {
         let (view, from, summarized, reason) = {
             let mut state = self.lock();
             state.sent = conversation.len();
@@ -112,9 +116,10 @@ impl Live {
                 .run
                 .take_compaction()
                 .map(|focus| CompactReason::Asked { focus });
-            let due = !state.stalled && self.compactor.due(state.estimate(conversation, &view));
+            let tokens = state.estimate(conversation, &view);
+            let due = !state.stalled && self.compactor.due(tokens);
             match asked.or(due.then_some(CompactReason::Threshold)) {
-                None => return state.history(view),
+                None => return (state.history(view), self.compactor.nearing(tokens)),
                 Some(reason) => {
                     let (from, summarized) = state.summarized();
                     (view, from, summarized.clone(), reason)
@@ -147,7 +152,7 @@ impl Live {
                 });
                 state.anchor = None;
                 let view = state.view(conversation);
-                state.history(view)
+                (state.history(view), None)
             }
             Ok(None) => {
                 if let CompactReason::Asked { .. } = reason {
@@ -155,7 +160,8 @@ impl Live {
                         text: "nothing to compact yet".into(),
                     });
                 }
-                state.history(view)
+                let note = self.compactor.nearing(state.estimate(conversation, &view));
+                (state.history(view), note)
             }
             Err(error) => {
                 tracing::warn!(run = ?self.run.id(), error = format!("{error:#}"), "cannot compact");
@@ -163,7 +169,8 @@ impl Live {
                     text: format!("not compacted: {error:#}"),
                 });
                 state.stalled |= reason == CompactReason::Threshold;
-                state.history(view)
+                let note = self.compactor.nearing(state.estimate(conversation, &view));
+                (state.history(view), note)
             }
         }
     }
@@ -240,13 +247,22 @@ impl AgentHook for Hook {
             .cloned()
             .chain([Arc::new(event.prompt.clone())])
             .collect();
-        match self.0.prepare(&conversation).await {
-            Some(history) => CompletionCallAction::patch(RequestPatch {
-                history: Some(history),
-                ..RequestPatch::default()
-            }),
-            None => CompletionCallAction::continue_run(),
+        let (history, nearing) = self.0.prepare(&conversation).await;
+        if history.is_none() && nearing.is_none() {
+            return CompletionCallAction::continue_run();
         }
+        CompletionCallAction::patch(RequestPatch {
+            history,
+            extra_context: nearing
+                .map(|text| Document {
+                    id: "conversation_length".into(),
+                    text,
+                    additional_props: Default::default(),
+                })
+                .into_iter()
+                .collect(),
+            ..RequestPatch::default()
+        })
     }
 
     async fn on_model_turn_finished(

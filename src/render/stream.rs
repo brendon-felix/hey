@@ -15,7 +15,7 @@ use super::preview::{Call, Preview, Source};
 use super::reply::{Part, Reply};
 use super::tool::{self, Mark, line};
 use super::{
-    CallStatus, Style, animations, call_line, call_path, clip, clock, compacted, link, machine_arg,
+    CallStatus, Style, animations, call_line, call_path, clip, compacted, link, live_clock, machine_arg,
     palette, screen, summarize_args, terminal_height, terminal_width, theme, thought, thought_text,
 };
 use crate::config::Output;
@@ -757,7 +757,7 @@ impl Stream {
             "{} {}",
             palette.accent.paint(SPINNER[frame % SPINNER.len()]),
             palette.muted.paint(&clip(
-                &format!("{} {}", self.activity, clock(elapsed)),
+                &format!("{} {}", self.activity, live_clock(elapsed)),
                 terminal_width().saturating_sub(3)
             )),
         )

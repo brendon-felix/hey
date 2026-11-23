@@ -236,6 +236,31 @@ pub struct Found {
 }
 
 impl Found {
+    /// `self`, the host's skills, together with those of the client's
+    /// machine, which the host does not have: where a name repeats, the
+    /// host's stands. Also the names that came from the client.
+    pub fn with_client(mut self, client: Found) -> (Self, Vec<Name>) {
+        let mut from_client = Vec::new();
+        for skill in client.skills {
+            if self.get(skill.name.as_str()).is_none() {
+                from_client.push(skill.name.clone());
+                self.skills.push(skill);
+            }
+        }
+        self.skills.sort_by(|a, b| a.name.cmp(&b.name));
+        for problem in client.problems {
+            if !self.problems.contains(&problem) {
+                self.problems.push(problem);
+            }
+        }
+        for root in client.roots {
+            if !self.roots.contains(&root) {
+                self.roots.push(root);
+            }
+        }
+        (self, from_client)
+    }
+
     pub fn get(&self, name: &str) -> Option<&Skill> {
         self.skills.iter().find(|skill| skill.name.as_str() == name)
     }
@@ -394,6 +419,27 @@ pub fn invoked(prompt: &str) -> Option<&str> {
     rest.split(char::is_whitespace).next()
 }
 
+/// The `/name` words of `text` that could invoke a skill, anywhere in it: at
+/// its start or after whitespace, a valid name, and then whitespace,
+/// punctuation or the end, so that `/usr/bin` is not one.
+pub fn slash_names(text: &str) -> Vec<(std::ops::Range<usize>, &str)> {
+    text.match_indices('/')
+        .filter_map(|(at, _)| {
+            if !text[..at].chars().next_back().is_none_or(char::is_whitespace) {
+                return None;
+            }
+            let rest = &text[at + 1..];
+            let len = rest
+                .bytes()
+                .take_while(|b| matches!(b, b'a'..=b'z' | b'0'..=b'9' | b'-'))
+                .count();
+            let after = rest[len..].chars().next();
+            let ends = after.is_none_or(|c| c.is_whitespace() || ",.;:!?)]}".contains(c));
+            (len > 0 && ends).then(|| (at..at + 1 + len, &rest[..len]))
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -481,5 +527,7 @@ mod tests {
         assert!(catalog(&[skill]).contains("<description>a &lt;/description&gt; b</description>"));
         assert_eq!(invoked("  /deploy to staging"), Some("deploy"));
         assert_eq!(invoked("deploy /now"), None);
+        let found: Vec<&str> = slash_names("/a use /deploy, not /usr/bin or x/y /Bad").iter().map(|(_, n)| *n).collect();
+        assert_eq!(found, ["a", "deploy"]);
     }
 }

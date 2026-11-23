@@ -400,6 +400,13 @@ pub enum Attachment {
         /// Whether there were more than `entries`.
         truncated: bool,
     },
+    /// A skill of the client's machine the user invoked, as
+    /// [`Skill::content`](crate::skills::Skill::content) wraps it; the host
+    /// cannot read it there.
+    Skill {
+        name: String,
+        content: String,
+    },
 }
 
 impl Attachment {
@@ -409,6 +416,7 @@ impl Attachment {
             Attachment::File { path, .. } | Attachment::Image { path, .. } => path.clone(),
             Attachment::Directory { path, .. } if path.ends_with('/') => path.clone(),
             Attachment::Directory { path, .. } => format!("{path}/"),
+            Attachment::Skill { name, .. } => format!("skill:{name}"),
         }
     }
 }

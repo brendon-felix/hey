@@ -666,7 +666,7 @@ impl Session {
         let (threads, shared, skills, prompts, agents) = tokio::join!(
             self.backend.threads(),
             self.backend.shared(),
-            self.backend.skills(),
+            self.all_skills(),
             self.backend.prompts(),
             self.backend.subagents(&self.thread)
         );
@@ -706,6 +706,27 @@ impl Session {
             Err(error) => render::notice(&format!("no skill completions: {error:#}")),
         }
         self.indexed = Some(Instant::now());
+    }
+
+    /// The skills the agent has: the host's, and, when the host is another
+    /// machine, those found here, in the global and the working directory's
+    /// `.agents/skills`, which travel with the message that invokes them.
+    async fn all_skills(&self) -> Result<crate::skills::Found> {
+        let host = self.backend.skills().await?;
+        if self.backend.remote().is_none() {
+            turn::set_client_skills(Vec::new());
+            return Ok(host);
+        }
+        let here = crate::skills::find(&crate::agent::working_directory());
+        let (all, from_here) = host.with_client(here);
+        turn::set_client_skills(
+            all.skills
+                .iter()
+                .filter(|skill| from_here.contains(&skill.name))
+                .cloned()
+                .collect(),
+        );
+        Ok(all)
     }
 
     async fn execute(&mut self, command: Command, editor: &mut Editor) -> Result<()> {
@@ -923,7 +944,7 @@ impl Session {
         if let (None, Some(live)) = (path, &live) {
             println!("{}", format!("Opening {}", live.display()).bold());
             if let Err(error) = editor::buffer_editor().arg(live).status() {
-                render::notice(&format!("cannot start the editor: {error}"));
+                render::notice(&editor::editor_error(&error));
             }
             println!();
             return Ok(());
@@ -953,7 +974,7 @@ impl Session {
         println!("{}", format!("Wrote {}", file.display()).bold());
         if path.is_none() {
             if let Err(error) = editor::buffer_editor().arg(&file).status() {
-                render::notice(&format!("cannot start the editor: {error}"));
+                render::notice(&editor::editor_error(&error));
             }
         }
         println!();
@@ -1217,7 +1238,7 @@ impl Session {
 
     /// The host's skills, how each is invoked, and why any were not loaded.
     async fn list_skills(&self) -> Result<()> {
-        let found = self.backend.skills().await?;
+        let found = self.all_skills().await?;
         let palette = palette();
         if found.skills.is_empty() && found.problems.is_empty() {
             println!(
@@ -1245,7 +1266,11 @@ impl Session {
                 Invocation::Auto => "",
                 Invocation::Manual => ", only when you invoke it",
             };
-            let note = format!("{}{who}", skill.source.as_str());
+            let here = match self.backend.remote() {
+                Some(_) if skill_is_local(skill) => " · this machine",
+                _ => "",
+            };
+            let note = format!("{}{here}{who}", skill.source.as_str());
             let room = render::terminal_width().saturating_sub(29 + note.chars().count());
             println!(
                 "  {} {} {}",
@@ -1353,4 +1378,12 @@ fn help() {
         println!("  {:<24} {about}", palette.name.paint(keys));
     }
     println!();
+}
+
+/// Whether `skill` was found here rather than on the host: a remote host's
+/// skills are not on this machine's disk.
+fn skill_is_local(skill: &crate::skills::Skill) -> bool {
+    crate::skills::find(&crate::agent::working_directory())
+        .get(skill.name.as_str())
+        .is_some_and(|mine| mine.dir == skill.dir)
 }

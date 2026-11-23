@@ -167,6 +167,10 @@ impl Host {
     fn targets(&self, prompt: &str, skills: &Found) -> Vec<Target> {
         let skill = |name| skills.get(name).cloned().map(Target::Skill);
         let invoked = skills::invoked(prompt).and_then(skill);
+        // A skill's `/name` invokes it anywhere in the message, not only first.
+        let slashed = skills::slash_names(prompt)
+            .into_iter()
+            .filter_map(|(_, name)| skill(name));
         let mentioned = mention::mentions(prompt).filter_map(|mention| {
             mention.resolve(|reference| match reference {
                 Reference::Local(_) => None,
@@ -181,6 +185,7 @@ impl Host {
         let mut targets = Vec::new();
         for target in invoked
             .into_iter()
+            .chain(slashed)
             .chain(mentioned.map(|(target, _)| target))
         {
             if !targets.contains(&target) {

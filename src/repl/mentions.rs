@@ -98,11 +98,17 @@ impl Mentions {
         }
     }
 
-    pub fn suggestions(&mut self, before: &str) -> Vec<Suggestion> {
+    /// What the mention at `pos` in `line` completes to; the whole of it,
+    /// past the cursor too, is what a suggestion replaces.
+    pub fn suggestions(&mut self, line: &str, pos: usize) -> Vec<Suggestion> {
+        let before = line.get(..pos).unwrap_or(line);
         let Some(typed) = mention::under(before, before.len()) else {
             return Vec::new();
         };
-        let span = Span::new(typed.span.start, typed.span.end);
+        let end = mention::under(line, pos)
+            .filter(|whole| whole.span.start == typed.span.start)
+            .map_or(typed.span.end, |whole| whole.span.end);
+        let span = Span::new(typed.span.start, end);
         match typed.reference() {
             Reference::Local(query) => self.local(query, span),
             Reference::Shared(query) => self.shared(query, span),
@@ -112,6 +118,9 @@ impl Mentions {
     }
 
     fn local(&mut self, query: &str, span: Span) -> Vec<Suggestion> {
+        if outside_here(query) {
+            return directory(&self.matcher, query, span);
+        }
         let modes = self.modes(query, span);
         let paths = self.local.get(|| {
             mention::walk(Path::new("."))
@@ -180,6 +189,71 @@ impl Mentions {
             })
             .collect()
     }
+}
+
+/// Whether `query` names a path by where it is, rather than by what is under
+/// the working directory: home, absolute, or relative to a parent.
+fn outside_here(query: &str) -> bool {
+    matches!(query, "~" | "." | "..")
+        || ["~/", "/", "./", "../"]
+            .iter()
+            .any(|prefix| query.starts_with(prefix))
+}
+
+/// The entries of the directory `query` names up to its last `/`, whose
+/// names match what follows it; directories end in `/` and are not followed
+/// by a space, so that completion goes on into them.
+fn directory(matcher: &SkimMatcherV2, query: &str, span: Span) -> Vec<Suggestion> {
+    let Some(slash) = query.rfind('/') else {
+        // `~`, `.` and `..` alone: the directory itself.
+        return vec![path_suggestion(
+            mention::typed(&format!("{query}/")),
+            &format!("{query}/"),
+            Vec::new(),
+            span,
+            "",
+        )];
+    };
+    let (dir, name) = (&query[..=slash], &query[slash + 1..]);
+    let Ok(entries) = std::fs::read_dir(shellexpand::tilde(dir).as_ref()) else {
+        return Vec::new();
+    };
+    let mut found: Vec<(i64, String, bool, Vec<usize>)> = entries
+        .filter_map(Result::ok)
+        .take(5000)
+        .filter_map(|entry| {
+            let file = entry.file_name().to_string_lossy().into_owned();
+            if file.starts_with('.') && !name.starts_with('.') {
+                return None;
+            }
+            let is_dir = std::fs::metadata(entry.path()).is_ok_and(|meta| meta.is_dir());
+            let (score, indices) = match name.is_empty() {
+                true => (0, Vec::new()),
+                false => matcher.fuzzy_indices(&file, name)?,
+            };
+            Some((score, file, is_dir, indices))
+        })
+        .collect();
+    found.sort_by(|a, b| (Reverse(a.0), !a.2, &a.1).cmp(&(Reverse(b.0), !b.2, &b.1)));
+    found
+        .into_iter()
+        .take(MAX_SUGGESTED)
+        .map(|(_, file, is_dir, indices)| {
+            let shown = match is_dir {
+                true => format!("{file}/"),
+                false => file,
+            };
+            Suggestion {
+                value: mention::typed(&format!("{dir}{shown}")),
+                display_override: Some(shown),
+                description: Some(if is_dir { "directory" } else { "file" }.into()),
+                span,
+                append_whitespace: !is_dir,
+                match_indices: Some(indices),
+                ..Suggestion::default()
+            }
+        })
+        .collect()
 }
 
 /// The `threads` whose date and title match `query`, best first; among
@@ -317,6 +391,37 @@ fn path_suggestion(
 
 fn depth(path: &str) -> usize {
     path.trim_end_matches('/').matches('/').count()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn completes_paths_outside_the_working_directory() {
+        let dir = std::env::temp_dir().join(format!("hey-complete-{}", std::process::id()));
+        std::fs::create_dir_all(dir.join("sub")).unwrap();
+        std::fs::write(dir.join("notes.md"), "").unwrap();
+        std::fs::write(dir.join(".hidden"), "").unwrap();
+        let matcher = SkimMatcherV2::default();
+        let base = format!("{}/", dir.display());
+        let values = |query: &str| -> Vec<String> {
+            directory(&matcher, query, Span::new(0, 0))
+                .into_iter()
+                .map(|s| s.value)
+                .collect()
+        };
+        assert!(outside_here(&base) && outside_here("~/x") && outside_here("../"));
+        assert!(!outside_here("src/x"));
+        assert_eq!(
+            values(&base),
+            [format!("@{base}sub/"), format!("@{base}notes.md")]
+        );
+        assert_eq!(values(&format!("{base}not")), [format!("@{base}notes.md")]);
+        assert_eq!(values(&format!("{base}."))[0], format!("@{base}.hidden"));
+        assert_eq!(values("~"), ["@~/"]);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
 }
 
 struct Cache<T>(Option<(Instant, T)>);

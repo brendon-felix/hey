@@ -68,8 +68,62 @@ pub fn compaction(focus: String, options: RunOptions) -> RunRequest {
     }
 }
 
-/// What `prompt` mentions in the user's working directory, as read now.
+/// The skills of this machine that the host does not have, as the prompt
+/// being sent may invoke them: the host cannot read their files, so they
+/// travel with the message.
+static CLIENT_SKILLS: std::sync::Mutex<Vec<crate::skills::Skill>> = std::sync::Mutex::new(Vec::new());
+
+/// Sets the skills of this machine that the host does not have.
+pub fn set_client_skills(skills: Vec<crate::skills::Skill>) {
+    *CLIENT_SKILLS.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = skills;
+}
+
+/// The client-side skills `prompt` invokes with `/name` or `@skill:name`,
+/// each once, their instructions read now.
+fn skill_attachments(prompt: &str) -> Vec<Attachment> {
+    let skills = CLIENT_SKILLS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .clone();
+    if skills.is_empty() {
+        return Vec::new();
+    }
+    let invoked = crate::skills::invoked(prompt).map(str::to_owned);
+    let slashed = crate::skills::slash_names(prompt)
+        .into_iter()
+        .map(|(_, name)| name.to_owned());
+    let mentioned = mention::mentions(prompt).filter_map(|found| {
+        found
+            .resolve(|reference| match reference {
+                mention::Reference::Skill(name) => Some(name.to_owned()),
+                _ => None,
+            })
+            .map(|(name, _)| name)
+    });
+    let mut attached: Vec<Attachment> = Vec::new();
+    for name in invoked.into_iter().chain(slashed).chain(mentioned) {
+        let Some(skill) = skills.iter().find(|skill| skill.name.as_str() == name) else {
+            continue;
+        };
+        if attached.iter().any(|a| a.name() == format!("skill:{name}")) {
+            continue;
+        }
+        match skill.content() {
+            Ok(content) => attached.push(Attachment::Skill { name, content }),
+            Err(error) => render::notice(&format!("skill:{name} not attached: {error:#}")),
+        }
+    }
+    attached
+}
+
+/// What `prompt` mentions in the user's working directory, as read now, and
+/// the skills of this machine it invokes.
 pub fn attachments(prompt: &str) -> Vec<Attachment> {
+    let skills = skill_attachments(prompt);
+    skills.into_iter().chain(local_attachments(prompt)).collect()
+}
+
+fn local_attachments(prompt: &str) -> Vec<Attachment> {
     mention::local(prompt)
         .into_iter()
         .filter_map(|item| {

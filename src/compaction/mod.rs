@@ -6,7 +6,8 @@
 //! the model writes of them, keeping the newest as they are, as rig-memory
 //! plans it. A run compacts before a model call once the conversation passes
 //! the threshold, or when the user or the model asks; a thread that is not
-//! answering is compacted on its own run.
+//! answering is compacted on its own run. As a call nears the threshold the
+//! model is told, so it can finish up, keep what matters or compact itself.
 
 mod hook;
 mod tool;
@@ -25,6 +26,9 @@ use crate::config::{self, Providers};
 use crate::hooks::{HookEvent, Scope};
 use crate::notes::{self, Notes};
 use crate::protocol::Event;
+
+/// Percent of the limit at which the model is told the conversation is long.
+const NEARING_PERCENT: u64 = 80;
 
 pub use hook::{Applied, Hook, Live};
 pub use tool::Compact;
@@ -66,6 +70,11 @@ pub struct Compactor {
     /// Tokens past which a model call compacts first; `None` when only
     /// asking compacts.
     threshold: Option<u64>,
+    /// Tokens a call may take in before the model is told the conversation is
+    /// long: the threshold whether or not it compacts on its own.
+    limit: u64,
+    /// Whether the conversation is compacted on its own at the limit.
+    auto: bool,
     /// The conversation's notes, whose todo list each summary keeps.
     notes: Option<Arc<Notes>>,
     /// The conversation's hooks, whose `PreCompact` ones may block it.
@@ -126,6 +135,8 @@ impl Compactor {
             spec,
             policy,
             threshold: config.auto.then_some(threshold),
+            limit: threshold,
+            auto: config.auto,
             notes: None,
             hooks: None,
         })
@@ -144,6 +155,13 @@ impl Compactor {
             hooks: Some(scope),
             ..self
         }
+    }
+
+    /// What the model is told when a call of about `tokens` is nearing the
+    /// limit, so it can finish what it is on, compact when it suits it, or
+    /// tell the user; `None` while there is room.
+    pub fn nearing(&self, tokens: u64) -> Option<String> {
+        length_note(tokens, self.limit, self.auto)
     }
 
     /// Whether a model call of about `tokens` should compact first.
@@ -300,5 +318,41 @@ mod tests {
         assert!(requests.push(""));
         assert_eq!(requests.close().as_deref(), Some(""));
         assert!(!requests.push("late"));
+    }
+}
+
+/// What the model is told of a conversation of about `tokens` against a
+/// `limit`, once it is at [`NEARING_PERCENT`] of it.
+fn length_note(tokens: u64, limit: u64, auto: bool) -> Option<String> {
+    let percent = tokens.saturating_mul(100) / limit.max(1);
+    if percent < NEARING_PERCENT {
+        return None;
+    }
+    let ending = match auto {
+        true => {
+            "It is compacted on its own once it passes the limit, replacing older messages \
+             with a summary, so details you still need from them may be lost."
+        }
+        false => "It is not compacted on its own, so past the limit calls may fail.",
+    };
+    Some(format!(
+        "This conversation is getting long: about {tokens} tokens, {percent}% of the {limit} \
+         it may take. {ending} Before then, write down in your reply what you must not forget, \
+         avoid reading large files or output you do not need, and, if you have finished a \
+         task, call the `compact` tool with a `focus` saying what to keep. If the work is \
+         large, tell the user a new conversation would serve better."
+    ))
+}
+
+#[cfg(test)]
+mod nearing_tests {
+    use super::*;
+
+    #[test]
+    fn the_model_is_told_only_near_the_limit() {
+        assert!(length_note(790, 1000, true).is_none());
+        let note = length_note(800, 1000, true).unwrap();
+        assert!(note.contains("80%") && note.contains("compacted on its own"));
+        assert!(length_note(950, 1000, false).unwrap().contains("not compacted"));
     }
 }

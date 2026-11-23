@@ -836,6 +836,7 @@ impl Host {
             .add_hook(run.record().clone())
             .add_hook(Delivery(run.clone()))
             .add_hook(compaction::Hook(compaction.clone()))
+            .add_hook(crate::budget::Budget::new(self.max_turns, Some(run.clone())))
             .tool(compaction::Compact { run: run.clone() })
             .tool(tools::Todos {
                 notes: notes.clone(),

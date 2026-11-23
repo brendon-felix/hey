@@ -251,6 +251,15 @@ pub fn clock(elapsed: Duration) -> String {
     }
 }
 
+/// [`clock`] for a duration still running: whole seconds only, so the text
+/// changes once a second rather than at every redraw.
+pub fn live_clock(elapsed: Duration) -> String {
+    match elapsed.as_secs() {
+        seconds @ 0..60 => format!("{seconds}s"),
+        seconds => format!("{}m {:02}s", seconds / 60, seconds % 60),
+    }
+}
+
 #[cfg(test)]
 mod clock_tests {
     use super::*;
@@ -261,6 +270,8 @@ mod clock_tests {
         assert_eq!(clock(Duration::ZERO), "0ms");
         assert_eq!(clock(Duration::from_millis(1999)), "1s");
         assert_eq!(clock(Duration::from_secs(125)), "2m 05s");
+        assert_eq!(live_clock(Duration::from_millis(850)), "0s");
+        assert_eq!(live_clock(Duration::from_millis(1999)), "1s");
     }
 }
 
