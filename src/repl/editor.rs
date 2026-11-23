@@ -579,18 +579,6 @@ impl Choices {
                     append_whitespace: spec.arg.is_some(),
                     ..Suggestion::default()
                 });
-            let invocable = index
-                .skills
-                .skills
-                .iter()
-                .filter(|skill| index.command(skill.name.as_str()).is_some());
-            let skills =
-                host::skill_suggestions(matcher, invocable, typed).map(|(skill, indices)| {
-                    Suggestion {
-                        value: format!("/{}", skill.name),
-                        ..host::skill_suggestion(skill, indices, span)
-                    }
-                });
             let prompts = index
                 .prompts
                 .iter()
@@ -605,7 +593,7 @@ impl Choices {
                     append_whitespace: true,
                     ..Suggestion::default()
                 });
-            return commands.chain(skills).chain(prompts).collect();
+            return commands.chain(prompts).collect();
         };
         let start = before.len() - arg.len();
         let span = Span::new(start, before.len());
