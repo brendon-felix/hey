@@ -190,17 +190,26 @@ impl Crew {
             Some(deferred) => builder.append_preamble(&deferred),
             None => builder,
         };
+        let host_skills = skills::find(&cwd);
         let builder = match turn.kind.is_none_or(|kind| kind.allows(skills::TOOL)) {
-            true => skills::find(&cwd).equip(builder),
+            true => host_skills.equip(builder),
             false => builder,
+        };
+        let builder = match kit.lent.as_ref().and_then(|lent| {
+            lent.deferred
+                .as_deref()
+                .map(|listed| crate::mcp::deferred::client_preamble(&lent.machine, listed))
+        }) {
+            Some(deferred) => builder.append_preamble(&deferred),
+            None => builder,
         };
         let on_client = kit
             .lent
             .as_ref()
             .filter(|_| turn.kind.is_none_or(|kind| kind.allows("read")));
-        let builder = match on_client
-            .and_then(|lent| skills::client_catalog(&lent.machine, &kit.client_skills))
-        {
+        let builder = match on_client.and_then(|lent| {
+            skills::client_catalog(&lent.machine, &kit.client_skills, &host_skills.skills)
+        }) {
             Some(catalog) => builder.append_preamble(&catalog),
             None => builder,
         };

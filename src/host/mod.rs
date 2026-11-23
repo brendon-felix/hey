@@ -33,7 +33,7 @@ use crate::gate;
 use crate::goal;
 use crate::hooks::{HookEvent, Hooks, MAX_STOP_BLOCKS, Scope, ToolHooks};
 use crate::instructions::Instructions;
-use crate::memory::{self, Memory, Recalled};
+use crate::memory::{self, Memory};
 use crate::models;
 use crate::naming;
 use crate::notes::Notes;
@@ -96,7 +96,7 @@ pub struct Host {
     shared: PathBuf,
     /// What clients synced, for agents to go on with while they are away.
     sync: crate::sync::Store,
-    memory: Option<Memory>,
+    memory: Option<Arc<Memory>>,
     /// The last time memory failed, until a client is told.
     memory_failure: Mutex<Option<String>>,
     compaction: config::Compaction,
@@ -125,10 +125,6 @@ struct Thread {
     permissions: Arc<Permissions>,
     /// Plan mode and the todo list.
     notes: Arc<Notes>,
-    /// Recalled as the thread's first answer here started and kept, so the
-    /// preamble stays the same and the provider's prompt cache keeps
-    /// working.
-    memories: Option<Vec<String>>,
     /// Read as the thread's first answer here started and kept, for the
     /// same reason.
     instructions: Option<Instructions>,
@@ -211,6 +207,7 @@ impl Host {
             .enabled
             .then(|| Arc::new(Crew::new(config)));
         let spawn = crew.as_ref().map(|_| subagents::TOOL);
+        let memory_tool = config.memory.enabled.then_some(memory::TOOL);
         let host_only = [
             skills::TOOL,
             compaction::TOOL,
@@ -219,7 +216,8 @@ impl Host {
             tools::EXIT_PLAN,
         ]
         .into_iter()
-        .chain(spawn);
+        .chain(spawn)
+        .chain(memory_tool);
         let host_only = host_only.map(|name| (name, &Origin::Builtin));
         let permissions = Permissions::resolve(toolbox.origins().chain(host_only), &config.tools);
         Ok(Self {
@@ -242,7 +240,7 @@ impl Host {
             sessions,
             shared: config.shared.dir()?,
             sync: crate::sync::Store::new(config.sync.dir()?),
-            memory: Memory::open(&config.memory, &config.providers)?,
+            memory: Memory::open(&config.memory, &config.providers)?.map(Arc::new),
             memory_failure: Mutex::default(),
             compaction: config.compaction.clone(),
             instructions: config.instructions.clone(),
@@ -377,7 +375,6 @@ impl Host {
                 seen: Seen::default(),
                 notes: Arc::new(Notes::load(Some(self.notes_file(id)), permissions.clone())),
                 permissions,
-                memories: None,
                 instructions: None,
                 context: None,
                 run: None,
@@ -475,22 +472,11 @@ impl Host {
             Model::connect(&request.options.model, &self.providers).map_err(ThreadError::Other)?;
         let compactor = Compactor::new(&self.compaction, &model, &self.providers)
             .map_err(ThreadError::Other)?;
-        let recalled = self
-            .lock()
-            .get(&id)
-            .is_some_and(|thread| thread.memories.is_some());
-        let memories = match (recalled, request.task) {
-            (false, Task::Answer) => Some(self.recall(&request.prompt).await),
-            _ => None,
-        };
         let mut threads = self.lock();
         let thread = self.thread(&mut threads, &id);
         let compactor = compactor.keeping(thread.notes.clone());
         if thread.run.is_some() {
             return Err(ThreadError::Busy);
-        }
-        if thread.memories.is_none() {
-            thread.memories = memories;
         }
         if thread.instructions.is_none() && self.instructions.enabled {
             thread.instructions = Some(Instructions::find(
@@ -780,7 +766,7 @@ impl Host {
             sessions: self.sessions.dir(),
             shared: &self.shared,
             synced: self.sync.dir(),
-            memories: self.memory.as_ref().map(Memory::file),
+            memories: self.memory.as_ref().map(|memory| memory.file()),
             skills: &skills.roots,
             spill: spill.as_deref(),
         };
@@ -813,16 +799,25 @@ impl Host {
         .name("hey")
         .preamble(system_prompt)
         .append_preamble(&setting.render());
+        let skills_here = skills;
         let builder = skills.equip(builder);
         let builder = match request.client.as_ref() {
             Some(ClientInfo {
                 skills,
                 lent: Some(lent),
                 ..
-            }) => match skills::client_catalog(&lent.machine, skills) {
-                Some(catalog) => builder.append_preamble(&catalog),
-                None => builder,
-            },
+            }) => {
+                let builder = match &lent.deferred {
+                    Some(deferred) => builder.append_preamble(
+                        &crate::mcp::deferred::client_preamble(&lent.machine, deferred),
+                    ),
+                    None => builder,
+                };
+                match skills::client_catalog(&lent.machine, skills, &skills_here.skills) {
+                    Some(catalog) => builder.append_preamble(&catalog),
+                    None => builder,
+                }
+            }
             _ => builder,
         };
         let mut builder = builder
@@ -850,8 +845,10 @@ impl Host {
         if let Some(deferred) = self.toolbox.preamble() {
             builder = builder.append_preamble(&deferred);
         }
-        if let Some(memories) = memory::preamble(thread.memories.as_deref().unwrap_or_default()) {
-            builder = builder.append_preamble(&memories);
+        if let Some(memory) = &self.memory {
+            builder = builder.tool(memory::Recall {
+                memory: memory.clone(),
+            });
         }
         if let Some(instructions) = thread
             .instructions
@@ -1497,28 +1494,9 @@ impl Host {
         }
     }
 
-    /// The memories a thread opening with `prompt` starts with. A failure is
-    /// told with the run.
-    async fn recall(&self, prompt: &str) -> Vec<String> {
-        let Some(memory) = &self.memory else {
-            return Vec::new();
-        };
-        let (memories, failure) = match memory.recall(prompt).await {
-            Ok(Recalled { memories, fallback }) => (
-                memories,
-                fallback.map(|error| format!("recalled the newest memories: {error:#}")),
-            ),
-            Err(error) => (Vec::new(), Some(format!("no memories recalled: {error:#}"))),
-        };
-        if failure.is_some() {
-            *self.lock_memory_failure() = failure;
-        }
-        memories
-    }
-
     fn memory(&self) -> Result<&Memory> {
         self.memory
-            .as_ref()
+            .as_deref()
             .context("memory is off in the host's config (`memory.enabled`)")
     }
 

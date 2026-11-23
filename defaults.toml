@@ -95,6 +95,11 @@ history_size = 1000
 # (fermi · ollama/qwen3.8:latest · thinking medium · 24k / 128k tokens) or
 # "off".
 right_prompt = "short"
+# What Enter does with a message typed while an answer is in progress.
+# "ask" offers steer or queue each time, "steer" hands it to the model at its
+# next tool result, "queue" sends it once the answer ends. Ctrl+Q always
+# queues and Ctrl+S always sends at once.
+send_while_answering = "ask"
 
 [sessions]
 # Where conversations are saved. Every answer is saved as it finishes;
@@ -125,19 +130,19 @@ right_prompt = "short"
 [memory]
 # Remember lasting facts about you and your work across conversations. After
 # each answer, one extra model call decides what to remember and what is now
-# outdated; each new conversation starts with the memories closest in meaning
-# to its first message. `/memories` or `hey --memories` lists them to write,
+# outdated; the model recalls the memories closest in meaning to a query with
+# the `recall_memory` tool, so they cost no prompt tokens until used. `/memories` or `hey --memories` lists them to write,
 # edit and forget them.
 enabled = true
-# Most memories a conversation starts with. While there are no more than
-# this, a conversation starts with all of them and nothing is embedded.
+# Most memories one recall gives. While there are no more than this, a
+# recall gives all of them and nothing is embedded.
 recall = 20
 # Embedding model that places memories by meaning, as `ollama/model`; only
 # Ollama's are supported (https://ollama.com/search?c=embedding). The daemon
 # is the one `[providers.ollama]` names (a `/v1` suffix is fine), else
 # OLLAMA_API_BASE_URL's, else http://localhost:11434. Each memory is embedded
 # once and kept beside the memories file. When the model cannot be reached, a
-# conversation starts with the newest memories instead.
+# recall gives the newest memories instead.
 embedding_model = "ollama/qwen3-embedding:0.6b"
 # Model that decides what to remember, as `vendor/model`. When unset, the
 # conversation's model.

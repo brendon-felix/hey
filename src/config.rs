@@ -325,6 +325,16 @@ pub struct Editor {
     pub history: bool,
     pub history_size: usize,
     pub right_prompt: RightPrompt,
+    pub send_while_answering: WhileAnswering,
+}
+
+/// What Enter does with a message typed while an answer is in progress.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum WhileAnswering {
+    Ask,
+    Steer,
+    Queue,
 }
 
 impl Default for Editor {
@@ -335,6 +345,7 @@ impl Default for Editor {
             history: true,
             history_size: 1000,
             right_prompt: RightPrompt::Short,
+            send_while_answering: WhileAnswering::Ask,
         }
     }
 }
@@ -480,7 +491,7 @@ pub struct Memory {
     pub model: Option<String>,
     /// The model that places memories by meaning, to recall the closest.
     pub embedding_model: String,
-    /// Most memories a conversation starts with.
+    /// Most memories one recall gives.
     pub recall: usize,
     file: Option<String>,
 }
@@ -958,6 +969,10 @@ mod tests {
         assert_eq!(documented.editor.mode, built_in.editor.mode);
         assert_eq!(documented.editor.history_size, built_in.editor.history_size);
         assert_eq!(documented.editor.right_prompt, built_in.editor.right_prompt);
+        assert_eq!(
+            documented.editor.send_while_answering,
+            built_in.editor.send_while_answering
+        );
         assert_eq!(documented.memory.enabled, built_in.memory.enabled);
         assert_eq!(documented.memory.recall, built_in.memory.recall);
         assert_eq!(

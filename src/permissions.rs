@@ -47,6 +47,7 @@ pub fn default_rules() -> BTreeMap<String, Permission> {
         crate::tools::ASK_USER,
         crate::tools::EXIT_PLAN,
         crate::mcp::deferred::SEARCH,
+        crate::memory::TOOL,
     ];
     tools
         .map(|tool| (tool.to_owned(), Permission::Allow))
@@ -55,7 +56,7 @@ pub fn default_rules() -> BTreeMap<String, Permission> {
 
 /// The tools plan mode lets run: those that change nothing. Subagents
 /// share their conversation's permissions, so theirs are held to it too.
-const PLANNING: [&str; 16] = [
+const PLANNING: [&str; 17] = [
     "read",
     "list",
     "search",
@@ -70,6 +71,7 @@ const PLANNING: [&str; 16] = [
     crate::tools::ASK_USER,
     crate::tools::EXIT_PLAN,
     crate::mcp::deferred::SEARCH,
+    crate::memory::TOOL,
     crate::mcp::deferred::RESOURCES,
     crate::mcp::deferred::READ_RESOURCE,
 ];

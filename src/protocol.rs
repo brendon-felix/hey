@@ -254,6 +254,9 @@ pub struct Lent {
     /// The machine's name, as the model and `[machines]` rules know it.
     pub machine: String,
     pub tools: Vec<ToolDefinition>,
+    /// What its agents are told of the machine's deferred MCP servers.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub deferred: Option<String>,
 }
 
 /// One run, distinct from every other on the host, even across restarts.

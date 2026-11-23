@@ -131,8 +131,9 @@ impl Setting<'_> {
     fn memories_line(&self) -> String {
         match self.memories {
             Some(file) => format!(
-                "Memories of the user are kept in {}, a Markdown list you may edit when asked, \
-                 with their embeddings in {}.",
+                "Memories of the user are not in this prompt: call `recall_memory` when a request \
+                 may depend on who they are or how they like things done. They are kept in {}, a \
+                 Markdown list you may edit when asked, with their embeddings in {}.",
                 file.display(),
                 file.with_extension("vectors.json").display()
             ),

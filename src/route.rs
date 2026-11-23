@@ -308,6 +308,7 @@ mod tests {
             tools: ["read", "mcp__nu__run", "mcp__x__y"]
                 .map(|name| tool(name, json!({ "type": "object" })).definition())
                 .into(),
+            deferred: None,
         };
         Routes::new("fermi", &lent, &own)
     }

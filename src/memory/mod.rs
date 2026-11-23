@@ -13,9 +13,14 @@ use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow, bail};
 use rig_agent::agent::AgentBuilder;
+use rig_core::completion::ToolAnnotations;
 use rig_core::message::ToolName;
 use rig_core::message::{AssistantContent, Message, UserContent};
-use rig_core::tool::{DynamicTool, ToolOutput};
+use rig_core::tool::{
+    DynamicTool, Tool, ToolContext, ToolErrorKind, ToolExecutionError, ToolOutput, args_schema,
+};
+use schemars::JsonSchema;
+use serde::Deserialize;
 use serde_json::json;
 use std::sync::Arc;
 
@@ -217,19 +222,69 @@ impl Memory {
     }
 }
 
-/// The preamble section that tells a conversation what it recalled.
-pub fn preamble(memories: &[String]) -> Option<String> {
-    if memories.is_empty() {
-        return None;
+/// The name the model calls the tool that recalls memories by.
+pub const TOOL: &str = "recall_memory";
+
+/// The tool that recalls what is remembered about the user, on demand
+/// rather than in every prompt.
+pub struct Recall {
+    pub memory: Arc<Memory>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct RecallArgs {
+    /// What to recall, in a few words or a sentence, such as the topic of the request.
+    pub query: String,
+}
+
+impl Tool for Recall {
+    const NAME: &'static str = TOOL;
+    type Args = RecallArgs;
+    type Output = String;
+    type Error = ToolExecutionError;
+
+    fn description(&self) -> String {
+        "Recalls saved facts about the user (background, preferences, machines, projects) that \
+         are closest in meaning to the query. Call it when a request may depend on who the user \
+         is or how they like things done; they may be outdated, and what the user says now takes \
+         precedence."
+            .into()
     }
-    let list: String = memories
-        .iter()
-        .map(|memory| format!("\n- {memory}"))
-        .collect();
-    Some(format!(
-        "\nMemories from earlier conversations, which may be outdated; what the user says now \
-         takes precedence:{list}"
-    ))
+
+    fn parameters(&self) -> serde_json::Value {
+        args_schema::<RecallArgs>()
+    }
+
+    fn annotations(&self) -> ToolAnnotations {
+        ToolAnnotations::default()
+            .with_read_only(true)
+            .with_open_world(false)
+    }
+
+    async fn call(
+        &self,
+        _context: &mut ToolContext,
+        args: RecallArgs,
+    ) -> Result<String, ToolExecutionError> {
+        let recalled =
+            self.memory.recall(&args.query).await.map_err(|error| {
+                ToolExecutionError::new(ToolErrorKind::Other, format!("{error:#}"))
+            })?;
+        if recalled.memories.is_empty() {
+            return Ok("Nothing is remembered yet.".into());
+        }
+        let note = recalled
+            .fallback
+            .map(|error| format!("(the newest, as closeness could not be judged: {error:#})\n"))
+            .unwrap_or_default();
+        let list: Vec<String> = recalled
+            .memories
+            .iter()
+            .map(|memory| format!("- {memory}"))
+            .collect();
+        Ok(format!("{note}{}", list.join("\n")))
+    }
 }
 
 /// One change the model learning from an exchange asked for.

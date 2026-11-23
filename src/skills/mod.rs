@@ -281,10 +281,17 @@ fn catalog(skills: &[Skill]) -> String {
 /// machine `machine`, which the `skill` tool cannot load: it reads their
 /// files there, with the `machine` argument of its tools. `None` when
 /// there are none.
-pub fn client_catalog(machine: &str, skills: &[Skill]) -> Option<String> {
+pub fn client_catalog(machine: &str, skills: &[Skill], host: &[Skill]) -> Option<String> {
     let auto: Vec<Skill> = skills
         .iter()
         .filter(|skill| skill.invocation == Invocation::Auto)
+        // A skill the host has too is loaded with the `skill` tool; listing it
+        // again would only cost prompt tokens.
+        .filter(|skill| {
+            !host
+                .iter()
+                .any(|own| own.name == skill.name && own.description == skill.description)
+        })
         .cloned()
         .collect();
     if auto.is_empty() {

@@ -428,3 +428,9 @@ mod tests {
         assert_eq!(called(CALL, "{}"), None);
     }
 }
+
+/// What the model is told of the deferred servers on the client's machine
+/// `machine`, `listed` being how that machine describes them.
+pub fn client_preamble(machine: &str, listed: &str) -> String {
+    format!("{listed}\nThe deferred servers above are on the user's machine `{machine}`.")
+}

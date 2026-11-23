@@ -86,6 +86,7 @@ impl Workbench {
         Lent {
             machine: self.machine().to_owned(),
             tools: self.toolbox.definitions(),
+            deferred: self.toolbox.preamble(),
         }
     }
 
