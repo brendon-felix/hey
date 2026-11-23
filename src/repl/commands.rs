@@ -33,6 +33,7 @@ pub enum Command {
     Skills,
     Agents,
     Memories,
+    Projects,
     /// Ask the model to write or update the project's AGENTS.md.
     Init,
     Clear,
@@ -244,6 +245,13 @@ pub const COMMANDS: &[Spec] = &[
         arg: None,
         about: "Browse, write, edit and forget what hey remembers",
         build: |_| Command::Memories,
+    },
+    Spec {
+        name: "projects",
+        aliases: &["proj"],
+        arg: None,
+        about: "Manage projects: locations, host copies and tool permissions",
+        build: |_| Command::Projects,
     },
     Spec {
         name: "init",

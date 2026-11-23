@@ -69,6 +69,37 @@ pub struct Project {
     pub tools: BTreeMap<String, Permission>,
 }
 
+impl Project {
+    pub fn apply(&mut self, change: Change) {
+        match change {
+            Change::HostCopy(consent) => self.host_copy = consent,
+            Change::Location { machine, path: Some(path) } => {
+                self.locations.insert(machine, path);
+            }
+            Change::Location { machine, path: None } => {
+                self.locations.remove(&machine);
+            }
+            Change::Tool { tool, permission: Some(permission) } => {
+                self.tools.insert(tool, permission);
+            }
+            Change::Tool { tool, permission: None } => {
+                self.tools.remove(&tool);
+            }
+        }
+    }
+}
+
+/// A change a user makes to a project.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Change {
+    HostCopy(Consent),
+    /// Where the project lives on `machine`; none forgets the place.
+    Location { machine: String, path: Option<String> },
+    /// The permission for `tool` while working on the project; none removes it.
+    Tool { tool: String, permission: Option<Permission> },
+}
+
 #[derive(Debug, Default, Serialize, Deserialize)]
 struct Registry {
     #[serde(default)]
@@ -171,9 +202,18 @@ impl Projects {
         self.lock().projects.get(name).cloned()
     }
 
-    #[allow(dead_code)]
     pub fn all(&self) -> BTreeMap<String, Project> {
         self.lock().projects.clone()
+    }
+
+    /// Forgets project `name`; false when there is none.
+    pub fn remove(&self, name: &str) -> Result<bool> {
+        let mut registry = self.lock();
+        if registry.projects.remove(name).is_none() {
+            return Ok(false);
+        }
+        self.save(&registry)?;
+        Ok(true)
     }
 
     /// Changes project `name`, saving the registry; false when there is none.

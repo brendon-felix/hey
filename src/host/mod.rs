@@ -694,6 +694,21 @@ impl Host {
         self.toolbox.prompts().to_vec()
     }
 
+    /// Every project the host knows, by name.
+    pub fn projects(&self) -> std::collections::BTreeMap<String, crate::projects::Project> {
+        self.projects.all()
+    }
+
+    /// False when there is no project `name`.
+    pub fn change_project(&self, name: &str, change: &crate::projects::Change) -> Result<bool> {
+        self.projects.update(name, |project| project.apply(change.clone()))
+    }
+
+    /// False when there is no project `name`.
+    pub fn remove_project(&self, name: &str) -> Result<bool> {
+        self.projects.remove(name)
+    }
+
     /// False when `memory` was not saved.
     pub fn forget(&self, memory: &str) -> Result<bool> {
         self.memory()?.forget(memory)

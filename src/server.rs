@@ -71,6 +71,8 @@ pub async fn serve(host: Arc<Host>, config: &config::Server) -> Result<()> {
             "/v1/memories",
             get(memories).post(remember).put(revise).delete(forget),
         )
+        .route("/v1/projects", get(projects))
+        .route("/v1/projects/{name}", put(change_project).delete(remove_project))
         .layer(middleware::from_fn_with_state(token, authorize))
         .with_state(host);
     let listener = tokio::net::TcpListener::bind(config.listen)
@@ -499,6 +501,31 @@ async fn revise(
 ) -> Reply<StatusCode> {
     host.revise(&revision)?;
     Ok(StatusCode::NO_CONTENT)
+}
+
+async fn projects(State(host): State<Arc<Host>>) -> impl IntoResponse {
+    Json(host.projects())
+}
+
+async fn change_project(
+    State(host): State<Arc<Host>>,
+    Path(name): Path<String>,
+    Json(change): Json<crate::projects::Change>,
+) -> Reply<StatusCode> {
+    Ok(match host.change_project(&name, &change)? {
+        true => StatusCode::NO_CONTENT,
+        false => StatusCode::NOT_FOUND,
+    })
+}
+
+async fn remove_project(
+    State(host): State<Arc<Host>>,
+    Path(name): Path<String>,
+) -> Reply<StatusCode> {
+    Ok(match host.remove_project(&name)? {
+        true => StatusCode::NO_CONTENT,
+        false => StatusCode::NOT_FOUND,
+    })
 }
 
 fn ndjson<T: Serialize>(

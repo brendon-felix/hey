@@ -7,6 +7,7 @@
 mod entries;
 mod field;
 pub mod memories;
+pub mod projects;
 pub mod threads;
 pub mod viewer;
 

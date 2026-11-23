@@ -452,6 +452,33 @@ impl Client {
             .map(drop)
     }
 
+    pub async fn projects(
+        &self,
+    ) -> Result<std::collections::BTreeMap<String, crate::projects::Project>> {
+        self.json(self.get("v1/projects")?).await
+    }
+
+    fn project_url(&self, name: &str) -> Result<Url> {
+        let mut url = self.url("v1/projects")?;
+        url.path_segments_mut()
+            .map_err(|()| anyhow::anyhow!("the host's address cannot hold a path"))?
+            .push(name);
+        Ok(url)
+    }
+
+    pub async fn change_project(&self, name: &str, change: &crate::projects::Change) -> Result<bool> {
+        self.done(
+            self.http.put(self.project_url(name)?).json(change),
+            StatusCode::NOT_FOUND,
+        )
+        .await
+    }
+
+    pub async fn remove_project(&self, name: &str) -> Result<bool> {
+        self.done(self.http.delete(self.project_url(name)?), StatusCode::NOT_FOUND)
+            .await
+    }
+
     fn url(&self, path: &str) -> Result<Url> {
         Ok(self.base.join(path)?)
     }

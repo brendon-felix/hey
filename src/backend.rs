@@ -321,6 +321,32 @@ impl Backend {
         }
     }
 
+    /// Every project the host knows, by name.
+    pub async fn projects(
+        &self,
+    ) -> Result<std::collections::BTreeMap<String, crate::projects::Project>> {
+        match self {
+            Backend::Local(host) => Ok(host.projects()),
+            Backend::Remote(client, _) => client.projects().await,
+        }
+    }
+
+    /// False when there is no project `name`.
+    pub async fn change_project(&self, name: &str, change: &crate::projects::Change) -> Result<bool> {
+        match self {
+            Backend::Local(host) => host.change_project(name, change),
+            Backend::Remote(client, _) => client.change_project(name, change).await,
+        }
+    }
+
+    /// False when there is no project `name`.
+    pub async fn remove_project(&self, name: &str) -> Result<bool> {
+        match self {
+            Backend::Local(host) => host.remove_project(name),
+            Backend::Remote(client, _) => client.remove_project(name).await,
+        }
+    }
+
     /// False when `memory` was not saved.
     pub async fn forget(&self, memory: &str) -> Result<bool> {
         match self {

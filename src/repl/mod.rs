@@ -778,6 +778,7 @@ impl Session {
             Command::Skills => self.list_skills().await?,
             Command::Agents => self.list_agents().await?,
             Command::Memories => browser::memories::browse(&self.backend).await?,
+            Command::Projects => browser::projects::browse(&self.backend).await?,
             Command::Init => {
                 self.message(crate::instructions::INIT_PROMPT.to_owned(), Way::Steer)
                     .await
