@@ -177,7 +177,8 @@ impl Editor {
             .use_bracketed_paste(config.bracketed_paste)
             .with_break_signal(wake.clone())
             .with_external_printer(screen::Feed)
-            .with_poll_interval(POLL);
+            .with_poll_interval(POLL)
+            .with_mouse_click(reedline::MouseClickMode::EnabledWithOsc133);
 
         if config.history
             && let Some(path) = config::config_dir().map(|dir| dir.join("history.txt"))
