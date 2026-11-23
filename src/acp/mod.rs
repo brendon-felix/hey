@@ -16,11 +16,13 @@ use agent_client_protocol::v1::ConnectionTo;
 use agent_client_protocol::v1::schema::{
     AgentCapabilities, AvailableCommandsUpdate, CancelNotification, Content, ContentBlock,
     ContentChunk, ImageContent, Implementation, InitializeRequest, InitializeResponse,
+    ListSessionsRequest, ListSessionsResponse, LoadSessionRequest, LoadSessionResponse,
     NewSessionRequest, NewSessionResponse, PermissionOption, PermissionOptionKind,
     PromptCapabilities, PromptRequest, PromptResponse, RequestPermissionOutcome,
     RequestPermissionRequest, RequestPermissionResponse, SessionAdditionalDirectoriesCapabilities,
-    SessionCapabilities, SessionNotification, SessionUpdate, StopReason, TextContent, ToolCall,
-    ToolCallContent, ToolCallStatus, ToolCallUpdate, ToolCallUpdateFields, ToolKind,
+    SessionCapabilities, SessionInfo, SessionListCapabilities, SessionNotification, SessionUpdate,
+    StopReason, TextContent, ToolCall, ToolCallContent, ToolCallStatus, ToolCallUpdate,
+    ToolCallUpdateFields, ToolKind,
 };
 use agent_client_protocol::{Agent, Client, Error, Stdio};
 use anyhow::Result;
@@ -79,16 +81,20 @@ pub async fn serve(
     let on_new = shared.clone();
     let on_prompt = shared.clone();
     let on_cancel = shared.clone();
+    let on_load = shared.clone();
+    let on_list = shared.clone();
     let served = Agent
         .v1()
         .name("hey")
         .on_receive_request(
             async move |initialize: InitializeRequest, responder, _cx| {
                 let capabilities = AgentCapabilities::new()
+                    .load_session(true)
                     .prompt_capabilities(PromptCapabilities::new().image(true).embedded_context(true))
-                    .session_capabilities(SessionCapabilities::new().additional_directories(
-                        SessionAdditionalDirectoriesCapabilities::new(),
-                    ));
+                    .session_capabilities(SessionCapabilities::new()
+                        .list(SessionListCapabilities::new())
+                        .additional_directories(SessionAdditionalDirectoriesCapabilities::new()),
+                    );
                 responder.respond(
                     InitializeResponse::new(initialize.protocol_version)
                         .agent_capabilities(capabilities)
@@ -130,6 +136,76 @@ pub async fn serve(
             agent_client_protocol::on_receive_request!(),
         )
         .on_receive_request(
+            async move |request: LoadSessionRequest, responder, cx: ConnectionTo<Client>| {
+                if let Err(error) = std::env::set_current_dir(&request.cwd) {
+                    tracing::warn!(cwd = %request.cwd.display(), %error, "cannot enter the session's directory");
+                }
+                let id = request.session_id.0.to_string();
+                let Some(thread) = on_load.backend.threads().await.ok().and_then(|threads| {
+                    threads
+                        .into_iter()
+                        .find(|info| info.summary.id.as_str() == id)
+                        .map(|info| info.summary.id)
+                }) else {
+                    return responder.respond_with_error(Error::invalid_params().data(format!("unknown session {id}")));
+                };
+                let messages = match on_load.backend.view(&thread).await {
+                    Ok(opened) => opened.snapshot.messages,
+                    Err(error) => {
+                        return responder
+                            .respond_with_error(Error::internal_error().data(format!("{error:#}")));
+                    }
+                };
+                let roots = std::iter::once(request.cwd.clone())
+                    .chain(request.additional_directories.clone())
+                    .collect();
+                on_load.sessions.lock().unwrap().insert(
+                    id.clone(),
+                    Session {
+                        thread,
+                        roots,
+                        told: true,
+                        model: on_load.model.clone(),
+                        thinking: on_load.thinking,
+                        goal: None,
+                        plan: false,
+                    },
+                );
+                replay(&cx, &request.session_id, &messages);
+                responder.respond(LoadSessionResponse::new())?;
+                cx.send_notification(SessionNotification::new(
+                    id,
+                    SessionUpdate::AvailableCommandsUpdate(AvailableCommandsUpdate::new(
+                        commands::available(&on_load).await,
+                    )),
+                ))
+            },
+            agent_client_protocol::on_receive_request!(),
+        )
+        .on_receive_request(
+            async move |request: ListSessionsRequest, responder, _cx| {
+                let cwd = request
+                    .cwd
+                    .or_else(|| std::env::current_dir().ok())
+                    .unwrap_or_else(|| PathBuf::from("/"));
+                match on_list.backend.threads().await {
+                    Ok(threads) => responder.respond(ListSessionsResponse::new(
+                        threads
+                            .into_iter()
+                            .filter(|info| !info.archived)
+                            .map(|info| {
+                                SessionInfo::new(info.summary.id.as_str().to_owned(), cwd.clone())
+                                    .title(info.summary.title)
+                            })
+                            .collect(),
+                    )),
+                    Err(error) => responder
+                        .respond_with_error(Error::internal_error().data(format!("{error:#}"))),
+                }
+            },
+            agent_client_protocol::on_receive_request!(),
+        )
+        .on_receive_request(
             async move |request: PromptRequest, responder, cx: ConnectionTo<Client>| {
                 let shared = on_prompt.clone();
                 let task = cx.clone();
@@ -166,6 +242,76 @@ pub async fn serve(
         .connect_to(Stdio::new())
         .await;
     served.map_err(|error| anyhow::anyhow!("ACP connection failed: {error}"))
+}
+
+/// Sends a saved conversation to the editor as it happened.
+fn replay(
+    cx: &ConnectionTo<Client>,
+    session: &agent_client_protocol::v1::schema::SessionId,
+    messages: &[rig_core::message::Message],
+) {
+    use rig_core::message::{AssistantContent, Message, UserContent};
+    let send = |update: SessionUpdate| {
+        cx.send_notification(SessionNotification::new(session.clone(), update))
+            .ok();
+    };
+    for message in messages {
+        match message {
+            Message::User { content } => {
+                for part in content.iter() {
+                    match part {
+                        UserContent::Text(text) if !crate::mention::is_context(&text.text) => {
+                            send(SessionUpdate::UserMessageChunk(chunk(text.text.clone())))
+                        }
+                        UserContent::ToolResult(result) => {
+                            let status = match result.is_error {
+                                true => ToolCallStatus::Failed,
+                                false => ToolCallStatus::Completed,
+                            };
+                            let fields = ToolCallUpdateFields::new().status(status).content(vec![
+                                ToolCallContent::Content(Content::new(ContentBlock::from(
+                                    crate::render::result_text(result),
+                                ))),
+                            ]);
+                            send(SessionUpdate::ToolCallUpdate(ToolCallUpdate::new(
+                                result.call.wire().into_owned(),
+                                fields,
+                            )));
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            Message::Assistant(assistant) => {
+                for part in assistant.content.iter() {
+                    match part {
+                        AssistantContent::Text(text) => {
+                            send(SessionUpdate::AgentMessageChunk(chunk(text.text.clone())))
+                        }
+                        AssistantContent::Reasoning(reasoning) => send(
+                            SessionUpdate::AgentThoughtChunk(chunk(reasoning.text.clone())),
+                        ),
+                        AssistantContent::ToolCall(call) => {
+                            let name = call.function.name.as_str();
+                            let input = serde_json::Value::Object(call.function.arguments.clone());
+                            send(SessionUpdate::ToolCall(
+                                ToolCall::new(
+                                    call.id.wire().into_owned(),
+                                    title(name, Some(&input)),
+                                )
+                                .name(name.to_owned())
+                                .kind(kind(name))
+                                .status(ToolCallStatus::InProgress)
+                                .raw_input(Some(input)),
+                            ));
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
 }
 
 /// Answers `request`: a command it types, or a message for the model.
