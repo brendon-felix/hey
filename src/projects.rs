@@ -245,11 +245,18 @@ impl Projects {
                 "The user does not want a copy on this host: work on `{client}` only, through its \
                  tools, and only while it is connected.\n"
             )),
-            (None, _) => text.push_str(&format!(
-                "There is no copy on this host. Before you change this project here, or work on \
-                 it while `{client}` may be away, call `{TOOL}` with `adopt`: it asks the user \
-                 whether the host may keep a copy, and clones it if so. Never copy or clone the \
-                 project to the host any other way without that.\n"
+            (None, Consent::Granted) => text.push_str(&format!(
+                "The user agreed to a copy on this host, but it has none yet. Call `{TOOL}` with \
+                 `adopt` now, as your first action, to make it.\n"
+            )),
+            (None, Consent::Unasked) => text.push_str(&format!(
+                "There is no copy on this host, and the user has not been asked. Your first \
+                 action, before any other work and whatever the request is, is to call `{TOOL}` \
+                 with `adopt`: it asks the user whether the host may keep a copy, and clones it \
+                 if so. Do that even for a task you could do through `{client}`'s tools, so the \
+                 work can go on if `{client}` goes away. Never copy or clone the project to the \
+                 host any other way without that. If they decline for now, go on with the \
+                 request and do not ask again in this conversation.\n"
             )),
         }
         Some(text)
