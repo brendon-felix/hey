@@ -111,11 +111,18 @@ impl Setting<'_> {
                     .into(),
             ),
             Some(
-                "Prefer the dedicated tools to the shell when one fits: `read` to look at a \
-                 file, `search` for contents, `list` for directories, `edit` and `write` to \
-                 change files, `move` and `delete` for those, not `cat`, `sed`, `grep`, `ls`, \
-                 `find`, `mv`, `rm` or heredocs. Keep the shell for what they cannot do, such \
-                 as builds, tests and git, and run independent calls together."
+                "Change files only with the file tools, never through the shell: `edit` to \
+                 change part of a file (its `edits` array takes many changes in one call, \
+                 however large or spread out), `write` for a new file or a whole rewrite, \
+                 `move` and `delete` to rename and remove. Never use `sed`, `awk`, `perl`, \
+                 `python`, `tee`, `echo >`, `cat >`, heredocs or any other command to write, \
+                 patch or rewrite a file, even for a big or repetitive change: those fail \
+                 silently when a pattern does not match and show the user nothing to review. \
+                 Before each shell call, ask whether it changes a file; if it does, use a file \
+                 tool instead. Likewise `read` to look at a file, `search` for contents and \
+                 `list` for directories, not `cat`, `grep`, `ls` or `find`. Keep the shell for \
+                 what the tools cannot do, such as builds, tests and git, and run independent \
+                 calls together."
                     .into(),
             ),
             Some(

@@ -44,10 +44,12 @@ main agent sees.";
 
 /// The parts of the main agent's guidance that a subagent needs as much.
 const GUIDANCE: &str = "\nGuidance:\n\
-- Prefer the dedicated tools to the shell when one fits: `read` to look at a file, `search` for \
-contents, `list` for directories, `edit` and `write` to change files, `move` and `delete` for \
-those, not `cat`, `sed`, `grep`, `ls`, `find`, `mv`, `rm` or heredocs. Keep the shell for what \
-they cannot do, such as builds, tests and git.\n\
+- Change files only with the file tools, never through the shell: `edit` (its `edits` array takes \
+many changes in one call), `write`, `move` and `delete`. Never use `sed`, `awk`, `perl`, `python`, \
+`tee`, `echo >`, `cat >`, heredocs or any other command to write or patch a file, even for a big \
+change. Before each shell call, ask whether it changes a file; if so, use a file tool. Likewise \
+`read`, `search` and `list` rather than `cat`, `grep`, `ls` or `find`. Keep the shell for what \
+the tools cannot do, such as builds, tests and git.\n\
 - Tool arguments are one JSON object each. `edit` takes `path` and either `old_text` and \
 `new_text` for one change, or `edits`, a real JSON array of such pairs, not a string of JSON.\n\
 - When calls do not depend on one another, make them in the same step; calls that only read run \
