@@ -553,6 +553,14 @@ impl Stream {
                 }
             }
         }
+        // A write or edit already showed what it changed in a box, which
+        // ended however it ended: its outcome would only repeat the box.
+        if !result.is_error
+            && tool::shows_changes(name)
+            && self.style.tool_output == Output::Preview
+        {
+            return;
+        }
         let room = width.saturating_sub(5);
         if result.is_error {
             screen::line(format_args!(
@@ -752,8 +760,13 @@ impl Stream {
     /// Hands the reply up to `budget` characters of the backlog, in order.
     fn reveal(&mut self, mut budget: usize) {
         if !self.backlog.is_empty() {
-            self.calls.flush_all(terminal_width(), &mut self.group);
-            self.end_preview(Ending::Interrupted);
+            // A part's end alone shows nothing, so calls still waiting for
+            // their results (a replay ends each message's part before the
+            // results that answer its calls) stay to be updated in place.
+            if self.backlog.iter().any(|chunk| !matches!(chunk, Chunk::End)) {
+                self.calls.flush_all(terminal_width(), &mut self.group);
+                self.end_preview(Ending::Interrupted);
+            }
         }
         while let Some(chunk) = self.backlog.pop_front() {
             match chunk {
@@ -924,5 +937,26 @@ mod tests {
             stream.calls.live_rows(80, 24),
             ["", "● read /first.rs"]
         );
+    }
+
+    #[test]
+    fn a_replayed_call_waits_for_its_result_past_the_end_of_its_message() {
+        yansi::disable();
+        let mut stream = Stream::replaying(&test_style(Output::Preview));
+        stream.call(
+            "shell",
+            r#"{"command":"ls"}"#,
+            None,
+            Some(CallId::from_wire("1")),
+        );
+        // A saved message ends its parts before the results answer its calls.
+        stream.end_part();
+        stream.flush();
+        assert!(matches!(
+            stream.calls.entries.front().map(|entry| &entry.state),
+            Some(CallState::Running)
+        ));
+        stream.result(&tool_result("1", "shell", "a\nb\n", false));
+        assert!(stream.calls.entries.is_empty());
     }
 }
