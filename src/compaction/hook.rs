@@ -10,7 +10,7 @@ use rig_agent::agent::{
 };
 use rig_agent::run::RequestPatch;
 use rig_core::completion::Document;
-use rig_core::message::Message;
+use rig_core::message::{DocumentSourceKind, Image, Message, Text, ToolResultContent, UserContent};
 use rig_memory::{CompactReason, SummaryState, estimate_tokens};
 
 use super::Compactor;
@@ -233,6 +233,76 @@ impl State {
     }
 }
 
+/// How many of the newest images a call is sent.
+const KEEP_IMAGES: usize = 3;
+
+/// The most base64 bytes of images a call is sent, the newest first.
+const IMAGE_BYTES: usize = 3 * 1024 * 1024;
+
+fn image_size(image: &Image) -> usize {
+    match &image.data {
+        DocumentSourceKind::Base64(data) => data.len(),
+        DocumentSourceKind::Raw(bytes) => bytes.len() / 3 * 4,
+        _ => 0,
+    }
+}
+
+fn placeholder() -> Text {
+    Text::from(
+        "[image dropped from the conversation to keep requests small; \
+         read its file again to see it]",
+    )
+}
+
+/// `messages` with all but the newest `keep` inline images, and any past
+/// `bytes` of base64 counting from the newest, replaced by a note; `None`
+/// when none is.
+fn evict_images(messages: &[Arc<Message>], keep: usize, bytes: usize) -> Option<Vec<Arc<Message>>> {
+    let (mut seen, mut total) = (0usize, 0usize);
+    let mut changed = false;
+    let mut out: Vec<Arc<Message>> = messages.to_vec();
+    let mut over = |image: &Image| -> bool {
+        let size = image_size(image);
+        if size == 0 {
+            return false;
+        }
+        seen += 1;
+        total += size;
+        seen > keep || total > bytes
+    };
+    for message in out.iter_mut().rev() {
+        let Message::User { content } = &**message else {
+            continue;
+        };
+        let mut edited = content.clone();
+        let mut touched = false;
+        for part in edited.iter_mut().rev() {
+            match part {
+                UserContent::Image(image) if over(image) => {
+                    *part = UserContent::Text(placeholder());
+                    touched = true;
+                }
+                UserContent::ToolResult(result) => {
+                    for block in result.content.iter_mut().rev() {
+                        if let ToolResultContent::Image(image) = block
+                            && over(image)
+                        {
+                            *block = ToolResultContent::Text(placeholder());
+                            touched = true;
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+        if touched {
+            changed = true;
+            *message = Arc::new(Message::User { content: edited });
+        }
+    }
+    changed.then_some(out)
+}
+
 pub struct Hook(pub Arc<Live>);
 
 impl AgentHook for Hook {
@@ -248,6 +318,24 @@ impl AgentHook for Hook {
             .chain([Arc::new(event.prompt.clone())])
             .collect();
         let (history, nearing) = self.0.prepare(&conversation).await;
+        // Images are sent again with every call, and providers refuse a
+        // request body over a few MB (413), whatever its token count.
+        let history = {
+            let sent = history.unwrap_or_else(|| {
+                let mut all = conversation.clone();
+                all.pop();
+                all
+            });
+            let mut with_prompt = sent.clone();
+            with_prompt.push(Arc::new(event.prompt.clone()));
+            match evict_images(&with_prompt, KEEP_IMAGES, IMAGE_BYTES) {
+                Some(mut evicted) => {
+                    evicted.pop();
+                    Some(evicted)
+                }
+                None => self.0.applied().is_some().then_some(sent),
+            }
+        };
         if history.is_none() && nearing.is_none() {
             return CompletionCallAction::continue_run();
         }
@@ -303,6 +391,39 @@ mod tests {
                 _ => Vec::new(),
             });
         texts.collect()
+    }
+
+    fn shot(tag: &str) -> Arc<Message> {
+        Arc::new(Message::User {
+            content: vec![UserContent::Image(Image {
+                data: DocumentSourceKind::Base64(tag.repeat(1000)),
+                media_type: None,
+                detail: None,
+                native: None,
+            })],
+        })
+    }
+
+    fn images(messages: &[Arc<Message>]) -> usize {
+        messages
+            .iter()
+            .flat_map(|message| match &**message {
+                Message::User { content } => content.clone(),
+                _ => Vec::new(),
+            })
+            .filter(|content| matches!(content, UserContent::Image(_)))
+            .count()
+    }
+
+    #[test]
+    fn only_the_newest_images_are_kept() {
+        let all: Vec<_> = ["a", "b", "c", "d", "e"].into_iter().map(shot).collect();
+        let out = evict_images(&all, 2, usize::MAX).unwrap();
+        assert_eq!(images(&out), 2);
+        assert_eq!(out[4], all[4]);
+        assert_ne!(out[0], all[0]);
+        assert!(evict_images(&all, 5, usize::MAX).is_none());
+        assert_eq!(images(&evict_images(&all, 5, 2500).unwrap()), 2);
     }
 
     #[tokio::test]
