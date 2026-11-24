@@ -65,8 +65,8 @@ impl Kind {
             Self::WebSearch => return times("searched the web"),
             Self::Mcp => {
                 return match count {
-                    1 => "used an MCP tool".into(),
-                    n => format!("used {n} MCP tools"),
+                    1 => "invoked an MCP call".into(),
+                    n => format!("invoked {n} MCP calls"),
                 };
             }
             Self::Memory => return times("checked memory"),
@@ -168,7 +168,7 @@ mod tests {
         );
         assert_eq!(text(&[Thought; 3]), "Thought 3 times");
         assert_eq!(text(&[WebSearch, Read, WebSearch]), "Searched the web twice, read a file");
-        assert_eq!(text(&[Mcp]), "Used an MCP tool");
+        assert_eq!(text(&[Mcp]), "Invoked an MCP call");
         assert_eq!(text(&[Search, Read, Read, Thought]), "Ran a search, read 2 files, thought");
     }
 }
