@@ -426,7 +426,12 @@ impl Follow {
                 summary,
                 before,
                 after,
-            } => stream.compacted(&summary, Some((before, after))),
+            } => {
+                // Until a model call reports the real size, the summary's is
+                // the best guess; a standalone `/compact` makes no call.
+                self.seen.context = Some(after);
+                stream.compacted(&summary, Some((before, after)));
+            }
             Event::Approval { id, ask } => {
                 stream.settle();
                 notify::notify(&waiting(&ask));
