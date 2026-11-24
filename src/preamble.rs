@@ -251,7 +251,10 @@ impl Setting<'_> {
                      connection) and return later; when a call to their machine fails because \
                      it is gone, do not stop or wait on them: carry on with what the host can \
                      do, use what is already synced to the host, and say what remains for when \
-                     they reconnect."
+                     they reconnect. When what remains needs their machine and you could do \
+                     nothing more without it, call `resume_on_reconnect` with a note to \
+                     yourself, then end your reply: the host continues the conversation by \
+                     itself when they reconnect."
                 );
                 Some(format!(
                     "The user is on {}{cwd} and reaches the host as remote `{remote}` at {url}. \

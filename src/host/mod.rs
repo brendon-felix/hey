@@ -56,6 +56,7 @@ use crate::subagents::{self, Crew, Spawn};
 use crate::toolbox::{Toolbox, machine_name};
 use crate::tools;
 use crate::transcript;
+use crate::wake::{self, Wake, Wakes};
 
 pub use run::Run;
 
@@ -69,6 +70,10 @@ pub const HEARTBEAT: Duration = Duration::from_secs(30);
 /// How long a client that lost a run's stream can still follow the run
 /// again to its end, once it ended.
 const RESUMABLE: Duration = Duration::from_secs(300);
+
+/// How long a call for a machine waits, in a run started as it came back,
+/// for its client to open the run.
+const WAKE_PATIENCE: Duration = Duration::from_secs(90);
 
 /// What the model is asked once what it said before its connection failed
 /// is saved.
@@ -118,6 +123,9 @@ pub struct Host {
     tasks: TaskTracker,
     /// Set once the host is going down, so the runs it stops say why.
     closing: AtomicBool,
+    /// Conversations to go on with once a machine's client is back, and
+    /// which machines have one.
+    wakes: Arc<Wakes>,
 }
 
 /// What a thread keeps on the host between runs.
@@ -201,7 +209,8 @@ const NAMING_TIMEOUT: Duration = Duration::from_secs(60);
 impl Host {
     /// Opens the sessions store and connects every MCP server.
     pub async fn new(config: &Config, hosting: Hosting) -> Result<Self> {
-        let sessions = Sessions::open(config.sessions.dir()?, config.sessions.markdown_dir()?)?;
+        let sessions_dir = config.sessions.dir()?;
+        let sessions = Sessions::open(sessions_dir.clone(), config.sessions.markdown_dir()?)?;
         let toolbox = Toolbox::new(config).await?;
         let crew = config
             .subagents
@@ -216,6 +225,7 @@ impl Host {
             tools::ASK_USER,
             tools::EXIT_PLAN,
             crate::projects::TOOL,
+            wake::TOOL,
         ]
         .into_iter()
         .chain(spawn)
@@ -270,6 +280,7 @@ impl Host {
             activity: watch::Sender::default(),
             tasks: TaskTracker::new(),
             closing: AtomicBool::new(false),
+            wakes: Arc::new(Wakes::open(Some(sessions_dir.join("wakes")))),
         })
     }
 
@@ -332,6 +343,67 @@ impl Host {
             let now = activity.borrow_and_update().clone();
             Some((now, (activity, false)))
         })
+    }
+
+    /// What the threads are doing, as [`Self::activity`] gives it, for a
+    /// client on `machine`: while the stream is held the machine counts as
+    /// connected, and conversations waiting for it go on at once.
+    pub fn attend(
+        self: &Arc<Self>,
+        machine: Option<String>,
+    ) -> impl Stream<Item = Activities> + Send + 'static {
+        let presence = machine.map(|machine| {
+            let presence = self.wakes.arrive(machine.clone());
+            let host = self.clone();
+            // After the stream below subscribes, so the runs show in it.
+            tokio::spawn(async move { host.wake(&machine).await });
+            presence
+        });
+        self.activity().map(move |activities| {
+            let _ = &presence;
+            activities
+        })
+    }
+
+    /// Starts the runs conversations left for when `machine` was back.
+    pub async fn wake(self: &Arc<Self>, machine: &str) {
+        for id in self.wakes.waiting_for(machine) {
+            let Some(wake) = self.wakes.take(&id) else {
+                continue;
+            };
+            let Wake {
+                options,
+                client,
+                surface,
+                ..
+            } = wake.clone();
+            let request = RunRequest {
+                prompt: wake.prompt(),
+                attachments: Vec::new(),
+                options,
+                client: Some(client),
+                task: Task::Answer,
+                goal: None,
+                surface,
+            };
+            match self.start(id.clone(), request, None).await {
+                Ok(events) => {
+                    tracing::info!(thread = id.as_str(), machine, "continuing as the machine is back");
+                    if let Some(run) = self.run(&id) {
+                        run.be_patient(WAKE_PATIENCE);
+                    }
+                    // The run goes on without anyone following it here.
+                    drop(events);
+                }
+                Err(error) => {
+                    tracing::warn!(thread = id.as_str(), %error, "cannot continue as the machine is back");
+                    // Busy: try again at the machine's next connection.
+                    if matches!(error, ThreadError::Busy) {
+                        self.wakes.set(&id, wake);
+                    }
+                }
+            }
+        }
     }
 
     /// A client showed the thread up to its latest answer.
@@ -410,6 +482,7 @@ impl Host {
             checkpoints.forget(id);
         }
         _ = std::fs::remove_file(self.notes_file(id));
+        self.wakes.forget(id);
         if let Some(crew) = &self.crew {
             crew.forget(id);
         }
@@ -488,6 +561,8 @@ impl Host {
         if thread.run.is_some() {
             return Err(ThreadError::Busy);
         }
+        // Whoever speaks in the conversation now has taken over from the note.
+        self.wakes.forget(&id);
         if thread.instructions.is_none() && self.instructions.enabled {
             thread.instructions = Some(Instructions::find(
                 &agent::working_directory(),
@@ -903,6 +978,21 @@ impl Host {
                 host: self.name.clone(),
                 client: Some(machine),
                 current: Some(name),
+            });
+        }
+        if let Some(client) = request
+            .client
+            .as_ref()
+            .filter(|client| client.lent.is_some())
+        {
+            builder = builder.tool(wake::Resume {
+                wakes: self.wakes.clone(),
+                thread: id.clone(),
+                run: run.clone(),
+                client: client.clone(),
+                machine: client.lent.as_ref().map(|lent| lent.machine.clone()).unwrap_or_default(),
+                options: request.options.clone(),
+                surface: request.surface,
             });
         }
         if let Some(crew) = &self.crew {

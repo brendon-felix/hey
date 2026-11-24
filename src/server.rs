@@ -156,8 +156,8 @@ async fn threads(State(host): State<Arc<Host>>) -> Reply<impl IntoResponse> {
 
 /// What every thread is doing, a line each time that changes, and every
 /// `HEARTBEAT` regardless.
-async fn activity(State(host): State<Arc<Host>>) -> Response {
-    ndjson_response(ndjson(host.activity()))
+async fn activity(State(host): State<Arc<Host>>, headers: HeaderMap) -> Response {
+    ndjson_response(ndjson(host.attend(machine(&headers))))
 }
 
 async fn shared(State(host): State<Arc<Host>>) -> impl IntoResponse {

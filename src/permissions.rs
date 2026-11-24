@@ -50,6 +50,8 @@ pub fn default_rules() -> BTreeMap<String, Permission> {
         crate::memory::TOOL,
         // `adopt` asks the user itself, and the rest only read or note.
         crate::projects::TOOL,
+        // Only leaves a note for the host to act on.
+        crate::wake::TOOL,
     ];
     tools
         .map(|tool| (tool.to_owned(), Permission::Allow))

@@ -55,6 +55,7 @@ mod tools;
 mod transcript;
 mod turn;
 mod ui;
+mod wake;
 mod web;
 mod workbench;
 

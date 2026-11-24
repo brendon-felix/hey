@@ -5,7 +5,7 @@
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError, Weak};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use futures::{Stream, StreamExt, stream};
 use rig_agent::agent::MultiTurnStreamItem;
@@ -47,6 +47,9 @@ pub struct Run {
     record: Record,
     /// Called when whether the run waits for a client changes.
     asking_changed: Box<dyn Fn() + Send + Sync>,
+    /// How long a call for a machine no client follows waits for one, for a
+    /// run the host started as a client was only just connecting.
+    patience: std::sync::OnceLock<Duration>,
 }
 
 /// The tool calls clients run, and the clients that can: under one lock,
@@ -106,7 +109,14 @@ impl Run {
             stop: Notify::new(),
             record: Record::default(),
             asking_changed: Box::new(asking_changed),
+            patience: std::sync::OnceLock::new(),
         }
+    }
+
+    /// Has calls for a machine no client follows wait up to `patience` for
+    /// one before failing.
+    pub fn be_patient(&self, patience: Duration) {
+        _ = self.patience.set(patience);
     }
 
     pub fn id(&self) -> RunId {
@@ -219,6 +229,11 @@ impl Run {
     pub async fn call(&self, call: Call, agent: Option<AgentId>) -> CallResult {
         let id = CallId(self.next_id.fetch_add(1, Ordering::Relaxed));
         let (done, result) = oneshot::channel();
+        let patience = self.patience.get().copied().unwrap_or_default();
+        let waited = Instant::now();
+        while waited.elapsed() < patience && !lock(&self.calls).followed_on(&call.machine) {
+            tokio::time::sleep(Duration::from_millis(250)).await;
+        }
         {
             let mut calls = lock(&self.calls);
             if !calls.followed_on(&call.machine) {
