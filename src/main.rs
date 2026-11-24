@@ -36,6 +36,7 @@ mod processes;
 mod projects;
 mod projects_tool;
 mod protocol;
+mod recovery;
 mod render;
 mod repl;
 mod results;
