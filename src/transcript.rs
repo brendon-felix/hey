@@ -12,6 +12,45 @@ use crate::compaction::summary_in;
 use crate::mention::is_context;
 use crate::steer;
 
+/// Messages a long conversation shows when opened; what came before is
+/// there to scroll back to in the viewer.
+pub const HORIZON: usize = 80;
+
+/// Whether `message` starts a turn: what the user typed, or a summary.
+fn starts_turn(message: &Message) -> bool {
+    match message {
+        Message::User { content } => content
+            .iter()
+            .any(|content| matches!(content, UserContent::Text(text) if !is_context(&text.text))),
+        _ => false,
+    }
+}
+
+/// Where to start showing `messages` so about `keep` of the latest show,
+/// without cutting a turn in the middle: the turn start at or before
+/// `messages.len() - keep`, or the first after it when that turn is far
+/// longer than `keep`. 0 when it all fits.
+pub fn horizon(messages: &[Message], keep: usize) -> usize {
+    earlier(messages, messages.len().saturating_sub(keep), keep)
+}
+
+/// The turn start at or before `at`, as [`horizon`] picks it.
+pub fn earlier(messages: &[Message], at: usize, keep: usize) -> usize {
+    if at == 0 {
+        return 0;
+    }
+    let at = at.min(messages.len());
+    let before = (0..=at.min(messages.len().saturating_sub(1)))
+        .rev()
+        .find(|&at| starts_turn(&messages[at]))
+        .unwrap_or(0);
+    if at - before <= keep * 4 {
+        return before;
+    }
+    let after = (at..messages.len()).find(|&at| starts_turn(&messages[at]));
+    after.unwrap_or(before)
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Speaker {
     User,
@@ -143,6 +182,20 @@ mod tests {
 
     fn assistant(content: Vec<AssistantContent>) -> Message {
         Message::Assistant(AssistantMessage::new(content))
+    }
+
+    #[test]
+    fn the_horizon_falls_on_the_start_of_a_turn() {
+        let mut messages = Vec::new();
+        for turn in 0..50 {
+            messages.push(Message::user(format!("q{turn}")));
+            messages.push(assistant(vec![AssistantContent::text("a")]));
+        }
+        assert_eq!(horizon(&messages[..10], 80), 0);
+        let at = horizon(&messages, 20);
+        assert_eq!(at, 80);
+        assert!(starts_turn(&messages[at]));
+        assert_eq!(earlier(&messages, at - 20, 20), 60);
     }
 
     #[test]

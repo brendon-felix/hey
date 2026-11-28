@@ -70,12 +70,38 @@ enum Was {
 
 const MANIFEST: &str = "files.json";
 
+/// Removes the content scans an earlier process kept under `keep`, as
+/// [`rig_tools::checkpoint::forget_kept`] does, without making startup wait
+/// for thousands of files to go: the directory is renamed aside at once, and
+/// removed on a thread of its own.
+fn forget_kept_in_background(keep: &Path) {
+    let trash = keep.join("trash");
+    let moved = fs::create_dir_all(&trash).is_ok()
+        && fs::read_dir(keep.join("checkpoints")).is_ok_and(|dirs| {
+            for (n, dir) in dirs.flatten().enumerate() {
+                let blobs = dir.path().join("blobs");
+                // Git's private objects stay: they make a snapshot cost what changed.
+                let aside = trash.join(format!("{}-{n}", std::process::id()));
+                if blobs.exists() && fs::rename(&blobs, &aside).is_err() {
+                    return false;
+                }
+            }
+            true
+        });
+    if !moved && let Err(error) = rig_tools::checkpoint::forget_kept(keep) {
+        tracing::warn!("cannot remove old snapshots: {error}");
+    }
+    std::thread::spawn(move || {
+        if let Err(error) = fs::remove_dir_all(&trash) {
+            tracing::warn!("cannot remove old snapshots: {error}");
+        }
+    });
+}
+
 impl Checkpoints {
     pub fn new(data: &Path, root: PathBuf) -> Self {
         let keep = data.join("snapshots");
-        if let Err(error) = rig_tools::checkpoint::forget_kept(&keep) {
-            tracing::warn!("cannot remove old snapshots: {error}");
-        }
+        forget_kept_in_background(&keep);
         Self {
             dir: data.join("checkpoints"),
             keep,

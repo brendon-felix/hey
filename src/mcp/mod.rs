@@ -2,7 +2,7 @@
 /*                                 mcp/mod.rs                                 */
 /* -------------------------------------------------------------------------- */
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 use std::process::Stdio;
 use std::time::Duration;
 
@@ -32,18 +32,15 @@ pub const PREFIX: &str = "mcp__";
 
 /// A tool from an MCP server, offered to the model under a name that cannot
 /// collide with the built-in tools or another server's.
+#[derive(Clone)]
 pub struct Tool {
     pub name: String,
     pub origin: Origin,
     pub tool: DynamicTool,
 }
 
-pub struct Server {
-    pub name: String,
-    pub connected: Result<Connected>,
-}
-
 /// What a server offers once connected.
+#[derive(Clone)]
 pub struct Connected {
     pub tools: Vec<Tool>,
     /// What the server says it is for, in a line.
@@ -56,18 +53,13 @@ pub struct Connected {
     pub connection: McpConnection,
 }
 
-/// Connects every server at once; one that fails is reported, not fatal.
-pub async fn connect_all(servers: &BTreeMap<String, McpServer>) -> Vec<Server> {
-    let connecting = servers.iter().map(|(name, server)| async move {
-        let connected = tokio::time::timeout(CONNECT_TIMEOUT, connect(name, server))
-            .await
-            .unwrap_or_else(|_| Err(anyhow::anyhow!("timed out after {CONNECT_TIMEOUT:?}")));
-        Server {
-            name: name.clone(),
-            connected,
-        }
-    });
-    futures::future::join_all(connecting).await
+/// Connects to one server, failing once it takes longer than
+/// [`CONNECT_TIMEOUT`]. Servers connect each on their own, so a slow one
+/// holds up no other.
+pub async fn connect_one(name: &str, server: &McpServer) -> Result<Connected> {
+    tokio::time::timeout(CONNECT_TIMEOUT, connect(name, server))
+        .await
+        .unwrap_or_else(|_| Err(anyhow::anyhow!("timed out after {CONNECT_TIMEOUT:?}")))
 }
 
 async fn connect(server: &str, config: &McpServer) -> Result<Connected> {

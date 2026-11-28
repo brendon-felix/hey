@@ -418,7 +418,7 @@ async fn connect(remote: Option<&str>, config: &Config) -> Result<Backend> {
                 .remotes
                 .get(name)
                 .with_context(|| format!("no remote `{name}` in `[remotes]`"))?;
-            let workbench = Workbench::new(config).await?;
+            let workbench = Workbench::new(config)?;
             let machine = Machine::here(config.file.as_deref());
             let client = Client::connect(name, remote, machine, workbench.lent()).await?;
             if !config.sync.paths.is_empty() {

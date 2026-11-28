@@ -207,7 +207,12 @@ impl Backend {
                 let events = host.start(id.clone(), request, None).await?;
                 Ok(events.map(|logged| Ok(logged.event)).boxed())
             }
-            Backend::Remote(client, _) => client.start(id, request).await,
+            Backend::Remote(client, workbench) => {
+                // What this machine lends is what its MCP servers have
+                // offered by now, which is not known when it connects.
+                let lent = workbench.lent_settled().await;
+                client.start(id, request, Some(lent)).await
+            }
         }
     }
 

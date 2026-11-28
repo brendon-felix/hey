@@ -6,8 +6,10 @@
 //! its MCP servers'. A host has its own, and so does a remote client, whose
 //! tools the host's agents can call on the client's machine.
 
+use std::collections::BTreeMap;
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, PoisonError, RwLock};
+use std::time::Duration;
 
 use anyhow::{Context, Result};
 use rig_core::completion::ToolDefinition;
@@ -17,12 +19,13 @@ use rig_core::tool::{DynamicTool, Tool, ToolErrorKind, ToolExecutionError};
 use rig_tools::process::Launcher;
 use rig_tools::workspace::{Local, Workspace};
 use rig_tools::{Delete, Edit, List, Live, Move, Read, Search, Seen, Shell, Write};
+use tokio::sync::watch;
 
 use crate::agent;
-use crate::config::Config;
+use crate::config::{self, Config};
 use crate::lenient;
 use crate::mcp::{self, deferred, deferred::Deferred};
-use crate::permissions::Origin;
+use crate::permissions::{Later, Origin, Permission, Permissions};
 use crate::processes::{ProcessKill, ProcessList, ProcessOutput, SpawnProcess};
 use crate::protocol::ServerReport;
 use crate::render;
@@ -64,15 +67,162 @@ pub fn machine_name() -> String {
     }
 }
 
+/// How long an answer waits for MCP servers still connecting before it
+/// goes on without their tools.
+pub const PATIENCE: Duration = Duration::from_secs(3);
+
 pub struct Toolbox {
     web: Web,
-    mcp: Vec<mcp::Tool>,
+    mcp: Arc<Mcp>,
+}
+
+/// The MCP servers, which connect in the background, each on its own: what
+/// has connected so far is what a run is given, so a slow or dead server
+/// holds up neither the prompt nor the others.
+struct Mcp {
+    web: Web,
+    tools: config::Tools,
+    /// Every server's name, in order.
+    names: Vec<String>,
+    outcomes: Mutex<BTreeMap<String, Result<mcp::Connected, String>>>,
+    state: RwLock<Arc<Connected>>,
+    /// How many servers have yet to connect or fail.
+    pending: watch::Sender<usize>,
+}
+
+/// What the MCP servers that connected offer.
+#[derive(Default)]
+struct Connected {
+    tools: Vec<mcp::Tool>,
     deferred: Arc<Deferred>,
     /// The servers that list resources, by name.
     resources: Arc<[(String, McpConnection)]>,
     prompts: Vec<mcp::Prompt>,
     connections: Vec<(String, McpConnection)>,
     servers: Vec<ServerReport>,
+    /// The permission of every tool known, for conversations made before
+    /// the tools were.
+    rules: BTreeMap<String, Permission>,
+}
+
+impl Later for Mcp {
+    fn rule(&self, tool: &str) -> Option<Permission> {
+        self.snapshot().rules.get(tool).copied()
+    }
+
+    fn rules(&self) -> BTreeMap<String, Permission> {
+        self.snapshot().rules.clone()
+    }
+}
+
+impl Mcp {
+    fn snapshot(&self) -> Arc<Connected> {
+        self.state
+            .read()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
+    }
+
+    /// Takes in how connecting to `name` went, then offers what has
+    /// connected.
+    fn done(&self, name: &str, outcome: Result<mcp::Connected>) {
+        if let Err(error) = &outcome {
+            tracing::warn!(server = name, error = format!("{error:#}"), "MCP server unavailable");
+            render::notice(&format!("MCP server `{name}` unavailable: {error:#}"));
+        }
+        let mut outcomes = self.outcomes.lock().unwrap_or_else(PoisonError::into_inner);
+        outcomes.insert(name.to_owned(), outcome.map_err(|error| format!("{error:#}")));
+        self.publish(&outcomes);
+    }
+
+    fn publish(&self, outcomes: &BTreeMap<String, Result<mcp::Connected, String>>) {
+        let state = Arc::new(self.offer(outcomes));
+        *self.state.write().unwrap_or_else(PoisonError::into_inner) = state;
+        self.pending.send_replace(self.names.len() - outcomes.len());
+    }
+
+    /// What `outcomes` offer: a server's tools are deferred when its config
+    /// says so, or all are once they number more than `defer_mcp_above`.
+    fn offer(&self, outcomes: &BTreeMap<String, Result<mcp::Connected, String>>) -> Connected {
+        let mut connected = Connected::default();
+        let total: usize = outcomes
+            .values()
+            .filter_map(|outcome| outcome.as_ref().ok())
+            .map(|server| server.tools.len())
+            .sum();
+        let defer_all = self.tools.defer_mcp_above.is_some_and(|above| total > above);
+        let mut deferred_servers = Vec::new();
+        let mut resources = Vec::new();
+        for name in &self.names {
+            let report = match outcomes.get(name) {
+                None => ServerReport {
+                    name: name.clone(),
+                    deferred: false,
+                    tools: Ok(0),
+                    pending: true,
+                },
+                Some(Err(error)) => ServerReport {
+                    name: name.clone(),
+                    deferred: false,
+                    tools: Err(error.clone()),
+                    pending: false,
+                },
+                Some(Ok(offered)) => {
+                    let deferred = defer_all || offered.deferred;
+                    if deferred {
+                        deferred_servers.push(deferred::Server {
+                            name: name.clone(),
+                            summary: offered.summary.clone(),
+                            tools: offered.tools.clone(),
+                        });
+                    } else {
+                        connected.tools.extend(offered.tools.iter().cloned());
+                    }
+                    if offered.resources {
+                        resources.push((name.clone(), offered.connection.clone()));
+                    }
+                    connected.prompts.extend(offered.prompts.iter().cloned());
+                    connected
+                        .connections
+                        .push((name.clone(), offered.connection.clone()));
+                    ServerReport {
+                        name: name.clone(),
+                        deferred,
+                        tools: Ok(offered.tools.len()),
+                        pending: false,
+                    }
+                }
+            };
+            connected.servers.push(report);
+        }
+        connected.deferred = Arc::new(Deferred::new(deferred_servers));
+        connected.resources = resources.into();
+        let origins = origins(&self.web, &connected);
+        connected.rules = Permissions::resolved(
+            origins.iter().map(|(name, origin)| (name.as_str(), origin)),
+            &self.tools,
+        );
+        connected
+    }
+}
+
+/// Every tool's name and where it comes from, which its permission is
+/// configured by.
+fn origins(web: &Web, connected: &Connected) -> Vec<(String, Origin)> {
+    let builtin = BUILTIN.into_iter().chain(web.tools());
+    let builtin = builtin.map(|name| (name.to_owned(), Origin::Builtin));
+    let stand_ins = [deferred::SEARCH, deferred::CALL]
+        .into_iter()
+        .filter(|_| !connected.deferred.is_empty())
+        .chain(
+            [deferred::RESOURCES, deferred::READ_RESOURCE]
+                .into_iter()
+                .filter(|_| !connected.resources.is_empty()),
+        )
+        .map(|name| (name.to_owned(), Origin::Builtin));
+    let mcp = connected.tools.iter().chain(connected.deferred.tools());
+    let mcp = mcp.map(|tool| (tool.name.clone(), tool.origin.clone()));
+    builtin.chain(stand_ins).chain(mcp).collect()
 }
 
 /// Where the built-in tools work.
@@ -105,38 +255,61 @@ impl Place {
 }
 
 impl Toolbox {
-    /// The tools `config` gives this machine, its MCP servers connected.
-    pub async fn new(config: &Config) -> Result<Self> {
-        let connected = connect_mcp(config).await;
-        Ok(Self {
-            web: Web::new(config.tools.result_bytes)?,
-            mcp: connected.tools,
-            deferred: Arc::new(Deferred::new(connected.deferred)),
-            resources: connected.resources.into(),
-            prompts: connected.prompts,
-            connections: connected.connections,
-            servers: connected.reports,
-        })
+    /// The tools `config` gives this machine. Its MCP servers connect in the
+    /// background, each on its own, and their tools join as they do.
+    pub fn new(config: &Config) -> Result<Self> {
+        let web = Web::new(config.tools.result_bytes)?;
+        let names: Vec<String> = config.mcp_servers.keys().cloned().collect();
+        let mcp = Arc::new(Mcp {
+            web: web.clone(),
+            tools: config.tools.clone(),
+            pending: watch::channel(names.len()).0,
+            names,
+            outcomes: Mutex::default(),
+            state: RwLock::default(),
+        });
+        mcp.publish(&BTreeMap::new());
+        for (name, server) in &config.mcp_servers {
+            let (mcp, name, server) = (mcp.clone(), name.clone(), server.clone());
+            tokio::spawn(async move {
+                let outcome = mcp::connect_one(&name, &server).await;
+                mcp.done(&name, outcome);
+            });
+        }
+        Ok(Self { web, mcp })
     }
 
-    pub fn servers(&self) -> &[ServerReport] {
-        &self.servers
+    /// Waits until every MCP server has connected or failed, but for at
+    /// most `patience`: what a run starts with is then what is known.
+    pub async fn settled(&self, patience: Duration) {
+        let mut pending = self.mcp.pending.subscribe();
+        _ = tokio::time::timeout(patience, pending.wait_for(|pending| *pending == 0)).await;
+    }
+
+    /// Where the permissions of tools that connected later are found.
+    pub fn later(&self) -> Arc<dyn Later> {
+        self.mcp.clone()
+    }
+
+    pub fn servers(&self) -> Vec<ServerReport> {
+        self.mcp.snapshot().servers.clone()
     }
 
     /// What the model is told of the deferred MCP servers.
     pub fn preamble(&self) -> Option<String> {
-        self.deferred.preamble()
+        self.mcp.snapshot().deferred.preamble()
     }
 
-    /// The prompts the MCP servers offer.
-    pub fn prompts(&self) -> &[mcp::Prompt] {
-        &self.prompts
+    /// The prompts the MCP servers offer so far.
+    pub fn prompts(&self) -> Vec<mcp::Prompt> {
+        self.mcp.snapshot().prompts.clone()
     }
 
     /// The text of `prompt`, for the `arguments` typed after it.
     pub async fn prompt(&self, prompt: &mcp::Prompt, arguments: &str) -> Result<String> {
         let (server, name) = (&prompt.server, &prompt.name);
-        let (_, connection) = self
+        let connected = self.mcp.snapshot();
+        let (_, connection) = connected
             .connections
             .iter()
             .find(|(of, _)| of == server)
@@ -146,21 +319,8 @@ impl Toolbox {
 
     /// Every tool's name and where it comes from, which its permission is
     /// configured by.
-    pub fn origins(&self) -> impl Iterator<Item = (&str, &Origin)> {
-        let builtin = BUILTIN.into_iter().chain(self.web.tools());
-        let builtin = builtin.map(|name| (name, &Origin::Builtin));
-        let stand_ins = [deferred::SEARCH, deferred::CALL]
-            .into_iter()
-            .filter(|_| !self.deferred.is_empty())
-            .chain(
-                [deferred::RESOURCES, deferred::READ_RESOURCE]
-                    .into_iter()
-                    .filter(|_| !self.resources.is_empty()),
-            )
-            .map(|name| (name, &Origin::Builtin));
-        let mcp = self.mcp.iter().chain(self.deferred.tools());
-        let mcp = mcp.map(|tool| (tool.name.as_str(), &tool.origin));
-        builtin.chain(stand_ins).chain(mcp)
+    pub fn origins(&self) -> Vec<(String, Origin)> {
+        origins(&self.web, &self.mcp.snapshot())
     }
 
     /// The tools of one agent working in `place`. `edit` and `write` refuse
@@ -242,10 +402,11 @@ impl Toolbox {
             dynamic(self.web.fetch()),
         ];
         let search = self.web.search().map(dynamic);
-        let mcp = self.mcp.iter().map(|tool| tool.tool.clone());
-        let stand_ins = deferred::tools(&self.deferred)
+        let connected = self.mcp.snapshot();
+        let mcp = connected.tools.iter().map(|tool| tool.tool.clone());
+        let stand_ins = deferred::tools(&connected.deferred)
             .into_iter()
-            .chain(deferred::resource_tools(&self.resources));
+            .chain(deferred::resource_tools(&connected.resources));
         builtin
             .into_iter()
             .chain(search)
@@ -361,75 +522,56 @@ fn backgrounded(shell: DynamicTool, spawn: DynamicTool) -> DynamicTool {
     .with_annotations(definition.annotations)
 }
 
-/// What the MCP servers that connected offer, and how each connection went.
-#[derive(Default)]
-struct McpConnected {
-    tools: Vec<mcp::Tool>,
-    deferred: Vec<deferred::Server>,
-    resources: Vec<(String, McpConnection)>,
-    prompts: Vec<mcp::Prompt>,
-    connections: Vec<(String, McpConnection)>,
-    reports: Vec<ServerReport>,
-}
-
-/// Connects every server; a server's tools are deferred when its config
-/// says so, or all are once they number more than `defer_mcp_above`.
-async fn connect_mcp(config: &Config) -> McpConnected {
-    let mut connected = McpConnected::default();
-    let servers = mcp::connect_all(&config.mcp_servers).await;
-    let total: usize = servers
-        .iter()
-        .filter_map(|server| server.connected.as_ref().ok())
-        .map(|server| server.tools.len())
-        .sum();
-    let defer_all = config
-        .tools
-        .defer_mcp_above
-        .is_some_and(|above| total > above);
-    for server in servers {
-        let outcome = server.connected.map(|offered| {
-            let count = offered.tools.len();
-            let deferred = defer_all || offered.deferred;
-            if deferred {
-                connected.deferred.push(deferred::Server {
-                    name: server.name.clone(),
-                    summary: offered.summary,
-                    tools: offered.tools,
-                });
-            } else {
-                connected.tools.extend(offered.tools);
-            }
-            if offered.resources {
-                connected
-                    .resources
-                    .push((server.name.clone(), offered.connection.clone()));
-            }
-            connected.prompts.extend(offered.prompts);
-            connected
-                .connections
-                .push((server.name.clone(), offered.connection));
-            (count, deferred)
-        });
-        if let Err(error) = &outcome {
-            render::notice(&format!(
-                "MCP server `{}` unavailable: {error:#}",
-                server.name
-            ));
-        }
-        connected.reports.push(ServerReport {
-            name: server.name,
-            deferred: outcome.as_ref().is_ok_and(|(_, deferred)| *deferred),
-            tools: outcome
-                .map(|(count, _)| count)
-                .map_err(|error| format!("{error:#}")),
-        });
-    }
-    connected
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn a_hung_server_does_not_hold_up_the_toolbox() {
+        // `sleep` starts but never speaks MCP, so connecting waits for it.
+        let config: Config = toml::from_str(
+            r#"
+            [mcp_servers.hung]
+            command = "sleep"
+            args = ["30"]
+        "#,
+        )
+        .unwrap();
+        let started = std::time::Instant::now();
+        let toolbox = Toolbox::new(&config).unwrap();
+        assert!(started.elapsed() < Duration::from_millis(500));
+        // A run waits only as long as it is told to for what is pending.
+        let waited = std::time::Instant::now();
+        toolbox.settled(Duration::from_millis(200)).await;
+        assert!(waited.elapsed() < Duration::from_secs(2));
+        let servers = toolbox.servers();
+        assert!(servers[0].pending);
+        assert!(toolbox.definitions().iter().any(|tool| tool.name == "read"));
+    }
+
+    #[tokio::test]
+    async fn a_server_that_cannot_start_neither_delays_nor_blocks_the_toolbox() {
+        let config: Config = toml::from_str(
+            r#"
+            [mcp_servers.broken]
+            command = "/nonexistent/hey-test-server"
+        "#,
+        )
+        .unwrap();
+        let started = std::time::Instant::now();
+        let toolbox = Toolbox::new(&config).unwrap();
+        // Known at once, still connecting.
+        assert!(started.elapsed() < Duration::from_millis(500));
+        let servers = toolbox.servers();
+        assert_eq!(servers.len(), 1);
+        assert!(servers[0].pending || servers[0].tools.is_err());
+        // It fails fast, and what then runs has the built-in tools.
+        toolbox.settled(Duration::from_secs(5)).await;
+        let servers = toolbox.servers();
+        assert!(!servers[0].pending);
+        assert!(servers[0].tools.is_err());
+        assert!(toolbox.definitions().iter().any(|tool| tool.name == "read"));
+    }
 
     #[test]
     fn an_argument_error_is_cut_and_says_what_an_edit_takes() {

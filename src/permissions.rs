@@ -115,11 +115,30 @@ impl Origin {
     }
 }
 
+/// Where the rules of tools that appear after startup are found, such as
+/// those of MCP servers that are still connecting.
+pub trait Later: Send + Sync + 'static {
+    fn rule(&self, tool: &str) -> Option<Permission>;
+    fn rules(&self) -> BTreeMap<String, Permission>;
+}
+
+#[derive(Clone, Default)]
+struct Source(Option<Arc<dyn Later>>);
+
+impl std::fmt::Debug for Source {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Source")
+    }
+}
+
 /// The permission of every tool the agent offers, by the name the model
 /// calls it. Each thread has its own, as "always allow" applies to one thread.
 #[derive(Debug, Default)]
 pub struct Permissions {
     rules: Mutex<BTreeMap<String, Permission>>,
+    /// Rules for tools that came after these were resolved; the
+    /// conversation's own rules win.
+    later: Source,
     /// Plan mode: only tools that change nothing run.
     planning: AtomicBool,
 }
@@ -129,6 +148,21 @@ impl Permissions {
         tools: impl IntoIterator<Item = (&'a str, &'a Origin)>,
         config: &crate::config::Tools,
     ) -> Self {
+        Self::from_rules(Self::resolved(tools, config), Source::default())
+    }
+
+    /// Also applies the rules `later` finds, for tools that appear once
+    /// this exists.
+    pub fn with_later(mut self, later: Arc<dyn Later>) -> Self {
+        self.later = Source(Some(later));
+        self
+    }
+
+    /// The permission `config` gives each of `tools`.
+    pub fn resolved<'a>(
+        tools: impl IntoIterator<Item = (&'a str, &'a Origin)>,
+        config: &crate::config::Tools,
+    ) -> BTreeMap<String, Permission> {
         let permission = |name: &str, origin: &Origin| {
             if config.allow_all {
                 return Permission::Allow;
@@ -140,33 +174,39 @@ impl Permissions {
                 .copied()
                 .unwrap_or(config.default)
         };
-        let resolved = tools
+        tools
             .into_iter()
             .map(|(name, origin)| (name.to_owned(), permission(name, origin)))
-            .collect();
-        Self::from_rules(resolved)
+            .collect()
     }
 
-    fn from_rules(rules: BTreeMap<String, Permission>) -> Self {
+    fn from_rules(rules: BTreeMap<String, Permission>, later: Source) -> Self {
         Self {
             rules: Mutex::new(rules),
+            later,
             planning: AtomicBool::new(false),
         }
     }
 
     pub fn get(&self, tool: &str) -> Permission {
-        self.lock()
-            .get(tool)
-            .copied()
+        let own = self.lock().get(tool).copied();
+        own.or_else(|| self.later.0.as_ref()?.rule(tool))
             .unwrap_or(Permission::Confirm)
     }
 
     pub fn snapshot(&self) -> BTreeMap<String, Permission> {
-        self.lock().clone()
+        let mut rules = self
+            .later
+            .0
+            .as_ref()
+            .map(|later| later.rules())
+            .unwrap_or_default();
+        rules.extend(self.lock().clone());
+        rules
     }
 
     pub fn fork(&self) -> Self {
-        Self::from_rules(self.snapshot())
+        Self::from_rules(self.lock().clone(), self.later.clone())
     }
 
     pub fn planning(&self) -> bool {
@@ -182,8 +222,12 @@ impl Permissions {
     pub fn overlay(&self, rules: &BTreeMap<String, Permission>) {
         let mut mine = self.lock();
         for (tool, permission) in rules {
-            if let Some(slot) = mine.get_mut(tool) {
-                *slot = *permission;
+            match mine.get_mut(tool) {
+                Some(slot) => *slot = *permission,
+                None if self.later.0.as_ref().is_some_and(|later| later.rule(tool).is_some()) => {
+                    mine.insert(tool.clone(), *permission);
+                }
+                None => {}
             }
         }
     }
@@ -373,6 +417,29 @@ mod tests {
             ],
             &config,
         )
+    }
+
+    #[test]
+    fn rules_for_tools_that_connect_later_apply_to_earlier_conversations() {
+        struct Late;
+        impl Later for Late {
+            fn rule(&self, tool: &str) -> Option<Permission> {
+                (tool == "mcp__late__search").then_some(Permission::Allow)
+            }
+            fn rules(&self) -> BTreeMap<String, Permission> {
+                [("mcp__late__search".to_owned(), Permission::Allow)].into()
+            }
+        }
+        let conversation = resolve("").with_later(Arc::new(Late)).fork();
+        assert_eq!(conversation.get("mcp__late__search"), Permission::Allow);
+        assert_eq!(conversation.get("mcp__late__other"), Permission::Confirm);
+        assert_eq!(
+            conversation.snapshot().get("mcp__late__search"),
+            Some(&Permission::Allow)
+        );
+        // What the conversation decided itself wins.
+        conversation.allow("mcp__late__other");
+        assert_eq!(conversation.get("mcp__late__other"), Permission::Allow);
     }
 
     #[test]

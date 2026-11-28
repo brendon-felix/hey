@@ -363,6 +363,10 @@ async fn tools(shared: &Shared, key: &str) -> Result<String> {
     if !tools.servers.is_empty() {
         lines.push("\nMCP servers:".into());
         for server in tools.servers {
+            if server.pending {
+                lines.push(format!("- {} (connecting…)", server.name));
+                continue;
+            }
             lines.push(match server.tools {
                 Ok(count) => format!("- {} ({count} tools)", server.name),
                 Err(error) => format!("- {}: {error}", server.name),

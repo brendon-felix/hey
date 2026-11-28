@@ -19,7 +19,10 @@ use textwrap::core::display_width;
 use tokio::time::{Instant, MissedTickBehavior, interval};
 use yansi::Paint;
 
+use rig_core::message::Message;
+
 use super::entries::Transcript;
+use crate::transcript;
 use super::{Note, SPINNER};
 use crate::backend::{ActivityStream, Backend, Events};
 use crate::protocol::{Activities, AgentId, ApprovalId, Event, RunId, ThreadStatus};
@@ -35,6 +38,12 @@ const AGENT_REFRESH: Duration = Duration::from_millis(300);
 const BATCH: usize = 2000;
 /// Rows above and below the conversation: the title and the keys.
 const CHROME: usize = 2;
+/// Messages of the thread loaded when it opens, and with each step back.
+const WINDOW: usize = 80;
+/// Messages loaded at most, before the far end unloads.
+const MAX_LOADED: usize = WINDOW * 3;
+/// Entries nearer the view than this stay loaded; load more nearer than it.
+const KEEP_NEAR: usize = 20;
 
 /// How the viewer was closed.
 pub enum Closed {
@@ -98,6 +107,11 @@ struct Viewer<'a> {
 }
 
 struct Page {
+    /// The saved messages of the thread, of which only those from `start`
+    /// are in `transcript`: more load as the view nears its top, and the
+    /// far end unloads as it moves on. Empty for a subagent.
+    messages: Vec<Message>,
+    start: usize,
     subject: Subject,
     transcript: Transcript,
     place: Place,
@@ -230,13 +244,21 @@ impl<'a> Viewer<'a> {
     /// Opens the thread again, as it is now, keeping what was unfolded.
     async fn reload(&mut self) -> Result<()> {
         let opened = self.backend.view(&self.thread).await?;
-        let mut transcript = Transcript::saved(&opened.snapshot.messages);
+        let messages = opened.snapshot.messages;
+        let root = &mut self.pages[0];
+        // The window stays where it was while the thread only grew.
+        let kept = root.start > 0 && messages.len() >= root.messages.len();
+        root.start = match kept {
+            true => root.start,
+            false => transcript::horizon(&messages, WINDOW),
+        };
+        let mut transcript = Transcript::saved(&messages[root.start..]);
         if let Some(running) = &opened.snapshot.running {
             transcript.user(&running.prompt);
         }
-        let root = &mut self.pages[0];
         transcript.unfold_as(&root.transcript);
         root.transcript = transcript;
+        root.messages = messages;
         self.run = opened.events;
         HashSet::clear(&mut self.asking);
         if self.run.is_none() {
@@ -414,12 +436,24 @@ impl<'a> Viewer<'a> {
             KeyCode::PageDown | KeyCode::Char('f') => self.scroll(self.layout.height as isize),
             KeyCode::PageUp | KeyCode::Char('b') => self.scroll(-(self.layout.height as isize)),
             KeyCode::Home | KeyCode::Char('g') => {
+                self.page().load_earlier(None);
                 self.page().place = Place::At {
                     selected: 0,
                     top: 0,
                 }
             }
-            KeyCode::End | KeyCode::Char('G') => self.page().place = Place::Latest,
+            KeyCode::End | KeyCode::Char('G') => {
+                self.page().place = Place::Latest;
+                let page = self.page();
+                // Back at the end, what is far from it unloads.
+                if !page.messages.is_empty() {
+                    let at = transcript::horizon(&page.messages, WINDOW);
+                    if at > page.start {
+                        page.transcript = Transcript::saved(&page.messages[at..]);
+                        page.start = at;
+                    }
+                }
+            }
             KeyCode::Char(' ') | KeyCode::Tab => self.toggle(),
             KeyCode::Enter | KeyCode::Right | KeyCode::Char('l') => match self.selected_agent() {
                 Some(agent) => self.open_agent(agent).await,
@@ -558,6 +592,18 @@ impl<'a> Viewer<'a> {
         if let (Some((selected, top)), Place::Reveal(_)) = (position, page.place) {
             page.place = Place::At { selected, top };
         }
+        // Load earlier messages as the view nears the top, drop the oldest
+        // once it is far from them; the next frame shows the change.
+        if let Some((selected, _)) = position
+            && page.place != Place::Latest
+            && !page.messages.is_empty()
+        {
+            if selected < KEEP_NEAR {
+                page.load_earlier(Some(WINDOW));
+            } else {
+                page.unload_far(selected);
+            }
+        }
 
         let (selected, top) = position.map_or((None, 0), |(selected, top)| (Some(selected), top));
         let marked = selected.map_or(0..0, |selected| self.layout.spans[selected].clone());
@@ -668,8 +714,55 @@ impl<'a> Viewer<'a> {
 }
 
 impl Page {
+    /// Loads the messages before those shown, `more` of them, or all.
+    fn load_earlier(&mut self, more: Option<usize>) {
+        if self.start == 0 {
+            return;
+        }
+        let to = match more {
+            Some(more) => transcript::earlier(&self.messages, self.start.saturating_sub(more), more),
+            None => 0,
+        };
+        if to >= self.start {
+            return;
+        }
+        let earlier = Transcript::saved(&self.messages[to..self.start]);
+        let added = earlier.len();
+        self.transcript.prepend(earlier);
+        self.start = to;
+        self.shift(added as isize);
+    }
+
+    /// Unloads the oldest messages while the view is far from them.
+    fn unload_far(&mut self, selected: usize) {
+        let loaded = self.messages.len() - self.start;
+        if loaded <= MAX_LOADED {
+            return;
+        }
+        let to = transcript::earlier(&self.messages, self.start + WINDOW, WINDOW);
+        let dropped = Transcript::saved(&self.messages[self.start..to]).len();
+        if to <= self.start || selected < dropped + KEEP_NEAR {
+            return;
+        }
+        self.transcript.drop_front(dropped);
+        self.start = to;
+        self.shift(-(dropped as isize));
+    }
+
+    /// Keeps the view on its entry after `by` entries came or went before it.
+    fn shift(&mut self, by: isize) {
+        self.place = match self.place {
+            Place::Latest => Place::Latest,
+            Place::At { selected, .. } | Place::Reveal(selected) => {
+                Place::Reveal(selected.saturating_add_signed(by))
+            }
+        };
+    }
+
     fn new(subject: Subject) -> Self {
         Self {
+            messages: Vec::new(),
+            start: 0,
             subject,
             transcript: Transcript::default(),
             place: Place::Latest,

@@ -71,6 +71,8 @@ struct Session {
     /// What the host offers to mention, and when it was fetched.
     index: Index,
     indexed: Option<Instant>,
+    /// Whether the first prompt already tried the index, within `FIRST_INDEX`.
+    index_tried: bool,
     clipboard: Clipboard,
     /// The run this terminal follows.
     current: Option<Current>,
@@ -180,6 +182,7 @@ impl Repl {
             displayed: 0,
             index,
             indexed: None,
+            index_tried: false,
             clipboard: Clipboard::default(),
             current: None,
             outbox,
@@ -235,7 +238,21 @@ impl Session {
     /// Catches up with the thread and gives the editor back what was not
     /// sent, before it reads.
     async fn prepare(&mut self, editor: &mut Editor) {
-        self.refresh_index().await;
+        // The first prompt does not wait on a slow host for completions: it
+        // shows after `FIRST_INDEX`, and the fetch is tried again before the
+        // next one.
+        match self.indexed {
+            None if !self.index_tried => {
+                self.index_tried = true;
+                if tokio::time::timeout(FIRST_INDEX, self.refresh_index())
+                    .await
+                    .is_err()
+                {
+                    tracing::debug!("completions still loading; the prompt goes first");
+                }
+            }
+            _ => self.refresh_index().await,
+        }
         if self.current.is_none() {
             self.catch_up().await;
         }
@@ -629,7 +646,20 @@ impl Session {
             plan,
         } = opened.snapshot;
         self.note_plan(plan);
-        let new = messages.get(self.displayed..).unwrap_or_default();
+        let new = match self.displayed {
+            // Opening a long thread prints only its latest turns; `/view`
+            // goes further back.
+            0 => {
+                let from = transcript::horizon(&messages, transcript::HORIZON);
+                if from > 0 {
+                    render::notice(&format!(
+                        "{from} earlier messages not shown; /view scrolls back to them"
+                    ));
+                }
+                &messages[from..]
+            }
+            shown => messages.get(shown..).unwrap_or_default(),
+        };
         if !new.is_empty() {
             render::conversation(new, &self.style);
         } else if messages.is_empty() && running.is_none() && announce_empty {
@@ -1256,6 +1286,10 @@ impl Session {
         if !tools.servers.is_empty() {
             println!("\n{}", "MCP servers".bold());
             for server in &tools.servers {
+                if server.pending {
+                    println!("  {} {} (connecting…)", "●".yellow(), server.name);
+                    continue;
+                }
                 match &server.tools {
                     Ok(count) => {
                         let deferred = if server.deferred { ", deferred" } else { "" };
@@ -1409,6 +1443,9 @@ impl Session {
 
 /// What `/host` calls this machine.
 const LOCAL: &str = "local";
+
+/// How long the first prompt waits for completions from the host.
+const FIRST_INDEX: Duration = Duration::from_millis(250);
 
 /// This machine, then each remote the config names.
 fn known_hosts(config_path: Option<&std::path::Path>) -> Vec<String> {

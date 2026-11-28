@@ -579,6 +579,9 @@ pub struct ServerReport {
     /// Whether its tools are found with `tool_search` rather than described.
     #[serde(default)]
     pub deferred: bool,
+    /// Whether it is still connecting, its tools not yet known.
+    #[serde(default)]
+    pub pending: bool,
 }
 
 /// What `/undo` put back: the files the latest answer that changed any

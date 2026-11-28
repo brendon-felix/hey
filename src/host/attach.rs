@@ -115,7 +115,7 @@ impl Host {
             context.attach(attachment);
         }
         if let Some(invoked) = skills::invoked(prompt)
-            && let Some(mcp_prompt) = crate::mcp::invoked(self.toolbox.prompts(), invoked)
+            && let Some(mcp_prompt) = crate::mcp::invoked(&self.toolbox.prompts(), invoked)
         {
             let name = format!("prompt {}", mcp_prompt.command());
             told.push(Event::Attached { name: name.clone() });

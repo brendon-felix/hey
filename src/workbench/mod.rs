@@ -58,16 +58,24 @@ struct Lending {
 }
 
 impl Workbench {
-    /// This machine's tools as `config` gives them, its MCP servers connected.
-    pub async fn new(config: &Config) -> Result<Self> {
+    /// This machine's tools as `config` gives them. Its MCP servers connect
+    /// in the background.
+    pub fn new(config: &Config) -> Result<Self> {
         let machine = machine_name();
         let access = Access::new(
             machine.clone(),
             config.machines.get(&machine),
             config.file.clone(),
         )?;
-        let toolbox = Toolbox::new(config).await?;
-        let permissions = Permissions::resolve(toolbox.origins(), &config.tools);
+        let toolbox = Toolbox::new(config)?;
+        let permissions = Permissions::resolve(
+            toolbox
+                .origins()
+                .iter()
+                .map(|(name, origin)| (name.as_str(), origin)),
+            &config.tools,
+        )
+        .with_later(toolbox.later());
         let cwd = agent::working_directory();
         Ok(Self {
             cwd: cwd.canonicalize().unwrap_or(cwd),
@@ -82,12 +90,20 @@ impl Workbench {
         self.access.machine()
     }
 
+    /// The tools this machine lends, as of now.
     pub fn lent(&self) -> Lent {
         Lent {
             machine: self.machine().to_owned(),
             tools: self.toolbox.definitions(),
             deferred: self.toolbox.preamble(),
         }
+    }
+
+    /// [`Self::lent`], once the MCP servers still connecting have had a
+    /// little longer to.
+    pub async fn lent_settled(&self) -> Lent {
+        self.toolbox.settled(crate::toolbox::PATIENCE).await;
+        self.lent()
     }
 
     /// Runs `call` for conversation `thread` once its permission and the

@@ -594,7 +594,7 @@ impl Default for Checkpoints {
     }
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Tools {
     /// Run every tool without asking, whatever `default` and `permissions` say.

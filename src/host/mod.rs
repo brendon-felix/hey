@@ -211,7 +211,7 @@ impl Host {
     pub async fn new(config: &Config, hosting: Hosting) -> Result<Self> {
         let sessions_dir = config.sessions.dir()?;
         let sessions = Sessions::open(sessions_dir.clone(), config.sessions.markdown_dir()?)?;
-        let toolbox = Toolbox::new(config).await?;
+        let toolbox = Toolbox::new(config)?;
         let crew = config
             .subagents
             .enabled
@@ -231,7 +231,15 @@ impl Host {
         .chain(spawn)
         .chain(memory_tool);
         let host_only = host_only.map(|name| (name, &Origin::Builtin));
-        let permissions = Permissions::resolve(toolbox.origins().chain(host_only), &config.tools);
+        let permissions = Permissions::resolve(
+            toolbox
+                .origins()
+                .iter()
+                .map(|(name, origin)| (name.as_str(), origin))
+                .chain(host_only),
+            &config.tools,
+        )
+        .with_later(toolbox.later());
         Ok(Self {
             hosting,
             machine: Machine::here(config.file.as_deref()),
@@ -551,6 +559,9 @@ impl Host {
         {
             client.lent = None;
         }
+        // The MCP servers have had the time the user took to type; those
+        // still connecting miss this answer, rather than hold it up long.
+        self.toolbox.settled(crate::toolbox::PATIENCE).await;
         let model =
             Model::connect(&request.options.model, &self.providers).map_err(ThreadError::Other)?;
         let compactor = Compactor::new(&self.compaction, &model, &self.providers)
@@ -731,7 +742,7 @@ impl Host {
         };
         Tools {
             permissions,
-            servers: self.toolbox.servers().to_vec(),
+            servers: self.toolbox.servers(),
         }
     }
 
@@ -766,7 +777,7 @@ impl Host {
 
     /// The prompts the host's MCP servers offer.
     pub fn prompts(&self) -> Vec<crate::mcp::Prompt> {
-        self.toolbox.prompts().to_vec()
+        self.toolbox.prompts()
     }
 
     /// Every project the host knows, by name.

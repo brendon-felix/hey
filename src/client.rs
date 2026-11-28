@@ -246,8 +246,16 @@ impl Client {
         Ok(Some(snapshot))
     }
 
-    pub async fn start(&self, id: &SessionId, request: RunRequest) -> Result<Events> {
+    pub async fn start(
+        &self,
+        id: &SessionId,
+        request: RunRequest,
+        lent: Option<Lent>,
+    ) -> Result<Events> {
         let mut info = ClientInfo::clone(&self.info);
+        if lent.is_some() {
+            info.lent = lent;
+        }
         info.skills = crate::skills::find(&crate::agent::working_directory()).skills;
         info.project = crate::projects::detect(&crate::agent::working_directory());
         let request = RunRequest {
@@ -863,7 +871,7 @@ mod tests {
         };
 
         let events: Vec<Event> = client
-            .start(&SessionId::new(), request)
+            .start(&SessionId::new(), request, None)
             .await
             .unwrap()
             .map(|event| event.unwrap())

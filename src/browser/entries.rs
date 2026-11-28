@@ -138,6 +138,20 @@ impl Transcript {
         transcript
     }
 
+    pub fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    /// Puts what came before `self` in front of it.
+    pub fn prepend(&mut self, earlier: Transcript) {
+        self.entries.splice(0..0, earlier.entries);
+    }
+
+    /// Forgets the first `count` entries.
+    pub fn drop_front(&mut self, count: usize) {
+        self.entries.drain(..count.min(self.entries.len()));
+    }
+
     pub fn entry(&mut self, index: usize) -> Option<&mut Entry> {
         self.entries.get_mut(index)
     }
