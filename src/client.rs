@@ -266,7 +266,7 @@ impl Client {
         let response = self
             .ok(self.http.post(self.url(&path)?).json(&request))
             .await?;
-        Ok(self.follow(id, lines(response).boxed(), Role::Follower))
+        Ok(self.follow(id, heartbeats(response).boxed(), Role::Follower))
     }
 
     /// The events of a run of thread `id` on `lines`, followed again when
@@ -302,7 +302,7 @@ impl Client {
         if response.status() == StatusCode::NOT_FOUND {
             return Ok(None);
         }
-        Ok(Some(lines(self.check(response).await?).boxed()))
+        Ok(Some(heartbeats(self.check(response).await?).boxed()))
     }
 
     pub async fn answer(
@@ -583,12 +583,16 @@ fn unreached(method: &Method, status: StatusCode) -> bool {
     }
 }
 
-/// The stream's lines, without the blank ones the host sends to keep it open.
-fn lines(response: Response) -> impl Stream<Item = Result<String>> + Send + Unpin + 'static {
+/// The stream's lines, with the blank ones the host sends to keep it open.
+fn heartbeats(response: Response) -> impl Stream<Item = Result<String>> + Send + Unpin + 'static {
     let bytes = response.bytes_stream().map_err(io::Error::other);
     FramedRead::new(StreamReader::new(bytes), LinesCodec::new())
         .map(|line| line.map_err(|error| anyhow!("lost the connection to the host: {error:#?}")))
-        .try_filter(|line| future::ready(!line.is_empty()))
+}
+
+/// The stream's lines, without the blank ones the host sends to keep it open.
+fn lines(response: Response) -> impl Stream<Item = Result<String>> + Send + Unpin + 'static {
+    heartbeats(response).try_filter(|line| future::ready(!line.is_empty()))
 }
 
 type Lines = BoxStream<'static, Result<String>>;
@@ -649,6 +653,11 @@ impl Resumable {
                 Link::Ended => return None,
                 Link::Open(mut lines) => {
                     let line = match tokio::time::timeout(SILENCE, lines.next()).await {
+                        // A heartbeat: the host is there, the run is just quiet.
+                        Ok(Some(Ok(line))) if line.is_empty() => {
+                            self.link = Link::Open(lines);
+                            continue;
+                        }
                         Ok(Some(Ok(line))) => line,
                         Ok(Some(Err(error))) => {
                             if let Some(error) = self.broke(error) {
