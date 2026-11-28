@@ -100,7 +100,7 @@ struct Current {
 enum Then {
     /// Once it has answered, the next queued message is sent.
     Answer,
-    /// It was stopped, and nothing more is sent.
+    /// It was stopped, and nothing more is sent until the user sends a message.
     Halt,
     /// It was stopped to send the next queued message at once.
     SendNow,
@@ -463,9 +463,10 @@ impl Session {
         };
         current.then = Then::Halt;
         current.follow.stop(&self.backend, &self.thread).await;
-        let mut unsent = self.outbox.take();
-        unsent.extend(Some(typed).filter(|typed| !typed.trim().is_empty()));
-        self.returned.extend(unsent);
+        // The queue stays as it is; only what was typed goes back.
+        if !typed.trim().is_empty() {
+            self.returned.push(typed);
+        }
     }
 
     /// The run followed ended with `outcome`: the next queued message is
@@ -478,6 +479,17 @@ impl Session {
         let turn = follow.end(&self.backend, &self.thread, outcome).await;
         self.record(&turn);
         let unsteered = self.outbox.unsteered();
+        if matches!(then, Then::Halt) {
+            // Interrupted: the queue is kept, steering messages first, and
+            // goes on after the next message sent has been answered.
+            for message in unsteered.into_iter().rev() {
+                self.outbox.queue_first(message);
+            }
+            if self.current.is_none() {
+                self.watch.set_following(false);
+            }
+            return;
+        }
         self.give_back(unsteered);
         let send = matches!(
             (then, outcome),
