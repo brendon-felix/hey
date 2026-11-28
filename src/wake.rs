@@ -43,8 +43,25 @@ pub struct Wake {
 }
 
 impl Wake {
+    /// A wake for a run the host's restart cut off, which has no machine to
+    /// wait for: the host starts it again as soon as it is back up.
+    pub fn restart(options: RunOptions, client: ClientInfo, surface: Surface) -> Self {
+        Self {
+            machine: String::new(),
+            task: String::new(),
+            options,
+            client,
+            surface,
+        }
+    }
+
     /// What the new run is asked.
     pub fn prompt(&self) -> String {
+        if self.machine.is_empty() {
+            return "The hey host restarted while you were answering, which stopped your reply. \
+                    Carry on from where you left off, unless it was already done."
+                .into();
+        }
         format!(
             "`{}` reconnected. You asked to be continued when it did: {}",
             self.machine, self.task

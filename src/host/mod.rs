@@ -373,6 +373,11 @@ impl Host {
         })
     }
 
+    /// Starts again the runs a restart of the host cut off.
+    pub async fn resume_interrupted(self: &Arc<Self>) {
+        self.wake("").await;
+    }
+
     /// Starts the runs conversations left for when `machine` was back.
     pub async fn wake(self: &Arc<Self>, machine: &str) {
         for id in self.wakes.waiting_for(machine) {
@@ -1098,12 +1103,22 @@ impl Host {
             live,
         } = answering;
         let notes = self.lock().get(&id).map(|thread| thread.notes.clone());
+        let restart = request.client.clone().map(|client| {
+            Wake::restart(request.options.clone(), client, request.surface)
+        });
         let conversing = self.converse(&id, &run, &agent, &model, request, &skills, notes);
         let ending = until_stopped(&run, conversing)
             .await
             .unwrap_or(Ending::Interrupted);
         run.close_steers();
         self.keep(&id, &run, &ending);
+        // A restart cut the run off: the next host starts it again.
+        if matches!(ending, Ending::Interrupted)
+            && self.closing.load(Ordering::SeqCst)
+            && let Some(restart) = restart
+        {
+            self.wakes.set(&id, restart);
+        }
         let answered = matches!(ending, Ending::Answered);
         // Read before a summary takes the place of what the answer said.
         let exchange = (answered && self.memory.is_some()).then(|| {

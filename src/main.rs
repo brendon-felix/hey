@@ -248,6 +248,11 @@ async fn dispatch(args: Args, config: Config) -> Result<ExitCode> {
             listen: config.server.listen,
         };
         let host = Arc::new(Host::new(&config, hosting).await?);
+        // Conversations the last restart cut off go on by themselves.
+        tokio::spawn({
+            let host = host.clone();
+            async move { host.resume_interrupted().await }
+        });
         tokio::select! {
             served = server::serve(host.clone(), &config.server) => served?,
             stopped = shutdown() => stopped?,
