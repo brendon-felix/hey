@@ -9,3 +9,4 @@ hey.toml
 deploy.nu
 .agents/
 conversations/
+.playwright-cli/
